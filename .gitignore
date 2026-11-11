@@ -1,0 +1,20 @@
+# Virtual environments & caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local downloaded HuggingFace ONNX weights (>2 GB, auto-downloaded on first run)
+models_cache/
+
+# Runtime Qdrant Docker volume (populated from data/ cache in ~2 seconds via run_ingestion.py)
+qdrant_storage/
+qdrant_local_db/
+
+# LaTeX build intermediates
+*.aux
+*.log
+*.out
+*.toc
+*.xdv

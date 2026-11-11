@@ -1,0 +1,1 @@
+"""MIPT Regulations Navigator package."""
