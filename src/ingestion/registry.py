@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from src.config import REGISTRY_OVERRIDES_PATH
+from src.config import DATA_DIR, REGISTRY_OVERRIDES_PATH
 
 
 @dataclass
@@ -58,12 +58,37 @@ class DocumentRegistry:
         re.IGNORECASE | re.DOTALL,
     )
 
-    def __init__(self, overrides_path: Path = REGISTRY_OVERRIDES_PATH) -> None:
+    def __init__(
+        self,
+        overrides_path: Path = REGISTRY_OVERRIDES_PATH,
+        corpus_dir: Path = DATA_DIR,
+    ) -> None:
         self.overrides: dict[str, dict[str, Any]] = {}
+        self._sha_to_override: dict[str, dict[str, Any]] = {}
         if overrides_path.exists():
             with open(overrides_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
                 self.overrides = data.get("documents", {})
+        if corpus_dir.exists():
+            for name, ov in self.overrides.items():
+                candidate = corpus_dir / name
+                if candidate.is_file():
+                    try:
+                        self._sha_to_override[self.compute_sha256(candidate)] = ov
+                    except Exception:
+                        pass
+
+    def _find_override(self, fname: str, file_sha: str) -> dict[str, Any]:
+        if fname in self.overrides:
+            return self.overrides[fname]
+        if file_sha in self._sha_to_override:
+            return self._sha_to_override[file_sha]
+        # Fallback: если в отладочную форму загружена копия с префиксом (copy_..., 1_...)
+        lower_fname = fname.lower()
+        for known_name, ov in self.overrides.items():
+            if lower_fname.endswith(known_name.lower()):
+                return ov
+        return {}
 
     @staticmethod
     def compute_sha256(file_path: Path) -> str:
@@ -81,7 +106,7 @@ class DocumentRegistry:
     def resolve(self, file_path: Path, sample_text: str = "") -> DocumentMetadata:
         fname = file_path.name
         file_sha = self.compute_sha256(file_path)
-        override = self.overrides.get(fname, {})
+        override = self._find_override(fname, file_sha)
 
         # 1. Auto-extract from filename + first 1500 chars of text
         header_probe = f"{fname}\n{sample_text[:1500]}"

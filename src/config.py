@@ -6,6 +6,28 @@ from pathlib import Path
 PROJECT_ROOT = Path(
     os.getenv("PROJECT_ROOT", str(Path(__file__).resolve().parent.parent))
 )
+
+
+def _load_dotenv(env_path: Path) -> None:
+    """Автоматически подгружает переменные из .env (если файл существует), не перезаписывая уже заданные."""
+    if not env_path.is_file():
+        return
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip("'").strip('"')
+            if key:
+                os.environ.setdefault(key, val)
+    except Exception:
+        pass
+
+
+_load_dotenv(PROJECT_ROOT / ".env")
+
 DATA_DIR = Path(os.getenv("DATA_DIR", PROJECT_ROOT / "данные"))
 ARTIFACTS_DATA_DIR = Path(os.getenv("ARTIFACTS_DATA_DIR", PROJECT_ROOT / "data"))
 OCR_CACHE_DIR = ARTIFACTS_DATA_DIR / "ocr_cache"
@@ -44,9 +66,17 @@ DENSE_BATCH_SIZE = int(os.getenv("DENSE_BATCH_SIZE", "8"))
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "mipt_regulations")
 
-# Chunking hyperparameters (V3 Parent-Child)
-MAX_CLAUSE_CHARS = 1200
-TABLE_SLICE_ROWS = 12
+# Chunking hyperparameters (V3 Parent-Child + min size + bilateral overlap)
+MIN_CLAUSE_CHARS = int(os.getenv("MIN_CLAUSE_CHARS", "160"))
+MAX_CLAUSE_CHARS = int(os.getenv("MAX_CLAUSE_CHARS", "880"))
+MAX_TABLE_FORM_CHARS = int(os.getenv("MAX_TABLE_FORM_CHARS", "560"))
+TABLE_SLICE_ROWS = int(os.getenv("TABLE_SLICE_ROWS", "8"))
+# Двустороннее перекрытие соседних чанков (12% от предыдущего и 12% от следующего
+# по границам слов — лучше чем сырые 10%, так как не режет слова пополам и даёт
+# законченный смысловой фрагмент на средних пунктах в 300–500 символов).
+CHUNK_OVERLAP_RATIO = float(os.getenv("CHUNK_OVERLAP_RATIO", "0.12"))
+MIN_OVERLAP_CHARS = int(os.getenv("MIN_OVERLAP_CHARS", "35"))
+MAX_OVERLAP_CHARS = int(os.getenv("MAX_OVERLAP_CHARS", "95"))
 
 # Retrieval hyperparameters
 # 0.815 откалиброван на e5-large: in-domain запросы в корпусе дают >= 0.83,

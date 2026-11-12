@@ -13,7 +13,7 @@ from pathlib import Path
 
 from src.chunking.glossary import GlossaryManager
 from src.chunking.hierarchical_chunker import HierarchicalChunker
-from src.config import DEBUG_TMP_DIR
+from src.config import CHUNK_OVERLAP_RATIO, DEBUG_TMP_DIR, MIN_CLAUSE_CHARS
 from src.ingestion.ocr_engine import OcrEngine
 from src.ingestion.parsers import DocumentIngestionRouter
 from src.ingestion.registry import DocumentRegistry
@@ -61,6 +61,10 @@ def process_uploaded_document(
         # Файл нужен только на время разбора; метаданные уже содержат имя.
         shutil.rmtree(tmp_root, ignore_errors=True)
 
+    non_meta_lengths = [
+        len(c.raw_text) for c in chunks if c.zone != "meta"
+    ] or [len(c.raw_text) for c in chunks]
+
     return {
         "file_name": safe_name,
         "metadata": asdict(meta),
@@ -71,6 +75,10 @@ def process_uploaded_document(
             "blocks": len(blocks),
             "chunks": len(chunks),
             "sections": len(sections),
+            "min_chunk_chars": min(non_meta_lengths, default=0),
+            "max_chunk_chars": max(non_meta_lengths, default=0),
+            "min_clause_chars_target": chunker.min_clause_chars,
+            "overlap_ratio": chunker.overlap_ratio,
             "ocr_errors": list(ocr_engine.api_errors),
         },
     }

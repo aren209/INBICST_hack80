@@ -14,8 +14,19 @@ from collections import defaultdict
 
 import streamlit as st
 
-from src.config import OCR_SPACE_API_KEY, QDRANT_URL
+from src.config import (
+    CHUNK_OVERLAP_RATIO,
+    MIN_CLAUSE_CHARS,
+    OCR_SPACE_API_KEY,
+    QDRANT_URL,
+)
 from src.debug.pipeline import process_uploaded_document
+
+
+@st.cache_data(show_spinner=False)
+def _cached_process_document(file_name: str, file_bytes: bytes) -> dict:
+    return process_uploaded_document(file_name, file_bytes)
+
 
 st.set_page_config(page_title="MIPT Navigator — debug", layout="wide")
 st.title("Отладка разбора документа")
@@ -51,7 +62,7 @@ with col2:
 if run and uploaded is not None:
     with st.spinner("Читаю документ, при необходимости вызываю OCR…"):
         try:
-            result = process_uploaded_document(uploaded.name, uploaded.getvalue())
+            result = _cached_process_document(uploaded.name, uploaded.getvalue())
             st.session_state["debug_result"] = result
         except Exception as exc:  # noqa: BLE001 - показываем пользователю
             st.error(f"Не удалось разобрать файл: {exc}")
@@ -81,11 +92,13 @@ st.json(
     }
 )
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Блоков", stats["blocks"])
 c2.metric("Чанков", stats["chunks"])
 c3.metric("Разделов", stats["sections"])
-c4.metric("OCR-ошибок", len(stats["ocr_errors"]))
+c4.metric("Мин. чанк (симв.)", stats.get("min_chunk_chars", 0))
+c5.metric("Перекрытие", f"{int(stats.get('overlap_ratio', CHUNK_OVERLAP_RATIO) * 100)}%")
+c6.metric("OCR-ошибок", len(stats["ocr_errors"]))
 if stats["ocr_errors"]:
     with st.expander("Ошибки OCR"):
         for err in stats["ocr_errors"]:

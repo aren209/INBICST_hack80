@@ -33,6 +33,23 @@ def test_chunks_and_sections_exist() -> None:
     approval_chunks = [c for c in chunks if c["zone"] == "approval"]
     assert len(approval_chunks) == 0, "Approval sheets (ЛИСТ СОГЛАСОВАНИЯ) must be excluded"
 
+    # Check minimum chunk size and bilateral overlap on non-meta chunks
+    non_meta = [c for c in chunks if c["zone"] != "meta"]
+    min_len = min(len(c["raw_text"]) for c in non_meta)
+    assert min_len >= 160, f"All non-meta chunks must be >= 160 chars, got min={min_len}"
+
+    # Interior chunks (having both prev_id and next_id) must contain both leading and trailing overlap
+    interior = [c for c in non_meta if c.get("prev_id") and c.get("next_id")]
+    assert len(interior) >= 400
+    assert all(
+        c["raw_text"].startswith("...") and c["raw_text"].endswith("...")
+        for c in interior
+    ), "Interior chunks must have bilateral overlap (...prev and next...)"
+
+    # Check that form_smeta_2019 is parsed as form blocks, not CFO hierarchy
+    smeta_2019 = [c for c in non_meta if c["doc_id"] == "form_smeta_2019"]
+    assert smeta_2019 and all(c["zone"] == "form" for c in smeta_2019)
+
 
 def test_duplicate_clauses_in_3065_preserved() -> None:
     chunks = json.loads(CHUNKS_DUMP_PATH.read_text(encoding="utf-8"))

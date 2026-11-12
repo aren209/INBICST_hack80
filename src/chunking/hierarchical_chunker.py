@@ -5,7 +5,14 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from src.chunking.glossary import GlossaryManager
-from src.config import MAX_CLAUSE_CHARS
+from src.config import (
+    CHUNK_OVERLAP_RATIO,
+    MAX_CLAUSE_CHARS,
+    MAX_OVERLAP_CHARS,
+    MAX_TABLE_FORM_CHARS,
+    MIN_CLAUSE_CHARS,
+    MIN_OVERLAP_CHARS,
+)
 from src.ingestion.parsers import ParsedBlock
 from src.ingestion.registry import DocumentMetadata
 
@@ -167,8 +174,224 @@ class HierarchicalChunker:
 
     DATE_PREFIX_RE = re.compile(r"^\d{2}\.\d{2}\.20\d{2}\b")
 
-    def __init__(self, glossary: GlossaryManager | None = None) -> None:
+    def __init__(
+        self,
+        glossary: GlossaryManager | None = None,
+        min_clause_chars: int = MIN_CLAUSE_CHARS,
+        max_clause_chars: int = MAX_CLAUSE_CHARS,
+        max_table_form_chars: int = MAX_TABLE_FORM_CHARS,
+        overlap_ratio: float = CHUNK_OVERLAP_RATIO,
+    ) -> None:
         self.glossary = glossary or GlossaryManager()
+        self.min_clause_chars = min_clause_chars
+        self.max_clause_chars = max_clause_chars
+        self.max_table_form_chars = max_table_form_chars
+        self.overlap_ratio = overlap_ratio
+
+    @staticmethod
+    def _is_generic_clause_no(clause_no: str) -> bool:
+        low = clause_no.strip().lower()
+        return (
+            low in {"преамбула", "вводная часть", "паспорт"}
+            or low.startswith("раздел ")
+        )
+
+    @classmethod
+    def _combine_clause_no(cls, first: str, second: str) -> str:
+        if cls._is_generic_clause_no(first) and not cls._is_generic_clause_no(second):
+            return second
+        if cls._is_generic_clause_no(second) and not cls._is_generic_clause_no(first):
+            return first
+        if first == second:
+            return first
+        if second.startswith(f"{first} (ч."):
+            return first
+        if second.startswith(first + "."):
+            return f"{first} ({second})"
+        return f"{first}, {second}"
+
+    @staticmethod
+    def _extract_tail_overlap(
+        text: str,
+        ratio: float,
+        min_chars: int = MIN_OVERLAP_CHARS,
+        max_chars: int = MAX_OVERLAP_CHARS,
+    ) -> str:
+        """Возвращает последние ~ratio символов текста с выравниванием по границе слова."""
+        clean = re.sub(r"\s+", " ", text).strip()
+        if len(clean) < 20 or ratio <= 0:
+            return ""
+        target = int(round(len(clean) * ratio))
+        target = max(min_chars, min(max_chars, target))
+        if target >= len(clean):
+            target = max(15, int(len(clean) * 0.35))
+        start = max(0, len(clean) - target)
+        if start > 0 and not clean[start - 1].isspace():
+            # Сдвигаем к началу следующего слова, чтобы не резать слово пополам
+            next_space = clean.find(" ", start)
+            if next_space != -1 and len(clean) - next_space >= 15:
+                start = next_space + 1
+            else:
+                prev_space = clean.rfind(" ", 0, start)
+                start = (prev_space + 1) if prev_space != -1 else start
+        return clean[start:].strip()
+
+    @staticmethod
+    def _extract_head_overlap(
+        text: str,
+        ratio: float,
+        min_chars: int = MIN_OVERLAP_CHARS,
+        max_chars: int = MAX_OVERLAP_CHARS,
+    ) -> str:
+        """Возвращает первые ~ratio символов текста с выравниванием по границе слова."""
+        clean = re.sub(r"\s+", " ", text).strip()
+        if len(clean) < 20 or ratio <= 0:
+            return ""
+        target = int(round(len(clean) * ratio))
+        target = max(min_chars, min(max_chars, target))
+        if target >= len(clean):
+            target = max(15, int(len(clean) * 0.35))
+        end = min(len(clean), target)
+        if end < len(clean) and not clean[end].isspace():
+            next_space = clean.find(" ", end)
+            if next_space != -1 and next_space <= max_chars + 20:
+                end = next_space
+            else:
+                prev_space = clean.rfind(" ", 0, end)
+                if prev_space >= 15:
+                    end = prev_space
+        return clean[:end].strip()
+
+    def _build_embed_text(self, meta: DocumentMetadata, chunk: ChunkRecord) -> str:
+        if chunk.zone == "meta":
+            return self.glossary.expand_text(
+                f"[Документ: {meta.doc_title} | Статус: {meta.status} | Паспорт версий и коллизий]\n{chunk.raw_text}"
+            )
+        breadcrumb = (
+            f"[Документ: {meta.doc_title} (№ {meta.doc_number} от {meta.doc_date or 'б/д'}) | "
+            f"Статус: {meta.status} | Часть: {chunk.unit_title} | "
+            f"Раздел {chunk.section_no}: {chunk.section_title} | Пункт: {chunk.clause_no}"
+        )
+        if chunk.roles:
+            breadcrumb += f" | Роли: {', '.join(chunk.roles)}"
+        if meta.topic_tags:
+            breadcrumb += f" | Темы: {', '.join(meta.topic_tags)}"
+        breadcrumb += "]"
+
+        expansions = self.glossary.extract_expansions(chunk.raw_text)
+        terms_block = f"\n[Термины: {'; '.join(expansions)}]" if expansions else ""
+        return f"{breadcrumb}{terms_block}\n{chunk.raw_text}"
+
+    def _merge_short_chunks(self, chunks: list[ChunkRecord]) -> list[ChunkRecord]:
+        """Объединяет слишком короткие чанки (< min_clause_chars) с соседними в рамках раздела/части."""
+        if len(chunks) <= 1 or self.min_clause_chars <= 0:
+            return chunks
+
+        meta_chunks = [c for c in chunks if c.zone == "meta"]
+        work = [c for c in chunks if c.zone != "meta"]
+        if len(work) <= 1:
+            return meta_chunks + work
+
+        def merge_two(left: ChunkRecord, right: ChunkRecord) -> ChunkRecord:
+            combined_raw = f"{left.raw_text}\n{right.raw_text}".strip()
+            combined_roles = extract_roles(combined_raw)
+            keep_sec_from = (
+                right
+                if self._is_generic_clause_no(left.clause_no)
+                and not self._is_generic_clause_no(right.clause_no)
+                else left
+            )
+            left.section_id = keep_sec_from.section_id
+            left.section_no = keep_sec_from.section_no
+            left.section_title = keep_sec_from.section_title
+            left.parent_id = keep_sec_from.parent_id
+            left.clause_no = self._combine_clause_no(left.clause_no, right.clause_no)
+            left.page_from = min(left.page_from, right.page_from)
+            left.page_to = max(left.page_to, right.page_to)
+            left.raw_text = combined_raw
+            left.roles = combined_roles
+            return left
+
+        # Pass 1: объединяем короткий чанк со следующим в том же разделе (или unit для вводных заголовков)
+        i = 0
+        forward_merged: list[ChunkRecord] = []
+        while i < len(work):
+            curr = work[i]
+            max_limit = (
+                self.max_table_form_chars
+                if curr.zone in ("table", "form")
+                else self.max_clause_chars
+            )
+            while (
+                len(curr.raw_text) < self.min_clause_chars
+                and i + 1 < len(work)
+                and work[i + 1].unit_id == curr.unit_id
+                and work[i + 1].zone == curr.zone
+                and (
+                    work[i + 1].section_id == curr.section_id
+                    or self._is_generic_clause_no(curr.clause_no)
+                    or len(curr.raw_text) < 100
+                )
+                and len(curr.raw_text) + 1 + len(work[i + 1].raw_text) <= max_limit + 140
+            ):
+                curr = merge_two(curr, work[i + 1])
+                i += 1
+            forward_merged.append(curr)
+            i += 1
+
+        # Pass 2: если в конце раздела/части остался короткий «хвост» (< min_clause_chars),
+        # присоединяем его к предыдущему чанку того же раздела/части.
+        pass2_work: list[ChunkRecord] = []
+        for curr in forward_merged:
+            max_limit = (
+                self.max_table_form_chars
+                if curr.zone in ("table", "form")
+                else self.max_clause_chars
+            )
+            if (
+                len(curr.raw_text) < self.min_clause_chars
+                and pass2_work
+                and pass2_work[-1].unit_id == curr.unit_id
+                and pass2_work[-1].zone == curr.zone
+                and (
+                    pass2_work[-1].section_id == curr.section_id
+                    or len(curr.raw_text) < 110
+                )
+                and len(pass2_work[-1].raw_text) + 1 + len(curr.raw_text) <= max_limit + 180
+            ):
+                pass2_work[-1] = merge_two(pass2_work[-1], curr)
+            else:
+                pass2_work.append(curr)
+
+        # Pass 3: если после внутриюнитного слияния остались одиночные короткие штампы
+        # («УТВЕРЖДЕН приказом...», «к приказу ОТ», заголовки перед таблицей) < min_clause_chars,
+        # сливаем их со следующим (или предыдущим) чанком документа, сохраняя реквизиты основного чанка.
+        final_work: list[ChunkRecord] = []
+        idx = 0
+        while idx < len(pass2_work):
+            curr = pass2_work[idx]
+            if len(curr.raw_text) < self.min_clause_chars and idx + 1 < len(pass2_work):
+                nxt = pass2_work[idx + 1]
+                nxt.raw_text = f"{curr.raw_text}\n{nxt.raw_text}".strip()
+                nxt.roles = extract_roles(nxt.raw_text)
+                nxt.page_from = min(curr.page_from, nxt.page_from)
+                nxt.page_to = max(curr.page_to, nxt.page_to)
+                if not self._is_generic_clause_no(curr.clause_no) and curr.zone == nxt.zone:
+                    nxt.clause_no = self._combine_clause_no(curr.clause_no, nxt.clause_no)
+                idx += 1
+                continue
+            if len(curr.raw_text) < self.min_clause_chars and final_work:
+                prev = final_work[-1]
+                prev.raw_text = f"{prev.raw_text}\n{curr.raw_text}".strip()
+                prev.roles = extract_roles(prev.raw_text)
+                prev.page_from = min(prev.page_from, curr.page_from)
+                prev.page_to = max(prev.page_to, curr.page_to)
+                idx += 1
+                continue
+            final_work.append(curr)
+            idx += 1
+
+        return meta_chunks + final_work
 
     def _is_section_header(self, block: ParsedBlock) -> tuple[str, str] | None:
         text = block.text.strip()
@@ -300,17 +523,23 @@ class HierarchicalChunker:
             if len(full_raw) < 12:
                 return
 
-            # Split overly long clauses (> MAX_CLAUSE_CHARS) along paragraph/subitem lines
+            max_limit = (
+                self.max_table_form_chars
+                if curr_zone in ("table", "form")
+                else self.max_clause_chars
+            )
+
+            # Split overly long clauses (> max_limit) along paragraph/subitem lines
             sub_texts: list[str] = []
-            if len(full_raw) <= MAX_CLAUSE_CHARS:
+            if len(full_raw) <= max_limit:
                 sub_texts.append(full_raw)
             else:
                 lines = full_raw.splitlines()
-                header_line = lines[0][:160]
+                header_line = lines[0][:120]
                 buf: list[str] = []
                 buf_len = 0
                 for ln in lines:
-                    if buf_len + len(ln) > MAX_CLAUSE_CHARS and buf:
+                    if buf_len + len(ln) > max_limit and buf:
                         sub_texts.append("\n".join(buf))
                         buf = [f"(Продолжение п. {curr_clause_no}: {header_line})", ln]
                         buf_len = len(buf[0]) + len(ln)
@@ -319,6 +548,19 @@ class HierarchicalChunker:
                         buf_len += len(ln) + 1
                 if buf:
                     sub_texts.append("\n".join(buf))
+
+                # Если последний кусок разбиения оказался меньше минимального порога,
+                # склеиваем его с предпоследним, чтобы не плодить короткие «хвосты».
+                if (
+                    len(sub_texts) >= 2
+                    and len(sub_texts[-1]) < self.min_clause_chars
+                    and len(sub_texts[-2]) + len(sub_texts[-1]) <= max_limit + 180
+                ):
+                    tail = sub_texts.pop()
+                    tail_lines = tail.splitlines()
+                    if tail_lines and tail_lines[0].startswith("(Продолжение п."):
+                        tail_lines = tail_lines[1:]
+                    sub_texts[-1] = sub_texts[-1] + "\n" + "\n".join(tail_lines)
 
             for part_idx, raw_part in enumerate(sub_texts):
                 clause_seq += 1
@@ -329,20 +571,9 @@ class HierarchicalChunker:
                     else f"{curr_clause_no} (ч. {part_idx + 1})"
                 )
                 roles = extract_roles(raw_part)
-                breadcrumb = (
-                    f"[Документ: {meta.doc_title} (№ {meta.doc_number} от {meta.doc_date or 'б/д'}) | "
-                    f"Статус: {meta.status} | Часть: {unit_title} | "
-                    f"Раздел {section_no}: {section_title} | Пункт: {disp_clause}"
+                register_section(
+                    section_id, unit_id, unit_title, section_no, section_title
                 )
-                if roles:
-                    breadcrumb += f" | Роли: {', '.join(roles)}"
-                if meta.topic_tags:
-                    breadcrumb += f" | Темы: {', '.join(meta.topic_tags)}"
-                breadcrumb += "]"
-
-                expanded_body = self.glossary.expand_text(raw_part)
-                embed_text = f"{breadcrumb}\n{expanded_body}"
-
                 chunk = ChunkRecord(
                     chunk_id=c_id,
                     doc_id=meta.doc_id,
@@ -373,19 +604,9 @@ class HierarchicalChunker:
                     page_from=curr_page_from,
                     page_to=curr_page_to,
                     raw_text=raw_part,
-                    embed_text=embed_text,
+                    embed_text="",
                 )
                 chunks.append(chunk)
-
-                if curr_zone != "approval":
-                    register_section(
-                        section_id, unit_id, unit_title, section_no, section_title
-                    )
-                    parent_sections[section_id].clause_ids.append(c_id)
-                    if parent_sections[section_id].text:
-                        parent_sections[section_id].text += "\n\n" + raw_part
-                    else:
-                        parent_sections[section_id].text = raw_part
 
         # Emit an authoritative version/warning card chunk if the document has version collisions or scan defects
         if meta.version_note or meta.quality_warning:
@@ -545,11 +766,103 @@ class HierarchicalChunker:
 
         flush_clause()
 
-        # Link prev_id and next_id within the same section
+        # 1. Гарантируем минимальный размер чанка (сливаем короткие фрагменты < MIN_CLAUSE_CHARS)
+        chunks = self._merge_short_chunks(chunks)
+
+        # 2. Перенумеровываем chunk_id и собираем чистый текст родительских разделов (без дублей перекрытия)
+        for sec in parent_sections.values():
+            sec.clause_ids = []
+            sec.text = ""
+
+        seq_counter = 0
+        for ch in chunks:
+            seq_counter += 1
+            if ch.zone == "meta":
+                ch.chunk_id = f"{meta.doc_id}::u00_meta::s00::c{seq_counter:03d}"
+                continue
+            sec_suffix = ch.section_id.split("::")[-1] if "::" in ch.section_id else "s01"
+            ch.chunk_id = f"{meta.doc_id}::{ch.unit_id}::{sec_suffix}::c{seq_counter:03d}"
+            register_section(
+                ch.section_id,
+                ch.unit_id,
+                ch.unit_title,
+                ch.section_no,
+                ch.section_title,
+            )
+            parent_sections[ch.section_id].clause_ids.append(ch.chunk_id)
+            if parent_sections[ch.section_id].text:
+                parent_sections[ch.section_id].text += "\n\n" + ch.raw_text
+            else:
+                parent_sections[ch.section_id].text = ch.raw_text
+
+        # Удаляем пустые разделы, из которых все короткие вводные чанки перетекли в соседние
+        active_sections = [
+            sec for sec in parent_sections.values() if sec.text.strip()
+        ]
+
+        # 3. Двустороннее перекрытие соседних чанков (~12% конца предыдущего и ~12% начала следующего)
+        core_texts = [ch.raw_text for ch in chunks]
         for i, ch in enumerate(chunks):
-            if i > 0 and chunks[i - 1].section_id == ch.section_id:
+            if ch.zone == "meta":
+                ch.embed_text = self._build_embed_text(meta, ch)
+                continue
+
+            is_compact_zone = ch.zone in ("table", "form")
+            max_ov = 48 if is_compact_zone else MAX_OVERLAP_CHARS
+            min_ov = 24 if is_compact_zone else MIN_OVERLAP_CHARS
+
+            prev_overlap = ""
+            if (
+                i > 0
+                and chunks[i - 1].zone != "meta"
+                and chunks[i - 1].unit_id == ch.unit_id
+            ):
+                prev_overlap = self._extract_tail_overlap(
+                    core_texts[i - 1],
+                    ratio=self.overlap_ratio,
+                    min_chars=min_ov,
+                    max_chars=max_ov,
+                )
+
+            next_overlap = ""
+            if (
+                i + 1 < len(chunks)
+                and chunks[i + 1].zone != "meta"
+                and chunks[i + 1].unit_id == ch.unit_id
+            ):
+                next_overlap = self._extract_head_overlap(
+                    core_texts[i + 1],
+                    ratio=self.overlap_ratio,
+                    min_chars=min_ov,
+                    max_chars=max_ov,
+                )
+
+            parts: list[str] = []
+            if prev_overlap:
+                parts.append(f"...{prev_overlap}")
+            parts.append(core_texts[i])
+            if next_overlap:
+                parts.append(f"{next_overlap}...")
+
+            ch.raw_text = "\n".join(parts)
+            ch.roles = extract_roles(ch.raw_text)
+            ch.embed_text = self._build_embed_text(meta, ch)
+
+        # 4. Связываем prev_id и next_id между соседними чанками внутри одной единицы (unit_id)
+        for i, ch in enumerate(chunks):
+            if ch.zone == "meta":
+                continue
+            if (
+                i > 0
+                and chunks[i - 1].zone != "meta"
+                and chunks[i - 1].unit_id == ch.unit_id
+            ):
                 ch.prev_id = chunks[i - 1].chunk_id
-            if i + 1 < len(chunks) and chunks[i + 1].section_id == ch.section_id:
+            if (
+                i + 1 < len(chunks)
+                and chunks[i + 1].zone != "meta"
+                and chunks[i + 1].unit_id == ch.unit_id
+            ):
                 ch.next_id = chunks[i + 1].chunk_id
 
-        return chunks, list(parent_sections.values())
+        return chunks, active_sections

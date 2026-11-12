@@ -377,7 +377,15 @@ class XlsxParser:
                             val_grid[r - 1][c - 1] = top_val
 
             # Case 1: Large hierarchical reference table (Финансовая структура 2026)
-            if "фин" in meta.file_name.lower() or max_r > 200:
+            header_sample = " ".join(
+                " ".join(r[:10]) for r in val_grid[:6]
+            ).lower()
+            is_cfo_sheet = (
+                "фин" in meta.file_name.lower()
+                or meta.doc_id == "app_3614_1_2025_xlsx"
+                or ("цфо" in header_sample and "уровень" in header_sample)
+            )
+            if is_cfo_sheet:
                 blocks.extend(self._parse_cfo_hierarchy(val_grid, sheet_name))
             else:
                 # Case 2: Cost estimate templates (Бланк сметы РЦНИ / новая смета 2019)
@@ -489,21 +497,21 @@ class XlsxParser:
                 dedup_row: list[str] = []
                 for item in non_empty_vals:
                     if not dedup_row or dedup_row[-1] != item:
-                        dedup_row.append(item)
-                lines.append(" | ".join(dedup_row[:8]))
+                        dedup_row.append(item[:110])
+                lines.append(" | ".join(dedup_row[:6]))
 
         if formulas_found:
             lines.append(
                 "Ключевые расчётные формулы и коэффициенты в бланке сметы: "
-                + "; ".join(formulas_found[:20])
+                + "; ".join(formulas_found[:6])
             )
 
-        # Split into 900-char form blocks so nothing gets truncated
+        # Split into compact form blocks (<= 380 chars) so e5-large never truncates >512 tokens
         blocks: list[ParsedBlock] = []
         chunk_lines: list[str] = [lines[0]]
         curr_len = len(lines[0])
         for line in lines[1:]:
-            if curr_len + len(line) > 950 and len(chunk_lines) > 2:
+            if curr_len + len(line) > 380 and len(chunk_lines) > 1:
                 blocks.append(
                     ParsedBlock(
                         block_type="form",

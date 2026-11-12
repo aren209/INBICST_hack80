@@ -93,8 +93,8 @@ class GlossaryManager:
             encoding="utf-8",
         )
 
-    def expand_text(self, text: str) -> str:
-        """Append bidirectional glossary expansions for abbreviations/terms found in text."""
+    def extract_expansions(self, text: str) -> list[str]:
+        """Return bidirectional glossary expansions for abbreviations/terms found in text."""
         upper_text = text.upper()
         lower_text = text.lower()
         expansions: list[str] = []
@@ -105,7 +105,11 @@ class GlossaryManager:
                     expansions.append(f"{abbr} ({full_term})")
             elif full_term.lower() in lower_text:
                 expansions.append(f"{abbr} ({full_term})")
+        return expansions
 
+    def expand_text(self, text: str) -> str:
+        """Append bidirectional glossary expansions for abbreviations/terms found in text."""
+        expansions = self.extract_expansions(text)
         if not expansions:
             return text
         return f"{text}\n[Термины: {'; '.join(expansions)}]"

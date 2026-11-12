@@ -112,14 +112,17 @@ class HybridRetriever:
             using="dense",
             query_filter=base_filter,
             search_params=models.SearchParams(exact=True),
-            limit=prefetch_limit,
+            limit=max(prefetch_limit * 2, 60),
             with_payload=True,
         )
         dense_scores: dict[str, float] = {}
-        for pt in dense_res.points:
+        for idx, pt in enumerate(dense_res.points):
             cid = (pt.payload or {}).get("chunk_id", str(pt.id))
             dense_scores[cid] = float(pt.score)
-        max_dense_score = max(dense_scores.values(), default=0.0)
+        max_dense_score = max(
+            (float(pt.score) for pt in dense_res.points[:prefetch_limit]),
+            default=0.0,
+        )
 
         # 2. Sparse BM25 search to check lexical overlap
         sparse_hits_count = 0
@@ -162,12 +165,27 @@ class HybridRetriever:
             with_payload=True,
         )
 
-        # 4. Version-aware soft boosting (active docs get +12% RRF boost, while keeping superseded visible)
+        # 4. Version-aware soft boosting + semantic verification gate
+        # Active docs get +12% RRF boost, draft docs get +4%, superseded get 0.94.
+        # Chunks that missed the dense semantic pool (or fall far below threshold)
+        # are penalized so a single-word BM25 match from an unrelated regulation
+        # never outranks semantically relevant clauses.
         scored_points: list[tuple[float, models.ScoredPoint]] = []
         for pt in rrf_res.points:
             pl = pt.payload or {}
+            cid = pl.get("chunk_id", str(pt.id))
             status = pl.get("status", "active")
-            boost = 1.12 if status == "active" else 0.96
+            if status == "active":
+                boost = 1.12
+            elif status == "draft":
+                boost = 1.04
+            else:
+                boost = 0.94
+
+            d_score = dense_scores.get(cid, 0.0)
+            if d_score == 0.0 or d_score < (self.dense_abstain_threshold - 0.015):
+                boost *= 0.25
+
             scored_points.append((float(pt.score) * boost, pt))
 
         scored_points.sort(key=lambda x: x[0], reverse=True)
@@ -181,7 +199,25 @@ class HybridRetriever:
             if (pt.payload or {}).get("zone", "body") not in NON_ANSWER_ZONES
         ]
         selected = answer_points[:top_k]
-        alert_points = scored_points[: max(top_k * 3, 24)]
+
+        # Собираем множества doc_id, попавших в итоговый ответ, и связанных с ними
+        # версий/приложений, чтобы не показывать ложные алерты от случайных кандидатов.
+        relevant_alert_doc_ids: set[str] = set()
+        for _, pt in selected:
+            pl = pt.payload or {}
+            did = pl.get("doc_id", "")
+            if did:
+                relevant_alert_doc_ids.add(did)
+            for ref_key in ("supersedes", "superseded_by", "related_docs"):
+                for ref_id in pl.get(ref_key) or []:
+                    if ref_id:
+                        relevant_alert_doc_ids.add(str(ref_id))
+
+        alert_points = [
+            (score, pt)
+            for score, pt in scored_points[: max(top_k * 3, 24)]
+            if (pt.payload or {}).get("doc_id", "") in relevant_alert_doc_ids
+        ]
 
         hits: list[RetrievedChunk] = []
         version_alerts: list[str] = []
