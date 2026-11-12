@@ -22,12 +22,12 @@ def test_chunks_and_sections_exist() -> None:
     chunks = json.loads(CHUNKS_DUMP_PATH.read_text(encoding="utf-8"))
     sections = json.loads(SECTIONS_STORE_PATH.read_text(encoding="utf-8"))
 
-    assert len(chunks) >= 200, f"Expected >= 200 chunks across 20 docs, got {len(chunks)}"
+    assert len(chunks) >= 600, f"Expected >= 600 chunks across 20 docs, got {len(chunks)}"
     assert len(sections) >= 40, f"Expected >= 40 parent sections, got {len(sections)}"
 
-    # Check all 20 files are represented
+    # Check all files are represented (>= 20: новый документ не должен ломать тест)
     file_names = {c["file_name"] for c in chunks}
-    assert len(file_names) == 20, f"Expected all 20 files represented, got {len(file_names)}"
+    assert len(file_names) >= 20, f"Expected all 20 files represented, got {len(file_names)}"
 
     # Check zero approval sheets leaked into chunks
     approval_chunks = [c for c in chunks if c["zone"] == "approval"]
@@ -75,7 +75,7 @@ def test_qdrant_collection_and_hybrid_search() -> None:
     client = QdrantClient(url=QDRANT_URL)
     assert client.collection_exists(QDRANT_COLLECTION_NAME)
     count_res = client.count(collection_name=QDRANT_COLLECTION_NAME, exact=True)
-    assert count_res.count >= 200
+    assert count_res.count >= 600
 
     retriever = HybridRetriever()
 
@@ -83,8 +83,9 @@ def test_qdrant_collection_and_hybrid_search() -> None:
     r_fls = retriever.search("Каков порядок открытия финансового лицевого счета (ФЛС) в 1С:Документооборот?", top_k=6)
     assert not r_fls.abstain_recommended
     doc_ids = {h.doc_id for h in r_fls.hits}
-    assert "order_3065_1_2021" in doc_ids or "disp_700_2024" in doc_ids
+    assert "order_3065_1_2021" in doc_ids
     assert len(r_fls.version_alerts) >= 1
+    assert all(h.zone != "meta" for h in r_fls.hits), "meta-паспорт не должен попадать в ответ"
 
     # 2. Per diem (суточные) collision between 3699-1 and Регламент о командировании
     r_sut = retriever.search("Какой размер суточных при командировках по России для работников и студентов?", top_k=6)
@@ -99,6 +100,14 @@ def test_qdrant_collection_and_hybrid_search() -> None:
     assert any(h.doc_id == "reg_poselenie_2024" for h in r_pos.hits)
     assert len(r_pos.quality_alerts) >= 1
 
-    # 4. Out-of-domain question -> should recommend abstain
-    r_ood = retriever.search("Как приготовить пиццу Маргарита в духовке и сколько грамм сыра моцарелла нужно?", top_k=4)
-    assert r_ood.abstain_recommended, f"Expected abstain on out-of-domain query, got max_dense={r_ood.max_dense_score}"
+    # 4. Out-of-domain questions -> should recommend abstain, even if BM25 находит общие слова
+    for query in (
+        "Как приготовить пиццу Маргарита в духовке и сколько грамм сыра моцарелла нужно?",
+        "Как оформить загранпаспорт?",
+        "Сколько стоит билет на поезд Москва-Казань?",
+    ):
+        r_ood = retriever.search(query, top_k=4)
+        assert r_ood.abstain_recommended, (
+            f"Expected abstain on out-of-domain query {query!r}, "
+            f"got max_dense={r_ood.max_dense_score}"
+        )

@@ -10,6 +10,7 @@ from qdrant_client import QdrantClient, models
 from src.chunking.hierarchical_chunker import ChunkRecord, ParentSectionRecord
 from src.config import (
     CHUNKS_DUMP_PATH,
+    DENSE_BATCH_SIZE,
     QDRANT_COLLECTION_NAME,
     QDRANT_URL,
     SECTIONS_STORE_PATH,
@@ -93,7 +94,7 @@ class QdrantIndexer:
 
         # 2. Compute local Dense embeddings (multilingual-e5-large)
         dense_vectors = self.dense_embedder.embed_passages(
-            embed_texts, batch_size=32
+            embed_texts, batch_size=DENSE_BATCH_SIZE
         )
         dense_dim = len(dense_vectors[0])
 

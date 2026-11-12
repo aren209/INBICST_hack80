@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import zlib
 from collections import Counter
@@ -52,19 +53,34 @@ class LocalDenseEmbedder:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.is_e5 = "e5" in model_name.lower()
-        self.model = TextEmbedding(
-            model_name=self.model_name,
-            cache_dir=str(self.cache_dir),
+        specific_model_path = os.getenv("DENSE_MODEL_PATH")
+        model_kwargs = {
+            "model_name": self.model_name,
+            "cache_dir": str(self.cache_dir),
+        }
+        if specific_model_path:
+            model_kwargs["specific_model_path"] = specific_model_path
+        threads = int(os.getenv("DENSE_THREADS", "0"))
+        if threads > 0:
+            model_kwargs["threads"] = threads
+        self.model = TextEmbedding(**model_kwargs)
+        self.dim = (
+            1024
+            if "large" in model_name.lower() or "bge-m3" in model_name.lower()
+            else 768
+            if "mpnet" in model_name.lower()
+            else 384
         )
-        self.dim = 1024 if "large" in model_name.lower() or "bge-m3" in model_name.lower() else 384
 
     def embed_passages(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
         cache: dict[str, np.ndarray] = {}
         if DENSE_VEC_CACHE_PATH.exists():
             try:
-                loaded = np.load(str(DENSE_VEC_CACHE_PATH))
-                for k in loaded.files:
-                    cache[k] = loaded[k]
+                # Закрываем NpzFile: на Windows открытый read-handle
+                # блокирует перезапись этого же файла.
+                with np.load(str(DENSE_VEC_CACHE_PATH)) as loaded:
+                    for k in loaded.files:
+                        cache[k] = loaded[k]
             except Exception:
                 pass
 
@@ -87,7 +103,11 @@ class LocalDenseEmbedder:
                     arr = arr / norm
                 cache[hashes[idx]] = arr
             DENSE_VEC_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(str(DENSE_VEC_CACHE_PATH), **cache)
+            # Атомарная замена: не перезаписываем npz, пока его кто-то читает,
+            # и не оставляем недописанный файл при падении.
+            tmp_cache_path = DENSE_VEC_CACHE_PATH.with_suffix(".tmp.npz")
+            np.savez_compressed(str(tmp_cache_path), **cache)
+            os.replace(tmp_cache_path, DENSE_VEC_CACHE_PATH)
 
         out: list[list[float]] = [cache[h].tolist() for h in hashes]
         if out:

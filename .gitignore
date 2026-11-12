@@ -4,6 +4,12 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+pytest-cache-files-*/
+
+# Local env
+.env
+.streamlit/
+.debug_tmp/
 
 # Local downloaded HuggingFace ONNX weights (>2 GB, auto-downloaded on first run)
 models_cache/

@@ -8,6 +8,9 @@ from typing import Any
 from qdrant_client import QdrantClient, models
 
 from src.config import (
+    DENSE_ABSTAIN_THRESHOLD,
+    NON_ANSWER_ZONES,
+    PARENT_SECTION_MAX_CHARS,
     QDRANT_COLLECTION_NAME,
     QDRANT_URL,
     SECTIONS_STORE_PATH,
@@ -66,7 +69,7 @@ class HybridRetriever:
         dense_embedder: LocalDenseEmbedder | None = None,
         sparse_bm25: LocalSparseBM25 | None = None,
         sections_path: Path = SECTIONS_STORE_PATH,
-        dense_abstain_threshold: float = 0.785,
+        dense_abstain_threshold: float = DENSE_ABSTAIN_THRESHOLD,
     ) -> None:
         self.client = QdrantClient(url=qdrant_url, timeout=30)
         self.collection_name = collection_name
@@ -155,7 +158,7 @@ class HybridRetriever:
             collection_name=self.collection_name,
             prefetch=prefetches,
             query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=top_k * 2,
+            limit=max(top_k * 3, 24),
             with_payload=True,
         )
 
@@ -168,7 +171,17 @@ class HybridRetriever:
             scored_points.append((float(pt.score) * boost, pt))
 
         scored_points.sort(key=lambda x: x[0], reverse=True)
-        selected = scored_points[:top_k]
+
+        # Служебные «паспорта» документов (zone=meta) и листы согласования
+        # оставляем в кандидатах для алертов, но не отдаём как ответные чанки:
+        # иначе короткий паспорт с названием/версией вытесняет конкретный пункт.
+        answer_points = [
+            (score, pt)
+            for score, pt in scored_points
+            if (pt.payload or {}).get("zone", "body") not in NON_ANSWER_ZONES
+        ]
+        selected = answer_points[:top_k]
+        alert_points = scored_points[: max(top_k * 3, 24)]
 
         hits: list[RetrievedChunk] = []
         version_alerts: list[str] = []
@@ -176,27 +189,32 @@ class HybridRetriever:
         seen_version_notes: set[str] = set()
         seen_quality_notes: set[str] = set()
 
+        # Алерты собираем по широкому пулу кандидатов, чтобы предупреждение
+        # о версии/дефекте не терялось, даже если паспорт не попал в ответ.
+        for _, pt in alert_points:
+            pl = pt.payload or {}
+            v_note = pl.get("version_note", "")
+            if v_note and v_note not in seen_version_notes:
+                seen_version_notes.add(v_note)
+                version_alerts.append(f"[{pl.get('doc_title')}]: {v_note}")
+
+            q_warn = pl.get("quality_warning", "")
+            if q_warn and q_warn not in seen_quality_notes:
+                seen_quality_notes.add(q_warn)
+                quality_alerts.append(f"[{pl.get('doc_title')}]: {q_warn}")
+
         for adj_score, pt in selected:
             pl = pt.payload or {}
             cid = pl.get("chunk_id", str(pt.id))
             sec_id = pl.get("section_id", "")
             parent_text = ""
             if expand_parent_section and sec_id in self.sections_store:
-                parent_text = self.sections_store[sec_id].get("text", "")[:3500]
+                parent_text = self.sections_store[sec_id].get("text", "")[
+                    :PARENT_SECTION_MAX_CHARS
+                ]
 
             v_note = pl.get("version_note", "")
-            if v_note and v_note not in seen_version_notes:
-                seen_version_notes.add(v_note)
-                version_alerts.append(
-                    f"[{pl.get('doc_title')}]: {v_note}"
-                )
-
             q_warn = pl.get("quality_warning", "")
-            if q_warn and q_warn not in seen_quality_notes:
-                seen_quality_notes.add(q_warn)
-                quality_alerts.append(
-                    f"[{pl.get('doc_title')}]: {q_warn}"
-                )
 
             hits.append(
                 RetrievedChunk(
@@ -225,19 +243,16 @@ class HybridRetriever:
                 )
             )
 
-        # 5. Abstain ("нет ответа в базе") check
-        abstain = False
+        # 5. Abstain ("нет ответа в базе") check.
+        # Порог — основной сигнал: e5-large даёт 0.79–0.80 даже на внекорпусных
+        # вопросах, поэтому одного lexical_hits недостаточно (BM25 всегда
+        # возвращает top-N при любом общем слове).
+        abstain = max_dense_score < self.dense_abstain_threshold
         abstain_reason = ""
-        if max_dense_score < self.dense_abstain_threshold and sparse_hits_count == 0:
-            abstain = True
+        if abstain:
             abstain_reason = (
-                f"Низкая семантическая близость ({max_dense_score:.3f} < {self.dense_abstain_threshold}) "
-                "и отсутствие ключевых терминов запроса во внутренних регламентах МФТИ."
-            )
-        elif max_dense_score < (self.dense_abstain_threshold - 0.025):
-            abstain = True
-            abstain_reason = (
-                f"Семантическая близость ниже порога достоверности ({max_dense_score:.3f}). "
+                f"Семантическая близость ниже порога достоверности "
+                f"({max_dense_score:.3f} < {self.dense_abstain_threshold}). "
                 "В предоставленной базе регламентов нет релевантного документа по данной теме."
             )
 

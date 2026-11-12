@@ -13,7 +13,7 @@ from docx.oxml.text.paragraph import CT_P
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph as DocxParagraph
 
-from src.config import TABLE_SLICE_ROWS
+from src.config import OCR_SMALL_NATIVE_TEXT_CHARS, TABLE_SLICE_ROWS
 from src.ingestion.ocr_engine import OcrEngine
 from src.ingestion.registry import DocumentMetadata, DocumentRegistry
 
@@ -24,6 +24,7 @@ class ParsedBlock:
     text: str
     page_no: int = 1
     zone: str = "body"  # "body" | "approval" | "table" | "form"
+    source: str = "native"  # "native" | "ocr"
     is_bold: bool = False
     style_name: str = ""
     table_header: list[str] = field(default_factory=list)
@@ -244,7 +245,19 @@ class PdfParser:
                 native_text = page.get_text("text") or ""
                 printable_chars = len(re.sub(r"\s+", "", native_text))
 
-                if printable_chars >= 60 and page_no not in meta.rotated_pages:
+                # Страницы-сканы иногда имеют тонкий текстовый слой (колонтитул/хвост
+                # страницы). Если текста мало, а на странице есть картинка — OCR
+                # обязателен, иначе теряются шапка приказа и начало разделов.
+                has_images = bool(page.get_images(full=True))
+                native_text_is_incomplete = (
+                    has_images and printable_chars < OCR_SMALL_NATIVE_TEXT_CHARS
+                )
+
+                if (
+                    printable_chars >= 60
+                    and page_no not in meta.rotated_pages
+                    and not native_text_is_incomplete
+                ):
                     cleaned = clean_pdf_text(native_text)
                     for line in cleaned.splitlines():
                         s = line.strip()
@@ -307,6 +320,7 @@ class PdfParser:
                                     text=s,
                                     page_no=page_no,
                                     zone="body",
+                                    source="ocr",
                                 )
                             )
 

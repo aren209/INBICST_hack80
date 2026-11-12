@@ -19,7 +19,7 @@ DEFAULT_MIPT_GLOSSARY: dict[str, str] = {
     "ФЭУ": "финансово-экономическое управление",
     "УИТ": "управление информационных технологий",
     "ЦОД": "центр обработки данных",
-    "ЭБ": "электробезопасность",
+    "ЭБ": "электронный бюджет",
     "РНФ": "Российский научный фонд",
     "РЦНИ": "Российский центр научной информации (РФФИ)",
     "1С:ДО": "система электронного документооборота 1С:Документооборот",
@@ -40,21 +40,50 @@ class GlossaryManager:
         r"\b([А-ЯЁ]{2,8}(?::[А-ЯЁ]{2,4})?)\s*[—–-]\s*([а-яА-ЯёЁ0-9\s,()-]{6,100})"
     )
 
+    # Не пытаемся «выучить» общеупотребительные/табличные сокращения: на таблицах
+    # ЦФО и OCR-мусоре regex иначе рождает определения вида
+    # «МФТИ — по финансодержателю Серов П».
+    NON_LEARNABLE_ABBRS = {"МФТИ", "ФИЗТЕХ", "ИТ", "РС", "ФНТИ", "КМО"}
+    BAD_DEFINITION_RE = re.compile(
+        r"(финансодержател|соответственно|ХХХХ|УЧЕБНИК|справа|слева|\d|[|;])",
+        re.IGNORECASE,
+    )
+
     def __init__(self, glossary_path: Path = GLOSSARY_PATH) -> None:
         self.glossary_path = glossary_path
         self.abbr_to_full: dict[str, str] = dict(DEFAULT_MIPT_GLOSSARY)
         if self.glossary_path.exists():
             try:
                 loaded = json.loads(self.glossary_path.read_text(encoding="utf-8"))
-                self.abbr_to_full.update(loaded)
+                # Загружаем только валидные записи: в старых версиях файла
+                # могли остаться мусорные определения.
+                for abbr, definition in loaded.items():
+                    if self._is_valid_learned_pair(str(abbr), str(definition)):
+                        self.abbr_to_full[str(abbr).upper()] = str(definition)
             except Exception:
                 pass
+
+    @classmethod
+    def _is_valid_learned_pair(cls, abbr: str, definition: str) -> bool:
+        abbr = abbr.strip().upper()
+        definition = definition.strip()
+        if abbr in cls.NON_LEARNABLE_ABBRS:
+            return False
+        if len(abbr) < 2 or len(definition) < 6:
+            return False
+        if cls.BAD_DEFINITION_RE.search(definition):
+            return False
+        if re.search(r"[А-ЯЁ]\.", definition):  # инициалы «Серов П.»
+            return False
+        return True
 
     def learn_from_text(self, text: str) -> None:
         for m in self.ABBR_DEF_PATTERN.finditer(text):
             abbr = m.group(1).strip().upper()
             definition = re.sub(r"\s+", " ", m.group(2)).strip(" .;,")
-            if len(abbr) >= 2 and len(definition) >= 6 and abbr not in self.abbr_to_full:
+            if not self._is_valid_learned_pair(abbr, definition):
+                continue
+            if abbr not in self.abbr_to_full:
                 self.abbr_to_full[abbr] = definition
 
     def save(self) -> None:

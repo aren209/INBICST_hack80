@@ -81,6 +81,16 @@ class OcrEngine:
             except Exception:
                 pass
 
+        if not self.api_key:
+            self.api_errors.append(
+                f"OCR_SPACE_API_KEY is not set: cannot OCR {file_name} p.{page_no}. "
+                "Page is skipped unless a verified fallback exists."
+            )
+            verified_file = self.verified_dir / f"{file_sha256}_p{page_no:03d}.txt"
+            if verified_file.exists():
+                return verified_file.read_text(encoding="utf-8").strip()
+            return ""
+
         # Render compressed JPEG (< 850 KB for OCR.space Free Plan)
         jpeg_bytes = self.render_page_jpeg(page, rotate_cw_degrees=rotate_cw_degrees)
 

@@ -112,25 +112,47 @@ class HierarchicalChunker:
         r"Общие\s+положения"
         r"|Термины(?:,\s*определения)?\s+и\s+сокращения"
         r"|Определения\s+и\s+сокращения"
-        r"|Порядок\s+[а-яА-ЯёЁ\s,-]{4,90}"
-        r"|Правила\s+[а-яА-ЯёЁ\s,-]{4,90}"
-        r"|Требования\s+к\s+[а-яА-ЯёЁ\s,-]{4,90}"
+        r"|Порядок\s+[а-яА-ЯёЁ\s,-]{4,220}"
+        r"|Правила\s+[а-яА-ЯёЁ\s,-]{4,220}"
+        r"|Требования\s+к\s+[а-яА-ЯёЁ\s,-]{4,220}"
         r"|Ответственность(?:\s+сторон|\s+за\s+нарушение)?"
         r"|Заключительные\s+положения"
-        r"|Организация\s+[а-яА-ЯёЁ\s,-]{4,90}"
-        r"|Регламент\s+работы\s+[а-яА-ЯёЁ\s,-]{4,90}"
-        r"|Сроки\s+и\s+условия\s+[а-яА-ЯёЁ\s,-]{4,90}"
-        r"|Оформление\s+[а-яА-ЯёЁ\s,-]{4,90}"
-        r"|Финансовое\s+обеспечение\s+[а-яА-ЯёЁ\s,-]{4,90}"
-        r"|Возмещение\s+расходов\s+[а-яА-ЯёЁ\s,-]{4,90}"
+        r"|Организация\s+[а-яА-ЯёЁ\s,-]{4,220}"
+        r"|Регламент\s+работы\s+[а-яА-ЯёЁ\s,-]{4,220}"
+        r"|Сроки\s+и\s+условия\s+[а-яА-ЯёЁ\s,-]{4,220}"
+        r"|Оформление\s+[а-яА-ЯёЁ\s,-]{4,220}"
+        r"|Финансовое\s+обеспечение\s+[а-яА-ЯёЁ\s,-]{4,220}"
+        r"|Возмещение\s+расходов\s+[а-яА-ЯёЁ\s,-]{4,220}"
         r")$",
         re.IGNORECASE,
     )
 
     # Section heading: e.g. "1. Общие положения" or "Раздел 2. Порядок открытия ФЛС"
     SECTION_RE = re.compile(
-        r"^(?:Раздел\s+)?(\d{1,2}|[IVX]{1,4})\.?\s+([А-ЯЁ][а-яА-ЯёЁ0-9\s,()-]{3,110})$"
+        r"^(?:Раздел\s+)?(\d{1,2}|[IVX]{1,4})\.?\s+([А-ЯЁ][а-яА-ЯёЁ0-9\s,()«»\"':/–—-]{3,220})$"
     )
+
+    # Первое слово заголовка раздела. Нужно, чтобы длинный «2. Порядок открытия...»
+    # не принимали за пункт 2, но «2. Настоящий Регламент...» осталось пунктом.
+    SECTION_TITLE_STARTERS = {
+        "общие", "порядок", "правила", "требования", "организация", "сроки",
+        "оформление", "финансовое", "возмещение", "ответственность",
+        "заключительные", "термины", "определения", "цели", "задачи", "состав",
+        "структура", "контроль", "учет", "учёт", "взаимодействие", "обеспечение",
+        "эксплуатация", "бронирование", "поселение", "командирование", "подбор",
+        "бюджет", "бюджетирование", "формирование", "корректировка",
+        "согласование", "утверждение", "предмет", "область", "обязанности",
+        "права", "условия", "оплата", "материальная", "дисциплинарная",
+        "техника", "охрана", "пожарная", "электробезопасность", "доступ",
+        "режим", "пропускной", "информационная", "безопасность",
+        "персональные", "данные", "делопроизводство", "документооборот",
+        "архив", "закупки", "инвестиции", "заимствование", "гарантии",
+        "риски", "мониторинг", "отчетность", "отчётность", "аудит", "налоги",
+        "бухгалтерский", "управленческий", "кадры", "персонал", "найм",
+        "адаптация", "обучение", "развитие", "мотивация", "премирование",
+        "социальная", "жилищная", "общежитие", "питание", "транспорт",
+        "связь", "ит", "цод", "порядок",
+    }
 
     # Multi-level clause: e.g. "1.1.", "2.3.1", "2.6." (protecting against dates like 25.11.2021)
     MULTI_CLAUSE_RE = re.compile(
@@ -150,7 +172,7 @@ class HierarchicalChunker:
 
     def _is_section_header(self, block: ParsedBlock) -> tuple[str, str] | None:
         text = block.text.strip()
-        if len(text) > 130 or "\n" in text:
+        if len(text) > 260 or "\n" in text:
             return None
         if self.DATE_PREFIX_RE.match(text):
             return None
@@ -182,11 +204,17 @@ class HierarchicalChunker:
                 "приказываю",
             )
             first_word = sec_title.split()[0].lower().rstrip(".,:")
+            is_section_starter = first_word in self.SECTION_TITLE_STARTERS
             if (
-                len(sec_title) <= 95
+                len(sec_title) <= 220
                 and not sec_title.endswith(";")
                 and first_word not in action_verbs
-                and (block.is_bold or "Heading" in block.style_name or len(sec_title) <= 65)
+                and (
+                    is_section_starter
+                    or block.is_bold
+                    or "Heading" in block.style_name
+                    or len(sec_title) <= 65
+                )
             ):
                 return (sec_no, sec_title)
         return None
@@ -215,9 +243,11 @@ class HierarchicalChunker:
     def chunk_document(
         self, meta: DocumentMetadata, blocks: list[ParsedBlock]
     ) -> tuple[list[ChunkRecord], list[ParentSectionRecord]]:
-        # Learn any new abbreviations from document blocks
+        # Learn any new abbreviations from document blocks.
+        # Таблицы и OCR-обрывки не используем: там regex «АББР — текст» ловит
+        # ячейки ЦФО и рождает мусорные определения.
         for b in blocks:
-            if b.zone != "approval":
+            if b.zone != "approval" and b.block_type == "paragraph":
                 self.glossary.learn_from_text(b.text)
 
         chunks: list[ChunkRecord] = []
@@ -419,6 +449,20 @@ class HierarchicalChunker:
             # Table or Form block -> flush active text clause and emit dedicated table/form chunk
             if block.block_type in ("table", "form"):
                 flush_clause()
+                # Если таблица/форма идёт до первого раздела, не подписываем её
+                # «Общими положениями»: создаём отдельный раздел для цитирования.
+                if section_title == "Общие положения и вводная часть":
+                    sec_idx += 1
+                    section_no = "Т" if block.block_type == "table" else "Ф"
+                    section_title = (
+                        "Табличная часть"
+                        if block.block_type == "table"
+                        else "Форма / бланк"
+                    )
+                    section_id = f"{meta.doc_id}::{unit_id}::s{sec_idx:02d}"
+                    register_section(
+                        section_id, unit_id, unit_title, section_no, section_title
+                    )
                 curr_zone = block.zone
                 curr_clause_no = (
                     f"таблица (стр. {block.page_no})"
