@@ -149,6 +149,35 @@ docker compose --profile debug up -d --build
 docker compose run --rm debug python scripts/run_ingestion.py
 ```
 
+## Что именно уходит в эмбеддинг
+
+В `chunks_dump.json` у каждого чанка два разных текста:
+
+- `raw_text` — исходный пункт; его показываем в ответе/цитате;
+- `embed_text` — то, что реально уходит в dense-модель: служебный
+  breadcrumb (`[Документ … | Раздел … | Пункт … | Темы …]`) + `raw_text`
+  + расшифровки аббревиатур.
+
+Для dense добавляется префикс модели: `"passage: " + embed_text`; для запроса —
+`"query: " + query`. Для BM25 используется тот же `embed_text`, но без префикса
+и с лемматизацией.
+
+Посмотреть точный вход и число токенов:
+
+```bash
+python scripts/inspect_embedding_input.py \
+  --chunk-id "order_794_1_2023::u01_main::s01::c005"
+
+python scripts/inspect_embedding_input.py --contains "Утвердить бланки смет"
+python scripts/inspect_embedding_input.py --stats
+```
+
+Важно: токены надо считать токенизатором модели (`tokenizer.json` e5-large), а не
+веб-токенизатором на tiktoken — у них разная BPE-разметка. На текущем дампе:
+медиана 218 токенов, 87 чанков ≤128, **54 чанка >512** и обрезаются моделью
+(в основном таблицы/формы). Короткий чанк — это нормально: единица поиска —
+пункт, а не раздел; контекст добавляет breadcrumb и parent-section.
+
 ## Отладочная форма
 
 Нужна, чтобы загрузить один файл и посмотреть, что получилось **после OCR** и
