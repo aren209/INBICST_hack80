@@ -1,25 +1,41 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 curl \
+# Install minimal system dependencies required by OpenCV / RapidOCR / pypdfium2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install --upgrade pip && pip install -r requirements.txt
+COPY requirements.txt /app/requirements.txt
+RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
-COPY . .
+# Pre-warm pymorphy3 Russian dictionary and RapidOCR v3 (PP-OCRv5 ESLAV MOBILE, use_cls=False)
+RUN python -c "\
+import pymorphy3; \
+morph = pymorphy3.MorphAnalyzer(); \
+assert morph.parse('приказов')[0].normal_form == 'приказ'; \
+from rapidocr import RapidOCR, EngineType, LangRec, ModelType, OCRVersion; \
+engine = RapidOCR(params={ \
+    'Global.use_cls': False, \
+    'Det.box_thresh': 0.3, \
+    'Rec.ocr_version': OCRVersion.PPOCRV5, \
+    'Rec.lang_type': LangRec.ESLAV, \
+    'Rec.model_type': ModelType.MOBILE, \
+}); \
+print('Pre-warmed pymorphy3 and RapidOCR PP-OCRv5 ESLAV successfully!') \
+"
 
-EXPOSE 8501
+COPY config/ /app/config/
+COPY src/ /app/src/
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost:8501/_stcore/health || exit 1
+RUN mkdir -p /app/data/uploads /app/data/ocr_cache /app/data/embed_cache /app/доки
 
-# По умолчанию — отладочная форма. Пайплайн запускается override-командой:
-# docker compose run --rm debug python scripts/run_ingestion.py
-CMD ["streamlit", "run", "debug_app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+EXPOSE 8000
+
+CMD ["uvicorn", "src.web.app:app", "--host", "0.0.0.0", "--port", "8000"]

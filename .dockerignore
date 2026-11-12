@@ -13,6 +13,9 @@ pytest-cache-files-*
 models_cache
 qdrant_storage
 qdrant_local_db
+data/qdrant_storage
+data/embed_cache
+data/uploads
 data/ocr_verified
 review_INBICST_hack80.md
 tools

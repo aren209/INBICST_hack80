@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>МФТИ Нормативный RAG V3 — Загрузчик, Реестр и Гибридный Поиск</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+
+  <!-- Top Navigation & System Health Header -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
+      <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+        <!-- Brand -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white font-bold text-lg shadow-sm">
+            ФТ
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h1 class="text-lg font-bold tracking-tight text-slate-900">МФТИ Нормативный RAG <span class="text-blue-600">V3</span></h1>
+              <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-blue-50 text-blue-700 border border-blue-200">Parent-Child + 12% Overlap</span>
+            </div>
+            <p class="text-xs text-slate-500">Навигатор по внутренним регламентам, приказам, сметам и структуре ЦФО</p>
+          </div>
+        </div>
+
+        <!-- System Health Indicators -->
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <div id="health-qdrant-pill" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700" title="Статус векторной БД Qdrant">
+            <span id="health-qdrant-dot" class="w-2 h-2 rounded-full bg-slate-400"></span>
+            <span class="font-medium">Qdrant:</span>
+            <span id="health-qdrant-text" class="font-mono-code">проверка...</span>
+          </div>
+
+          <div id="health-polza-pill" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700" title="Статус Polza AI (baai/bge-m3 + Qwen3-VL)">
+            <span id="health-polza-dot" class="w-2 h-2 rounded-full bg-slate-400"></span>
+            <span class="font-medium">Polza AI:</span>
+            <span id="health-polza-text" class="font-mono-code">...</span>
+          </div>
+
+          <div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700">
+            <span class="font-medium">Документов:</span>
+            <span id="health-docs-count" class="font-bold text-slate-900 font-mono-code">0</span>
+          </div>
+
+          <div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700">
+            <span class="font-medium">Parent-разделов:</span>
+            <span id="health-sections-count" class="font-bold text-slate-900 font-mono-code">0</span>
+          </div>
+
+          <a href="/docs" target="_blank" rel="noopener" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-medium transition">
+            <span>OpenAPI /docs</span>
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+          </a>
+        </div>
+      </div>
+
+      <!-- 3 Main SPA Tabs -->
+      <nav class="flex flex-wrap gap-1.5 mt-3 pt-2 border-t border-slate-100" aria-label="Разделы системы">
+        <button id="tab-btn-upload" data-tab="upload" class="tab-nav-btn inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white shadow-sm transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+          <span>Загрузка и синхронизация</span>
+        </button>
+
+        <button id="tab-btn-registry" data-tab="registry" class="tab-nav-btn inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          <span>Реестр документов и инспектор чанков</span>
+        </button>
+
+        <button id="tab-btn-search" data-tab="search" class="tab-nav-btn inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <span>Тест гибридного поиска (RAG Playground)</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+
+    <!-- =================================================================== -->
+    <!-- ВКЛАДКА 1: ЗАГРУЗКА И СИНХРОНИЗАЦИЯ                                  -->
+    <!-- =================================================================== -->
+    <section id="panel-upload" class="space-y-6">
+      <!-- Folder Sync Prominent Banner Card -->
+      <div class="bg-gradient-to-r from-blue-50 via-indigo-50 to-slate-50 rounded-2xl border border-blue-200 p-5 shadow-sm">
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div class="space-y-1">
+            <div class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-700">
+              <span>Пакетная инкрементальная синхронизация</span>
+            </div>
+            <h2 class="text-lg font-bold text-slate-900">Синхронизация рабочей папки <code class="px-1.5 py-0.5 rounded bg-white border border-blue-200 text-blue-700 font-mono-code text-base">доки/</code></h2>
+            <p class="text-sm text-slate-600 max-w-3xl">
+              Сканирует директорию <code class="font-mono-code text-xs">доки/</code> по контрольным суммам <strong>SHA-256</strong>, автоматически распознает новые и изменившиеся файлы (<code class="font-mono-code text-xs">.pdf</code>, <code class="font-mono-code text-xs">.docx</code>, <code class="font-mono-code text-xs">.xlsx</code>), строит двусторонний граф редакций приказов и выполняет кросс-файловую дедупликацию приложений.
+            </p>
+          </div>
+
+          <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+            <div class="flex flex-col gap-1.5 bg-white/90 px-3 py-2 rounded-xl border border-slate-200 text-xs">
+              <div class="flex items-center gap-2">
+                <label for="sync-ocr-backend" class="font-medium text-slate-600">Режим OCR:</label>
+                <select id="sync-ocr-backend" class="bg-slate-50 border border-slate-300 rounded-md px-2 py-1 text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="hybrid_vlm">hybrid_vlm (Qwen3-VL + RapidOCR)</option>
+                  <option value="local_rapidocr">local_rapidocr (Офлайн CPU)</option>
+                </select>
+              </div>
+              <label class="inline-flex items-center gap-2 cursor-pointer select-none text-slate-700">
+                <input type="checkbox" id="sync-force-reindex" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                <span>Принудительно переиндексировать все (force)</span>
+              </label>
+            </div>
+
+            <button id="btn-sync-folder" type="button" class="inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold text-sm shadow-md hover:shadow-lg transition cursor-pointer">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              <span>Синхронизировать папку доки/</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Two-column Upload + Live 6-stage Progress -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <!-- Left: Drag & Drop Multi-file Uploader + Metadata -->
+        <div class="lg:col-span-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col justify-between space-y-5">
+          <div class="space-y-4">
+            <div>
+              <h3 class="text-base font-bold text-slate-900">Загрузка новых документов в базу знаний</h3>
+              <p class="text-xs text-slate-500 mt-0.5">Перетащите один или несколько файлов (.pdf, .docx, .xlsx) и при необходимости укажите связи с действующими приказами</p>
+            </div>
+
+            <!-- Dropzone -->
+            <div id="upload-dropzone" class="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-6 text-center bg-slate-50/70 transition cursor-pointer">
+              <input id="upload-file-input" type="file" multiple accept=".pdf,.docx,.xlsx" class="hidden" />
+              <div class="w-12 h-12 rounded-full bg-blue-100 text-blue-600 mx-auto flex items-center justify-center mb-3">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+              </div>
+              <p class="text-sm font-semibold text-slate-800">Перетащите файлы сюда или <span class="text-blue-600 underline">выберите на компьютере</span></p>
+              <p class="text-xs text-slate-500 mt-1">Поддерживаются цифровые и сканированные PDF, приказы Word DOCX и таблицы/сметы Excel XLSX</p>
+            </div>
+
+            <!-- Selected Files List -->
+            <div id="upload-files-container" class="hidden space-y-1.5">
+              <div class="flex items-center justify-between text-xs font-semibold text-slate-600">
+                <span>Выбранные файлы (<span id="upload-files-count">0</span>):</span>
+                <button id="btn-clear-files" type="button" class="text-red-600 hover:underline">Очистить список</button>
+              </div>
+              <ul id="upload-files-list" class="max-h-36 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-lg bg-slate-50 text-xs"></ul>
+            </div>
+
+            <!-- Metadata Form Grid -->
+            <div class="pt-2 border-t border-slate-100">
+              <h4 class="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Опциональные метаданные и связи редакций</h4>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label for="upload-status" class="block font-medium text-slate-700 mb-1">Статус документа</label>
+                  <select id="upload-status" class="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="active">active — Действующий</option>
+                    <option value="superseded">superseded — Отменен / Утратил силу</option>
+                    <option value="superseded_template_reference">superseded_template_reference — Шаблон формул/КВР</option>
+                    <option value="draft">draft — Проект документа</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label for="upload-ocr-backend" class="block font-medium text-slate-700 mb-1">Движок OCR для сканов</label>
+                  <select id="upload-ocr-backend" class="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="hybrid_vlm">hybrid_vlm (Qwen3-VL + RapidOCR)</option>
+                    <option value="local_rapidocr">local_rapidocr (Локальный RapidOCR v3)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label for="upload-supersedes" class="block font-medium text-slate-700 mb-1">Отменяет приказ № (supersedes)</label>
+                  <input id="upload-supersedes" type="text" placeholder="напр.: 1469-1, 1465-1" class="w-full rounded-lg border border-slate-300 px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+
+                <div>
+                  <label for="upload-amends" class="block font-medium text-slate-700 mb-1">Изменяет приказ № (amends)</label>
+                  <input id="upload-amends" type="text" placeholder="напр.: 3065-1" class="w-full rounded-lg border border-slate-300 px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+
+                <div class="sm:col-span-2">
+                  <label for="upload-years" class="block font-medium text-slate-700 mb-1">Годы действия (applicable_years)</label>
+                  <input id="upload-years" type="text" placeholder="напр.: 2026-2028 или 2025, 2026" class="w-full rounded-lg border border-slate-300 px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+
+                <div class="sm:col-span-2">
+                  <label for="upload-version-note" class="block font-medium text-slate-700 mb-1">Комментарий к редакции (version_note)</label>
+                  <textarea id="upload-version-note" rows="2" placeholder="напр.: Вводит новую форму сметы Приложение 1а в 1С:ДО..." class="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                </div>
+
+                <div class="sm:col-span-2 pt-1">
+                  <label class="inline-flex items-center gap-2 cursor-pointer select-none text-slate-700 font-medium">
+                    <input id="upload-force-reindex" type="checkbox" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                    <span>Принудительно переиндексировать при совпадении SHA-256</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pt-3 border-t border-slate-100">
+            <button id="btn-upload-submit" type="button" class="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-slate-900 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition cursor-pointer">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+              <span>Загрузить и запустить индексацию</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Right: Live 6-stage Progress Bar + Counters + Event Log -->
+        <div class="lg:col-span-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="text-base font-bold text-slate-900">Конвейер индексации схемы V3 (6 стадий)</h3>
+              <p id="prog-status-subtitle" class="text-xs text-slate-500 mt-0.5">Ожидание запуска загрузки или синхронизации папки</p>
+            </div>
+            <span id="prog-task-badge" class="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">Ожидание</span>
+          </div>
+
+          <!-- 6-stage Visual Pipeline Stepper -->
+          <div id="pipeline-stages-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+            <div data-stage-idx="1" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
+              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">1</span>
+              <span class="font-medium text-slate-700 leading-tight">Предразбор</span>
+            </div>
+            <div data-stage-idx="2" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
+              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">2</span>
+              <span class="font-medium text-slate-700 leading-tight">OCR сканов</span>
+            </div>
+            <div data-stage-idx="3" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
+              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">3</span>
+              <span class="font-medium text-slate-700 leading-tight">Иерарх. чанкинг V3</span>
+            </div>
+            <div data-stage-idx="4" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
+              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">4</span>
+              <span class="font-medium text-slate-700 leading-tight">12% overlap</span>
+            </div>
+            <div data-stage-idx="5" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
+              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">5</span>
+              <span class="font-medium text-slate-700 leading-tight">bge-m3 + BM25</span>
+            </div>
+            <div data-stage-idx="6" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
+              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">6</span>
+              <span class="font-medium text-slate-700 leading-tight">Запись в Qdrant</span>
+            </div>
+          </div>
+
+          <!-- Progress Percentage Bar -->
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between text-xs">
+              <span id="prog-current-file" class="font-medium text-slate-700 truncate max-w-[78%]">Файл: —</span>
+              <span id="prog-percent-label" class="font-bold font-mono-code text-blue-700">0%</span>
+            </div>
+            <div class="w-full h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+              <div id="prog-bar-fill" class="h-full bg-blue-600 rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <!-- Live Counters -->
+          <div class="grid grid-cols-3 gap-2.5 text-center">
+            <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+              <div class="text-[11px] text-slate-500 font-medium">Parent-разделов</div>
+              <div id="prog-parent-count" class="text-lg font-bold text-slate-900 font-mono-code">0</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+              <div class="text-[11px] text-slate-500 font-medium">Child-чанков</div>
+              <div id="prog-chunk-count" class="text-lg font-bold text-blue-700 font-mono-code">0</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+              <div class="text-[11px] text-slate-500 font-medium">OCR-страниц</div>
+              <div id="prog-ocr-count" class="text-lg font-bold text-indigo-700 font-mono-code">0</div>
+            </div>
+          </div>
+
+          <!-- Live Event Log -->
+          <div class="flex-1 flex flex-col min-h-[210px]">
+            <div class="flex items-center justify-between text-xs mb-1.5">
+              <span class="font-semibold text-slate-600">Живой журнал событий индексации (SSE):</span>
+              <button id="btn-clear-log" type="button" class="text-slate-500 hover:text-slate-800">Очистить лог</button>
+            </div>
+            <div id="prog-event-log" class="terminal-log flex-1 bg-slate-900 text-slate-200 font-mono-code text-[11px] rounded-xl p-3 overflow-y-auto max-h-60 space-y-1 border border-slate-800">
+              <div class="text-slate-400">[Система] Конвейер готов к приему документов или синхронизации папки доки/...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- ВКЛАДКА 2: РЕЕСТР ДОКУМЕНТОВ И ИНСПЕКТОР ЧАНКОВ                     -->
+    <!-- =================================================================== -->
+    <section id="panel-registry" class="hidden space-y-5">
+      <!-- Indexing Report Summary Strip -->
+      <div id="registry-report-strip" class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-wrap items-center justify-between gap-4 text-xs">
+        <div class="flex flex-wrap items-center gap-4">
+          <div>
+            <span class="text-slate-500">Всего в реестре:</span>
+            <span id="reg-stat-total" class="ml-1 font-bold text-slate-900 text-sm font-mono-code">0</span>
+          </div>
+          <div class="h-4 w-px bg-slate-200"></div>
+          <div>
+            <span class="text-slate-500">Последний прогон:</span>
+            <span id="reg-stat-last-run" class="ml-1 font-medium text-slate-800">—</span>
+          </div>
+          <div class="h-4 w-px bg-slate-200"></div>
+          <div>
+            <span class="text-slate-500">Проиндексировано / Пропущено / Ошибок:</span>
+            <span id="reg-stat-counts" class="ml-1 font-mono-code font-semibold text-slate-800">0 / 0 / 0</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="btn-registry-sync-shortcut" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-semibold transition cursor-pointer">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            <span>Синхронизировать доки/</span>
+          </button>
+          <button id="btn-refresh-registry" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition cursor-pointer">
+            <span>Обновить таблицу</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Filter Bar -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-col sm:flex-row items-stretch sm:items-center gap-3 text-sm">
+        <div class="relative flex-1">
+          <svg class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <input id="reg-filter-search" type="text" placeholder="Фильтр по названию, имени файла, номеру приказа (напр. 794-1, 3065-1, КЗ)..." class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+
+        <select id="reg-filter-status" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="">Все статусы</option>
+          <option value="active">Действующие (active)</option>
+          <option value="superseded_template_reference">Шаблоны формул (superseded_template_reference)</option>
+          <option value="superseded">Отмененные (superseded)</option>
+          <option value="draft">Проекты (draft)</option>
+          <option value="error">С ошибкой (error)</option>
+        </select>
+
+        <select id="reg-filter-format" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="">Все форматы</option>
+          <option value="pdf">PDF</option>
+          <option value="docx">DOCX</option>
+          <option value="xlsx">XLSX</option>
+        </select>
+      </div>
+
+      <!-- Documents Table -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="min-w-full divide-y divide-slate-200 text-left text-xs">
+            <thead class="bg-slate-50 text-slate-600 uppercase text-[11px] tracking-wider font-semibold">
+              <tr>
+                <th class="px-4 py-3">Документ и файл</th>
+                <th class="px-3 py-3">№ и дата акта</th>
+                <th class="px-3 py-3 text-center">Формат</th>
+                <th class="px-3 py-3 text-center">Стр. / OCR</th>
+                <th class="px-3 py-3 text-center">Parent / Child</th>
+                <th class="px-3 py-3">Статус</th>
+                <th class="px-3 py-3">Граф редакций и дубли</th>
+                <th class="px-4 py-3 text-right">Действия</th>
+              </tr>
+            </thead>
+            <tbody id="registry-table-body" class="divide-y divide-slate-100 bg-white">
+              <tr>
+                <td colspan="8" class="px-4 py-10 text-center text-slate-400">Загрузка реестра документов...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- ВКЛАДКА 3: ТЕСТ ГИБРИДНОГО ПОИСКА (RAG PLAYGROUND)                  -->
+    <!-- =================================================================== -->
+    <section id="panel-search" class="hidden space-y-5">
+      <!-- Query Box & Preset Chips -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+        <div>
+          <h2 class="text-base font-bold text-slate-900">Песочница гибридного поиска RRF (Dense <code class="font-mono-code text-xs text-blue-700">baai/bge-m3</code> + Sparse <code class="font-mono-code text-xs text-indigo-700">BM25 pymorphy3</code>)</h2>
+          <p class="text-xs text-slate-500 mt-0.5">Проверяйте точность попадания в пункты, подтягивание чистых Parent-разделов, ко-ретривал изменений (<code class="font-mono-code">amends</code>) и детектор нерелевантных запросов (<code class="font-mono-code">Out-of-Scope</code>).</p>
+        </div>
+
+        <!-- Search Input Row -->
+        <form id="search-form" class="flex flex-col sm:flex-row gap-2.5">
+          <div class="relative flex-1">
+            <input id="search-query-input" type="text" required placeholder="Введите вопрос сотрудника МФТИ (например: за сколько месяцев подавать служебку на КЗ и на какую почту?)..." class="w-full pl-4 pr-10 py-3 rounded-xl border border-slate-300 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600" />
+            <button id="btn-clear-query" type="button" title="Очистить запрос" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <button id="btn-run-search" type="submit" class="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition cursor-pointer shrink-0">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <span>Найти нормы</span>
+          </button>
+        </form>
+
+        <!-- Quick Preset Chips -->
+        <div class="space-y-1.5">
+          <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Контрольные сценарии МФТИ (нажмите для быстрого теста):</div>
+          <div id="search-presets-container" class="flex flex-wrap gap-1.5"></div>
+        </div>
+
+        <!-- Search Controls Bar -->
+        <div class="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-4 text-xs">
+          <div class="flex items-center gap-1.5">
+            <label for="search-top-k" class="font-medium text-slate-600">Top-K слотов:</label>
+            <select id="search-top-k" class="rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 font-mono-code font-semibold text-slate-800">
+              <option value="3">3</option>
+              <option value="5" selected>5</option>
+              <option value="8">8</option>
+              <option value="10">10</option>
+              <option value="15">15</option>
+            </select>
+          </div>
+
+          <div class="flex items-center gap-1.5">
+            <label for="search-status-filter" class="font-medium text-slate-600">Статус:</label>
+            <select id="search-status-filter" class="rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-slate-800">
+              <option value="">Авто (с учетом редакций)</option>
+              <option value="active">Только active</option>
+              <option value="active,superseded_template_reference">active + шаблоны формул</option>
+              <option value="superseded">Только superseded</option>
+              <option value="draft">Только draft</option>
+            </select>
+          </div>
+
+          <div class="flex items-center gap-1.5">
+            <label for="search-year-filter" class="font-medium text-slate-600">Год действия:</label>
+            <input id="search-year-filter" type="number" min="2015" max="2035" placeholder="Любой" class="w-24 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 font-mono-code text-slate-800" />
+          </div>
+
+          <label class="inline-flex items-center gap-1.5 cursor-pointer select-none font-medium text-slate-700">
+            <input id="search-include-parent" type="checkbox" checked class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+            <span>Показывать Parent-раздел целиком</span>
+          </label>
+
+          <label class="inline-flex items-center gap-1.5 cursor-pointer select-none font-medium text-slate-700">
+            <input id="search-include-amendments" type="checkbox" checked class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+            <span>Подтягивать изменяющие акты (amends)</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Search Results Output Container -->
+      <div id="search-results-wrapper" class="hidden space-y-4">
+        <!-- Scope / Confidence Banner -->
+        <div id="search-scope-banner" class="rounded-2xl p-4 border shadow-sm"></div>
+
+        <!-- Version & Quality Alerts -->
+        <div id="search-alerts-container" class="space-y-2"></div>
+
+        <!-- Co-retrieved Amendment Chunks -->
+        <div id="search-amendments-section" class="hidden space-y-2.5">
+          <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-purple-800">
+            <span class="w-2.5 h-2.5 rounded-full bg-purple-600"></span>
+            <span>Актуальные поправки из изменяющих приказов/распоряжений (amends)</span>
+          </div>
+          <div id="search-amendments-list" class="space-y-3"></div>
+        </div>
+
+        <!-- Primary Ranked Hits -->
+        <div class="space-y-3" id="search-hits-list"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- МОДАЛЬНОЕ ОКНО 1: ИНСПЕКТОР ДОКУМЕНТА И ЧАНКОВ (Parent -> Child)      -->
+  <!-- ===================================================================== -->
+  <div id="inspector-modal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-center justify-center p-2 sm:p-4">
+    <div class="bg-white w-full max-w-7xl h-[92vh] rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
+      <!-- Modal Header -->
+      <div class="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <h3 id="insp-doc-title" class="text-base font-bold text-slate-900 truncate">Инспектор документа</h3>
+            <span id="insp-doc-status-badge" class="px-2 py-0.5 text-[11px] rounded-full font-semibold"></span>
+          </div>
+          <p id="insp-doc-subtitle" class="text-xs text-slate-500 truncate mt-0.5"></p>
+        </div>
+
+        <div class="flex items-center gap-2 shrink-0 flex-wrap">
+          <!-- Text Representation Switcher -->
+          <div class="inline-flex rounded-xl bg-slate-200/80 p-1 text-xs font-semibold">
+            <button type="button" data-view-mode="raw_text" class="insp-mode-btn px-3 py-1.5 rounded-lg bg-white text-slate-900 shadow-sm transition">
+              raw_text (12% overlap)
+            </button>
+            <button type="button" data-view-mode="embed_text" class="insp-mode-btn px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition">
+              embed_text (вектор)
+            </button>
+            <button type="button" data-view-mode="clean_text" class="insp-mode-btn px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition">
+              clean_text (чистый)
+            </button>
+          </div>
+
+          <button id="btn-close-inspector" type="button" class="p-2 rounded-xl text-slate-500 hover:bg-slate-200 hover:text-slate-900 transition">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Modal Split Body: Left Tree (unit_id -> ParentSectionRecord) | Right Chunks -->
+      <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 overflow-hidden">
+        <!-- Left Tree Navigation -->
+        <aside class="lg:col-span-4 border-r border-slate-200 bg-slate-50/60 overflow-y-auto p-3.5 space-y-3">
+          <div class="flex items-center justify-between text-xs">
+            <span class="font-bold uppercase tracking-wider text-slate-500">Дерево: Часть → Раздел (Parent)</span>
+            <button id="btn-insp-show-all" type="button" class="text-blue-600 hover:underline font-medium">Показать все</button>
+          </div>
+          <div id="insp-tree-container" class="space-y-2 text-xs"></div>
+        </aside>
+
+        <!-- Right Chunks & Parent Section View -->
+        <div id="insp-chunks-scroll" class="lg:col-span-8 overflow-y-auto p-4 sm:p-5 space-y-4 bg-white">
+          <div id="insp-selected-parent-box" class="hidden"></div>
+          <div id="insp-chunks-container" class="space-y-3"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- МОДАЛЬНОЕ ОКНО 2: РЕДАКТИРОВАНИЕ МЕТАДАННЫХ И ГРАФА РЕДАКЦИЙ          -->
+  <!-- ===================================================================== -->
+  <div id="metadata-modal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+      <div class="px-5 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-bold text-slate-900">Редактирование метаданных и связей документа</h3>
+          <p id="meta-modal-doc-id" class="text-xs font-mono-code text-slate-500 mt-0.5"></p>
+        </div>
+        <button id="btn-close-meta-modal" type="button" class="p-1.5 rounded-lg text-slate-400 hover:bg-slate-200 hover:text-slate-700">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <form id="metadata-edit-form" class="p-5 space-y-3.5 text-xs">
+        <input type="hidden" id="meta-edit-doc-id" />
+
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">Название документа</label>
+          <input id="meta-edit-title" type="text" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Номер акта</label>
+            <input id="meta-edit-number" type="text" placeholder="напр. 794-1" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Дата (YYYY-MM-DD)</label>
+            <input id="meta-edit-date" type="text" placeholder="2023-03-28" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Статус</label>
+            <select id="meta-edit-status" class="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="active">active (Действующий)</option>
+              <option value="superseded">superseded (Отменен)</option>
+              <option value="superseded_template_reference">superseded_template_reference (Шаблон формул)</option>
+              <option value="draft">draft (Проект)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Отменяет приказы № (supersedes)</label>
+            <input id="meta-edit-supersedes" type="text" placeholder="через запятую: 1469-1" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Изменяет приказы № (amends)</label>
+            <input id="meta-edit-amends" type="text" placeholder="через запятую: 3065-1" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">Годы действия (applicable_years)</label>
+          <input id="meta-edit-years" type="text" placeholder="напр.: 2026-2028 или 2025, 2026" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">Комментарий к редакции (version_note → обновляет u00_meta и Qdrant)</label>
+          <textarea id="meta-edit-version-note" rows="3" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">Предупреждение о качестве исходника (quality_warning)</label>
+          <input id="meta-edit-quality-warning" type="text" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+
+        <div class="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+          <button id="btn-cancel-meta-modal" type="button" class="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 font-medium">Отмена</button>
+          <button type="submit" class="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-sm cursor-pointer">Сохранить и обновить Qdrant</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notifications Container -->
+  <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

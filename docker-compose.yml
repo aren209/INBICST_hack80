@@ -1,32 +1,31 @@
 services:
   qdrant:
-    image: qdrant/qdrant:v1.20.0
-    container_name: mipt_qdrant
-    restart: unless-stopped
+    image: qdrant/qdrant:latest
+    container_name: mipt_rag_qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - ./qdrant_storage:/qdrant/storage
-    environment:
-      - QDRANT__SERVICE__GRPC_PORT=6334
+      - ./data/qdrant_storage:/qdrant/storage
+    restart: unless-stopped
 
-  # Отладочная форма: docker compose --profile debug up -d
-  # Основной пайплайн остаётся CLI: docker compose run --rm debug python scripts/run_ingestion.py
-  debug:
-    build: .
-    profiles: ["debug"]
-    container_name: mipt_debug
+  rag-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mipt_rag_app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+    volumes:
+      - ./доки:/app/доки
+      - ./data:/app/data
+      - ./config:/app/config
     depends_on:
       - qdrant
-    ports:
-      - "8501:8501"
-    environment:
-      QDRANT_URL: http://qdrant:6333
-      OCR_SPACE_API_KEY: ${OCR_SPACE_API_KEY:-}
-      DENSE_MODEL_PATH: ${DENSE_MODEL_PATH:-}
-      MODELS_CACHE_DIR: /app/models_cache
-    volumes:
-      - ./data:/app/data
-      - ./данные:/app/данные
-      - ./models_cache:/app/models_cache
+    restart: unless-stopped

@@ -1,88 +1,325 @@
+"""Central configuration, constants, thresholds, paths, and compiled regexes for MIPT RAG V3."""
+
 from __future__ import annotations
 
-import os
+import re
 from pathlib import Path
 
-PROJECT_ROOT = Path(
-    os.getenv("PROJECT_ROOT", str(Path(__file__).resolve().parent.parent))
+from dotenv import load_dotenv
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BASE_DIR: Path = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env", override=False)
+
+
+class Settings(BaseSettings):
+    """Environment-driven application settings loaded from .env."""
+
+    model_config = SettingsConfigDict(
+        env_file=str(BASE_DIR / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Polza AI API (OpenAI-compatible)
+    POLZA_API_KEY: str = Field(default="")
+    POLZA_BASE_URL: str = Field(default="https://polza.ai/api/v1")
+    POLZA_EMBEDDING_MODEL: str = Field(default="baai/bge-m3")
+    POLZA_VLM_MODEL: str = Field(default="qwen/qwen3-vl-235b-a22b-instruct")
+
+    # OCR Backend ("hybrid_vlm" or "local_rapidocr")
+    OCR_BACKEND: str = Field(default="hybrid_vlm")
+
+    # Qdrant Vector Store
+    QDRANT_URL: str = Field(default="http://localhost:6333")
+    QDRANT_HOST: str = Field(default="localhost")
+    QDRANT_PORT: int = Field(default=6333)
+    QDRANT_COLLECTION: str = Field(default="mipt_normative_v3")
+
+    # Embedding Parameters
+    EMBEDDING_DIM: int = Field(default=1024)
+    EMBEDDING_BATCH_SIZE: int = Field(default=32)
+
+    # Directory Paths (relative to BASE_DIR if not absolute)
+    DOCS_DIR_NAME: str = Field(default="доки", validation_alias="DOCS_DIR")
+    DATA_DIR_NAME: str = Field(default="data", validation_alias="DATA_DIR")
+    CONFIG_DIR_NAME: str = Field(default="config", validation_alias="CONFIG_DIR")
+
+    # FastAPI Server
+    APP_HOST: str = Field(default="0.0.0.0")
+    APP_PORT: int = Field(default=8000)
+    LOG_LEVEL: str = Field(default="INFO")
+
+    @property
+    def docs_dir(self) -> Path:
+        p = Path(self.DOCS_DIR_NAME)
+        return p if p.is_absolute() else BASE_DIR / p
+
+    @property
+    def data_dir(self) -> Path:
+        p = Path(self.DATA_DIR_NAME)
+        return p if p.is_absolute() else BASE_DIR / p
+
+    @property
+    def config_dir(self) -> Path:
+        p = Path(self.CONFIG_DIR_NAME)
+        return p if p.is_absolute() else BASE_DIR / p
+
+
+settings = Settings()
+
+# ---------------------------------------------------------------------------
+#Filesystem Paths
+# ---------------------------------------------------------------------------
+DOCS_DIR: Path = settings.docs_dir
+DATA_DIR: Path = settings.data_dir
+CONFIG_DIR: Path = settings.config_dir
+
+UPLOADS_DIR: Path = DATA_DIR / "uploads"
+OCR_CACHE_DIR: Path = DATA_DIR / "ocr_cache"
+EMBED_CACHE_DIR: Path = DATA_DIR / "embed_cache"
+QDRANT_STORAGE_DIR: Path = DATA_DIR / "qdrant_storage"
+
+SECTIONS_STORE_PATH: Path = DATA_DIR / "sections_store.json"
+DOCUMENT_REGISTRY_PATH: Path = DATA_DIR / "document_registry.json"
+INDEXING_REPORT_PATH: Path = DATA_DIR / "indexing_report.json"
+
+GLOSSARY_PATH: Path = CONFIG_DIR / "glossary.yaml"
+REGISTRY_OVERRIDES_PATH: Path = CONFIG_DIR / "registry_overrides.yaml"
+
+
+def ensure_Runtime_dirs() -> None:
+    """Ensure all required data and cache directories exist."""
+    for directory in (DATA_DIR, UPLOADS_DIR, OCR_CACHE_DIR, EMBED_CACHE_DIR, CONFIG_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+
+
+ensure_Runtime_dirs()
+
+# ---------------------------------------------------------------------------
+# Module 1: Ingestion & Hybrid OCR Thresholds
+# ---------------------------------------------------------------------------
+OCR_SMALL_NATIVE_TEXT_CHARS: int = 600
+OCR_MIN_IMAGE_COVERAGE: float = 0.55
+OCR_RENDER_DPI: int = 300
+MAX_OCR_IMAGE_SIDE: int = 3509
+VLM_MAX_TOKENS: int = 2500
+VLM_TEMPERATURE: float = 0.0
+VLM_TIMEOUT_SEC: float = 60.0
+
+VLM_SYSTEM_PROMPT: str = (
+    "Ты — высокоточный OCR-движок для нормативных документов МФТИ. "
+    "Извлеки весь текст со страницы без сокращений и пересказа. "
+    "Сохраняй точную нумерацию разделов и пунктов (например, 1.1., 2.3., 6.1.), "
+    "штампы регистрации ЭДО (например, «Зарегистрировано в ЭДО МФТИ от ... № ...») "
+    "и форматируй таблицы в чистый Markdown (| Колонка 1 | Колонка 2 |). "
+    "КРИТИЧЕСКОЕ ПРАВИЛО: Никогда не повторяй символы подчеркивания `_`, точки `.` "
+    "или пробелы для пустых линий и граф подписи в бланках — заменяй любое пустое "
+    "поле для заполнения на короткий маркер `[___]`."
 )
 
+# ---------------------------------------------------------------------------
+# Module 2: V3 7-Stage Hierarchical Chunker Constants
+# ---------------------------------------------------------------------------
+MAX_CLAUSE_CHARS: int = 880
+MAX_TABLE_FORM_CHARS: int = 560
+MIN_TABLE_FORM_CHARS: int = 380
+MIN_CLAUSE_CHARS: int = 160
+TABLE_SLICE_ROWS: int = 8
+MAX_PARENT_SECTION_CHARS: int = 12_000
+CONTINUATION_HEADER_PREVIEW_CHARS: int = 120
 
-def _load_dotenv(env_path: Path) -> None:
-    """Автоматически подгружает переменные из .env (если файл существует), не перезаписывая уже заданные."""
-    if not env_path.is_file():
-        return
-    try:
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, val = line.split("=", 1)
-            key = key.strip()
-            val = val.strip().strip("'").strip('"')
-            if key:
-                os.environ.setdefault(key, val)
-    except Exception:
-        pass
+# Stage 6: 12% Bilateral Overlap Bounds (word-boundary aligned)
+CHUNK_OVERLAP_RATIO: float = 0.12
+PARA_OVERLAP_MIN_CHARS: int = 35
+PARA_OVERLAP_MAX_CHARS: int = 95
+TABLE_OVERLAP_MIN_CHARS: int = 24
+TABLE_OVERLAP_MAX_CHARS: int = 48
 
+# Non-answer zones excluded from top-k normative slots
+NON_ANSWER_ZONES: set[str] = {"approval", "meta"}
 
-_load_dotenv(PROJECT_ROOT / ".env")
+# Numeric bounds for Clause vs Date disambiguation
+SINGLE_LEVEL_CLAUSE_MAX: int = 65
+MULTI_LEVEL_FIRST_MAX: int = 30
+MULTI_LEVEL_PART_MAX: int = 60
+MAX_SECTION_HEADER_CHARS: int = 180
 
-DATA_DIR = Path(os.getenv("DATA_DIR", PROJECT_ROOT / "данные"))
-ARTIFACTS_DATA_DIR = Path(os.getenv("ARTIFACTS_DATA_DIR", PROJECT_ROOT / "data"))
-OCR_CACHE_DIR = ARTIFACTS_DATA_DIR / "ocr_cache"
-OCR_VERIFIED_DIR = ARTIFACTS_DATA_DIR / "ocr_verified"
-REGISTRY_OVERRIDES_PATH = ARTIFACTS_DATA_DIR / "registry_overrides.yaml"
-GLOSSARY_PATH = ARTIFACTS_DATA_DIR / "glossary.json"
-SECTIONS_STORE_PATH = ARTIFACTS_DATA_DIR / "sections_store.json"
-CHUNKS_DUMP_PATH = ARTIFACTS_DATA_DIR / "chunks_dump.json"
-MODELS_CACHE_DIR = Path(os.getenv("MODELS_CACHE_DIR", PROJECT_ROOT / "models_cache"))
-DEBUG_TMP_DIR = Path(os.getenv("DEBUG_TMP_DIR", PROJECT_ROOT / ".debug_tmp"))
+# ---------------------------------------------------------------------------
+# Module 4: Indexing, Qdrant & Retrieval Constants
+# ---------------------------------------------------------------------------
+DENSE_VECTOR_NAME: str = "dense"
+SPARSE_VECTOR_NAME: str = "bm25"
+EMBEDDING_DIM: int = settings.EMBEDDING_DIM
+EMBEDDING_BATCH_SIZE: int = settings.EMBEDDING_BATCH_SIZE
 
-# OCR.space API Configuration
-OCR_SPACE_ENDPOINT = os.getenv(
-    "OCR_SPACE_ENDPOINT", "https://api.ocr.space/parse/image"
+# Out-of-scope detection thresholds
+OUT_OF_SCOPE_DENSE_THRESHOLD: float = 0.45
+OUT_OF_SCOPE_LOW_DENSE_THRESHOLD: float = 0.38
+OUT_OF_SCOPE_MIN_LEXICAL_OVERLAP: float = 0.12
+SUPERSEDED_SCORE_PENALTY: float = 0.82
+
+STATUS_RU_MAP: dict[str, str] = {
+    "active": "Действующий",
+    "superseded": "Отменен / Утратил силу",
+    "superseded_template_reference": "Справочный шаблон (бланк заменен, формулы/коды актуальны)",
+    "draft": "Проект",
+    "error": "Ошибка индексации",
+}
+
+# ---------------------------------------------------------------------------
+# Compiled Regular Expressions for V3 Chunker & Parsers
+# ---------------------------------------------------------------------------
+
+# Stage 1: Approval zone trigger & normative reset triggers
+APPROVAL_TRIGGER_RE = re.compile(
+    r"^\s*(?:ЛИСТ\s+СОГЛАСОВАНИЯ|Лист\s+согласования)\b",
+    re.IGNORECASE,
 )
-# Ключ задаётся ТОЛЬКО через окружение (.env / docker compose / CI).
-# Публичный fallback-ключ намеренно удалён: он попадал в открытый репозиторий.
-OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "")
-OCR_MAX_IMAGE_BYTES = 850 * 1024  # < 1 MB Free Plan limit
 
-# Если у страницы есть картинка и текстового слоя меньше этого порога,
-# считаем её сканом и отправляем на OCR (иначе теряется шапка/часть страницы).
-OCR_SMALL_NATIVE_TEXT_CHARS = int(os.getenv("OCR_SMALL_NATIVE_TEXT_CHARS", "600"))
-
-# Local Embedding Model (FastEmbed ONNX multilingual).
-# e5-large — основная модель корпуса (1024d). На слабом CPU первичная
-# индексация может занимать десятки минут; альтернатива:
-# DENSE_MODEL_NAME=sentence-transformers/paraphrase-multilingual-mpnet-base-v2 (768d).
-DENSE_MODEL_NAME = os.getenv(
-    "DENSE_MODEL_NAME", "intfloat/multilingual-e5-large"
+NORMATIVE_RESET_RE = re.compile(
+    r"^\s*(?:Приложени[ея]\s*(?:№|N)?\s*\d*[а-яa-z]?|УТВЕРЖДЕН[ОЫА]?\b|"
+    r"РЕГЛАМЕНТ\b|ПОЛОЖЕНИЕ\b|ИНСТРУКЦИЯ\b| ПОРЯДОК\b|КАРТОЧКА\s+ПРОЕКТА\b|"
+    r"ТЕХНИЧЕСКИЙ\s+РЕГЛАМЕНТ\b)",
+    re.IGNORECASE,
 )
-# Маленький batch уменьшает паддинг коротких чанков до 512 токенов.
-DENSE_BATCH_SIZE = int(os.getenv("DENSE_BATCH_SIZE", "8"))
 
-# Qdrant Configuration (Docker container on 6333)
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "mipt_regulations")
+# Stage 2: Autonomous unit boundaries (u01_main -> u02 -> u03...)
+UNIT_BOUNDARY_RE = re.compile(
+    r"^\s*(?:"
+    r"Приложени[ея]\s*(?:№|N)?\s*(?:\d+[а-яa-z]?|[а-яa-z])\b|"
+    r"УТВЕРЖДЕН[ОЫА]?\s+(?:приказом|распоряжением)\b|"
+    r"(?:ВНУТРЕННИЙ\s+|ТЕХНИЧЕСКИЙ\s+)?РЕГЛАМЕНТ\b|"
+    r"ПОЛОЖЕНИЕ\s+о\b|"
+    r"ИНСТРУКЦИЯ\s+(?:по|о)\b|"
+    r"КАРТОЧКА\s+ПРОЕКТА\b"
+    r")",
+    re.IGNORECASE,
+)
 
-# Chunking hyperparameters (V3 Parent-Child + min size + bilateral overlap)
-MIN_CLAUSE_CHARS = int(os.getenv("MIN_CLAUSE_CHARS", "160"))
-MAX_CLAUSE_CHARS = int(os.getenv("MAX_CLAUSE_CHARS", "880"))
-MAX_TABLE_FORM_CHARS = int(os.getenv("MAX_TABLE_FORM_CHARS", "560"))
-TABLE_SLICE_ROWS = int(os.getenv("TABLE_SLICE_ROWS", "8"))
-# Двустороннее перекрытие соседних чанков (12% от предыдущего и 12% от следующего
-# по границам слов — лучше чем сырые 10%, так как не режет слова пополам и даёт
-# законченный смысловой фрагмент на средних пунктах в 300–500 символов).
-CHUNK_OVERLAP_RATIO = float(os.getenv("CHUNK_OVERLAP_RATIO", "0.12"))
-MIN_OVERLAP_CHARS = int(os.getenv("MIN_OVERLAP_CHARS", "35"))
-MAX_OVERLAP_CHARS = int(os.getenv("MAX_OVERLAP_CHARS", "95"))
+# Date prefix protection: matches DD.MM.YYYY or DD.MM.YY at start of string/token
+DATE_PREFIX_RE = re.compile(
+    r"^\s*(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.(?:19\d{2}|20\d{2}|\d{2})(?:\s*г\.?|\b)"
+)
 
-# Retrieval hyperparameters
-# 0.815 откалиброван на e5-large: in-domain запросы в корпусе дают >= 0.83,
-# внекорпусные (загранпаспорт, билет на поезд) — 0.79–0.80.
-DENSE_ABSTAIN_THRESHOLD = float(os.getenv("DENSE_ABSTAIN_THRESHOLD", "0.815"))
-# Не отдаём служебные «паспорта» документов и листы согласования в ответ,
-# но продолжаем использовать их для версионных/качественных предупреждений.
-NON_ANSWER_ZONES = {"approval", "meta"}
-PARENT_SECTION_MAX_CHARS = int(os.getenv("PARENT_SECTION_MAX_CHARS", "12000"))
+# Any inline date DD.MM.YYYY
+DATE_INLINE_RE = re.compile(
+    r"\b(0?[1-9]|[12]\d|3[01])\.(0?[1-9]|1[0-2])\.(19\d{2}|20\d{2})\b"
+)
+
+# Clause number regex (single-level "1." or multi-level "1.1.", "2.3.1")
+CLAUSE_NUMBER_RE = re.compile(
+    r"^\s*(?:п\.\s*|пункт\s+)?(\d+(?:\.\d+)*)\.?(?:\s+|$)(.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Standalone detached clause number on its own line in PDFs (e.g. "1.1." or "2.3.")
+DETACHED_CLAUSE_NUM_RE = re.compile(r"^\s*(\d+(?:\.\d+)+)\.?\s*$")
+
+# Sub-item markers (Level 5: accumulated inside parent clause)
+SUBITEM_RE = re.compile(
+    r"^\s*(?:[а-яa-z]\)|\d+\)|[-–—•▪◦*])\s+",
+    re.IGNORECASE,
+)
+
+# Page footer / header noise
+PAGE_FOOTER_RE = re.compile(
+    r"^\s*(?:Стр\.?\s*\d+\s*(?:из|/)\s*\d+|Страница\s+\d+\s+из\s+\d+|-\s*\d+\s*-|\d{1,3})\s*$",
+    re.IGNORECASE,
+)
+
+# Hyphenated word wrap across PDF lines
+HYPHEN_WRAP_RE = re.compile(r"([а-яёА-ЯЁ]{2,})-\s*\n\s*([а-яё]{2,})")
+
+# Footnote superscript glued to order number (e.g., "№ 8123" where 3 is footnote marker)
+FOOTNOTE_ORDER_RE = re.compile(r"(№\s*\d{3})\d(?=\s|$|[,.;)])")
+
+# Section Title Starters (Level 3 Parent Section detection)
+SECTION_TITLE_STARTERS: tuple[str, ...] = (
+    "общие положения",
+    "общие требования",
+    "общие правила",
+    "порядок",
+    "правила",
+    "требования",
+    "сроки",
+    "ответственность",
+    "финансирование",
+    "подготовка",
+    "проведение",
+    "термины",
+    "определения",
+    "сокращения",
+    "обозначения",
+    "заключительные положения",
+    "организация",
+    "контроль",
+    "условия",
+    "регламент",
+    "структура",
+    "формирование",
+    "присвоение",
+    "открытие",
+    "ведение",
+    "закрытие",
+    "бронирование",
+    "поселение",
+    "выселение",
+    "командирование",
+    "возмещение",
+    "оплата",
+    "бюджетирование",
+    "планирование",
+    "согласование",
+    "утверждение",
+    "регистрация",
+    "эксплуатация",
+    "обслуживание",
+    "доступ",
+    "безопасность",
+    "охрана труда",
+    "прием",
+    "подбор",
+    "поиск",
+    "адаптация",
+    "взаимодействие",
+    "права и обязанности",
+    "функции",
+    "задачи",
+    "цели",
+    "назначение",
+    "область применения",
+    "нормативные ссылки",
+)
+
+# Imperative Verbs Stop-list (distinguishes order clauses like "2. Утвердить..." from section titles)
+IMPERATIVE_VERB_STOPWORDS: tuple[str, ...] = (
+    "утвердить",
+    "ввести",
+    "признать",
+    "установить",
+    "возложить",
+    "поручить",
+    "отменить",
+    "внести",
+    "направить",
+    "контрольному",
+    "контроль",
+    "приказываю",
+    "обязать",
+    "разрешить",
+    "довести",
+    "опубликовать",
+    "разместить",
+    "обеспечить",
+    "производить",
+    "осуществлять",
+    "назначить",
+    "создать",
+    "считать",
+    "распространить",
+    "применять",
+    "исполнять",
+    "руководствоваться",
+)

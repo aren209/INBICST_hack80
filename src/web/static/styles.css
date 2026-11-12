@@ -1,0 +1,151 @@
+/* Custom styles & animations for MIPT Normative RAG V3 Web Interface */
+
+:root {
+  --mipt-blue: #1d4ed8;
+  --mipt-indigo: #4338ca;
+  --mipt-bg: #f8fafc;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--mipt-bg);
+  color: #0f172a;
+}
+
+.font-mono-code {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Custom subtle scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Dark terminal scrollbar */
+.terminal-log::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+.terminal-log::-webkit-scrollbar-thumb {
+  background: #334155;
+}
+
+/* Drag & Drop zone styling */
+.dropzone-active {
+  border-color: #2563eb !important;
+  background-color: #eff6ff !important;
+  transform: scale(1.005);
+}
+
+/* 12% Bilateral Overlap visual highlight (subtle grey & italic per spec) */
+.overlap-segment {
+  color: #64748b;
+  font-style: italic;
+  background-color: #f1f5f9;
+  border-left: 2px dashed #cbd5e1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline;
+  font-size: 0.93em;
+}
+
+.overlap-marker-tag {
+  display: inline-block;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  background: #e2e8f0;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+/* Stage stepper animations */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+  }
+}
+
+.stage-active-circle {
+  animation: pulse-ring 1.8s infinite;
+}
+
+/* Animated progress bar stripe */
+@keyframes progress-stripes {
+  from {
+    background-position: 1rem 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+.progress-bar-animated {
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.18) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.18) 50%,
+    rgba(255, 255, 255, 0.18) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 1rem 1rem;
+  animation: progress-stripes 1s linear infinite;
+}
+
+/* Modal backdrop transition */
+.modal-backdrop {
+  background-color: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(3px);
+}
+
+/* Chunk preformatted text preserving line breaks & tables cleanly */
+.chunk-text-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+/* Toast animations */
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(1.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.toast-item {
+  animation: slide-in-right 0.22s ease-out forwards;
+}
