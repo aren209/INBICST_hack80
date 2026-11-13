@@ -1,4 +1,4 @@
-"""FastAPI Application for MIPT Normative RAG V3.
+"""FastAPI Application for MIPT Normative RAG V3 (Adaptive 3-Tier Tables & Tool Calling).
 
 Provides REST API and SSE endpoints for:
 - System health & statistics (/api/health)
@@ -6,7 +6,9 @@ Provides REST API and SSE endpoints for:
 - Background task tracking and real-time SSE streaming (/api/tasks/{task_id}, /api/tasks/{task_id}/stream)
 - Document registry, edition graph, and chunk inspection (/api/documents, /api/documents/{doc_id}/chunks)
 - Metadata editing and document deletion (/api/documents/{doc_id}/metadata, /api/documents/{doc_id})
+- Structured SQLite Tables Explorer & Query Engine (/api/tables, /api/tables/{table_id}, /api/tables/query)
 - Hybrid RRF search with Parent-Child hydration & out-of-scope detection (/api/search)
+- Autonomous Table-Aware LLM RAG Agent with Tool Calling (/api/ask)
 - Static SPA web interface at http://localhost:8000/
 """
 
@@ -14,23 +16,28 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import inspect
 import json
 import logging
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 import uuid
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from src.config import DOCS_DIR, UPLOADS_DIR, settings
 from src.indexing.pipeline import IndexingPipeline, get_pipeline
-from src.retrieval.search_service import SearchService, get_search_service
+from src.indexing.table_store import get_table_store
+from src.retrieval.search_service import get_search_service
 from src.schemas import (
+    AgentAskRequest,
+    AgentAskResponse,
+    ChatbotContextRequest,
+    ChatbotContextResponse,
     ChunkRecord,
     DocumentMeta,
     DocumentStatus,
@@ -39,6 +46,10 @@ from src.schemas import (
     ParentSectionRecord,
     SearchQuery,
     SearchResponse,
+    TablePassport,
+    TableQueryRequest,
+    TableQueryResponse,
+    ToolCallTrace,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,6 +57,63 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# -----------------------------------------------------------------------------
+# Structured Tables & RAG Agent Delegation Helpers
+# -----------------------------------------------------------------------------
+
+def _list_structured_tables(
+    pipeline: IndexingPipeline,
+    doc_id: Optional[str] = None,
+) -> list[TablePassport]:
+    """Retrieve TablePassports from pipeline.get_tables(...) or StructuredTableStore."""
+    clean_doc_id = doc_id.strip() if doc_id and doc_id.strip() else None
+    get_tables_fn = getattr(pipeline, "get_tables", None)
+    if callable(get_tables_fn):
+        sig = inspect.signature(get_tables_fn)
+        if "doc_id" in sig.parameters:
+            tables = list(get_tables_fn(doc_id=clean_doc_id) or [])
+        else:
+            all_tables = list(get_tables_fn() or [])
+            tables = (
+                [t for t in all_tables if getattr(t, "doc_id", "") == clean_doc_id]
+                if clean_doc_id
+                else all_tables
+            )
+        return tables
+
+    return get_table_store().list_tables(doc_id=clean_doc_id)
+
+
+def _get_structured_table(
+    pipeline: IndexingPipeline,
+    table_id: str,
+) -> Optional[TablePassport]:
+    """Retrieve a single TablePassport by table_id from pipeline or StructuredTableStore."""
+    get_table_fn = getattr(pipeline, "get_table", None)
+    if callable(get_table_fn):
+        return get_table_fn(table_id)
+    return get_table_store().get_table(table_id)
+
+
+def _query_structured_table(
+    pipeline: IndexingPipeline,
+    req: TableQueryRequest,
+) -> TableQueryResponse:
+    """Execute a deterministic TableQueryRequest against pipeline or StructuredTableStore."""
+    query_fn = getattr(pipeline, "query_table", None)
+    if callable(query_fn):
+        return query_fn(req)
+    return get_table_store().query_table(req)
+
+
+def _resolve_rag_agent() -> Any:
+    """Resolve the TableAwareRAGAgent singleton from src.retrieval.rag_agent."""
+    from src.retrieval.rag_agent import get_rag_agent
+
+    return get_rag_agent()
+
 
 # -----------------------------------------------------------------------------
 # Background Task State Manager
@@ -71,6 +139,7 @@ class TaskState:
         self.doc_id = ""
         self.parent_count = 0
         self.chunk_count = 0
+        self.tables_count = 0
         self.ocr_pages = 0
         self.events: list[dict[str, Any]] = []
         self.result: Any = None
@@ -100,6 +169,7 @@ class TaskState:
             "doc_id",
             "parent_count",
             "chunk_count",
+            "tables_count",
             "ocr_pages",
         ):
             if k in ev:
@@ -139,6 +209,7 @@ class TaskState:
             "doc_id": self.doc_id,
             "parent_count": self.parent_count,
             "chunk_count": self.chunk_count,
+            "tables_count": self.tables_count,
             "ocr_pages": self.ocr_pages,
             "events": self.events[-50:],
             "result": self.result,
@@ -196,8 +267,11 @@ class MetadataPatchRequest(BaseModel):
 
 app = FastAPI(
     title="MIPT Normative RAG V3",
-    description="База знаний, иерархический чанкер V3 (Parent-Child + 12% Bilateral Overlap) и веб-интерфейс МФТИ",
-    version="3.0.0",
+    description=(
+        "База знаний, иерархический чанкер V3 (Parent-Child + 12% Bilateral Overlap), "
+        "3-уровневое хранилище структурированных таблиц SQLite и автономный ИИ-агент с Tool Calling"
+    ),
+    version="3.1.0",
 )
 
 app.add_middleware(
@@ -207,6 +281,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # -----------------------------------------------------------------------------
 # Static SPA Routing
@@ -224,10 +299,23 @@ async def serve_index():
 # System Health & Statistics
 # -----------------------------------------------------------------------------
 
-@app.get("/api/health", summary="Get Qdrant, Polza AI & Knowledge Base Health")
+@app.get("/api/health", summary="Get Qdrant, Polza AI, SQLite Table Store & Knowledge Base Health")
 async def get_health():
     pipeline = get_pipeline()
-    health_info = pipeline.get_health()
+    health_info = dict(pipeline.get_health() or {})
+    if "structured_tables_count" not in health_info:
+        try:
+            health_info["structured_tables_count"] = len(_list_structured_tables(pipeline))
+        except Exception as exc:
+            logger.debug("Could not count structured tables in /api/health: %s", exc)
+            health_info["structured_tables_count"] = 0
+
+    health_info["tables_count"] = int(health_info.get("structured_tables_count") or 0)
+    if isinstance(health_info.get("polza_api"), dict):
+        health_info["polza_api"].setdefault(
+            "llm_model",
+            getattr(settings, "POLZA_LLM_MODEL", "openai/gpt-4o-mini"),
+        )
     health_info["timestamp"] = datetime.now(timezone.utc).isoformat()
     health_info["docs_dir"] = str(DOCS_DIR)
     health_info["uploads_dir"] = str(UPLOADS_DIR)
@@ -292,7 +380,7 @@ async def upload_documents(
         try:
             for idx, file_path in enumerate(saved_paths, start=1):
                 task.file_name = file_path.name
-                
+
                 def _file_progress(ev: dict[str, Any], _idx: int = idx, _tot: int = total_files):
                     overall_pct = int(((_idx - 1) + (ev.get("percent", 0) / 100.0)) / max(1, _tot) * 100)
                     patched = dict(ev)
@@ -410,9 +498,13 @@ async def sync_folder(
                 "total_stages": 6,
                 "stage_label": "Завершено",
                 "percent": 100,
-                "message": f"Синхронизация завершена. Обработано файлов: {report.indexed_files}, пропущено: {report.skipped_files}, ошибок: {report.failed_files}",
+                "message": (
+                    f"Синхронизация завершена. Обработано файлов: {report.indexed_files}, "
+                    f"пропущено: {report.skipped_files}, ошибок: {report.failed_files}"
+                ),
                 "parent_count": report.total_parent_sections,
                 "chunk_count": report.total_chunks,
+                "tables_count": getattr(report, "tables_count", 0),
                 "ocr_pages": report.total_ocr_pages,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
@@ -470,7 +562,6 @@ async def stream_task_events(task_id: str):
     async def event_generator():
         q = task.add_listener()
         try:
-            # Send initial snapshot event
             initial_payload = task.to_dict()
             yield f"data: {json.dumps(initial_payload, ensure_ascii=False)}\n\n"
 
@@ -503,14 +594,42 @@ async def stream_task_events(task_id: str):
 # Document Registry & Inspection Endpoints
 # -----------------------------------------------------------------------------
 
-@app.get("/api/documents", summary="List all indexed documents, edition links, and report summary")
+@app.get("/api/documents", summary="List all indexed documents, edition links, table counts, and report summary")
 async def get_documents():
     pipeline = get_pipeline()
     docs = pipeline.get_documents()
     report = pipeline.get_indexing_report()
+
+    # Cross-check live SQLite table counts per doc_id so UI & API always surface accurate tables_count
+    table_counts_by_doc: dict[str, int] = {}
+    total_structured_tables = 0
+    try:
+        all_tables = _list_structured_tables(pipeline)
+        total_structured_tables = len(all_tables)
+        for tp in all_tables:
+            d_id = getattr(tp, "doc_id", "")
+            if d_id:
+                table_counts_by_doc[d_id] = table_counts_by_doc.get(d_id, 0) + 1
+    except Exception as exc:
+        logger.debug("Could not inspect structured tables in /api/documents: %s", exc)
+
+    doc_dicts: list[dict[str, Any]] = []
+    for d in docs:
+        d_dump = d.model_dump()
+        live_cnt = table_counts_by_doc.get(d.doc_id, 0)
+        d_dump["tables_count"] = max(int(d_dump.get("tables_count") or 0), live_cnt)
+        doc_dicts.append(d_dump)
+
+    report_tables_cnt = max(
+        int(getattr(report, "tables_count", 0) or 0),
+        total_structured_tables,
+    )
+
     return {
-        "documents": [d.model_dump() for d in docs],
-        "total_documents": len(docs),
+        "documents": doc_dicts,
+        "total_documents": len(doc_dicts),
+        "structured_tables_count": total_structured_tables,
+        "tables_count": total_structured_tables,
         "report_summary": {
             "run_id": report.run_id,
             "started_at": report.started_at,
@@ -521,6 +640,8 @@ async def get_documents():
             "failed_files": report.failed_files,
             "total_parent_sections": report.total_parent_sections,
             "total_chunks": report.total_chunks,
+            "tables_count": report_tables_cnt,
+            "structured_tables_count": total_structured_tables,
             "total_ocr_pages": report.total_ocr_pages,
             "total_duration_sec": report.total_duration_sec,
         },
@@ -577,7 +698,6 @@ async def reindex_document(
     if doc_meta is None:
         raise HTTPException(status_code=404, detail=f"Документ '{doc_id}' не найден в реестре")
 
-    # Resolve file path on disk
     candidates = []
     if doc_meta.file_path:
         candidates.append(Path(doc_meta.file_path))
@@ -632,6 +752,7 @@ async def reindex_document(
                 "doc_id": st.doc_id,
                 "parent_count": st.parent_sections_created,
                 "chunk_count": st.chunks_created,
+                "tables_count": getattr(st, "tables_count", 0),
                 "ocr_pages": st.ocr_pages,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
@@ -669,7 +790,7 @@ async def reindex_document(
         }
 
 
-@app.delete("/api/documents/{doc_id}", summary="Delete document from Qdrant, sections store, and registry")
+@app.delete("/api/documents/{doc_id}", summary="Delete document from Qdrant, SQLite tables, sections store, and registry")
 async def delete_document(doc_id: str):
     pipeline = get_pipeline()
     success = pipeline.delete_document(doc_id)
@@ -678,12 +799,133 @@ async def delete_document(doc_id: str):
     return {
         "success": True,
         "doc_id": doc_id,
-        "message": f"Документ '{doc_id}' успешно удален из Qdrant, реестра и хранилища разделов",
+        "message": f"Документ '{doc_id}' успешно удален из Qdrant, SQLite-таблиц, реестра и хранилища разделов",
     }
 
 
 # -----------------------------------------------------------------------------
-# Hybrid Search & Presets Endpoints
+# Structured Tables Endpoints (SQLite tables_store.db)
+# -----------------------------------------------------------------------------
+
+@app.get("/api/tables", summary="List all structured TablePassports in SQLite (Excel sheets + large Word/PDF tables)")
+async def list_tables(
+    doc_id: Optional[str] = Query(default=None, description="Optional doc_id filter"),
+):
+    pipeline = get_pipeline()
+    try:
+        tables = await asyncio.to_thread(_list_structured_tables, pipeline, doc_id)
+    except Exception as exc:
+        logger.exception("Failed to list structured tables: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка чтения реестра таблиц: {exc}")
+
+    serialized = [t.model_dump() if hasattr(t, "model_dump") else t for t in tables]
+    return {
+        "tables": serialized,
+        "total_tables": len(serialized),
+        "structured_tables_count": len(serialized),
+        "doc_id": doc_id,
+    }
+
+
+@app.post(
+    "/api/tables/query",
+    response_model=TableQueryResponse,
+    summary="Execute deterministic filter_rows, aggregate, get_formulas, or get_rows query on SQLite table",
+)
+async def query_table_endpoint(req: TableQueryRequest) -> TableQueryResponse:
+    pipeline = get_pipeline()
+    try:
+        return await asyncio.to_thread(_query_structured_table, pipeline, req)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Structured table query failed for '%s': %s", req.table_id, exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка выполнения запроса к таблице: {exc}")
+
+
+@app.post("/api/tables/rebuild", summary="Rebuild structured SQLite tables from indexed documents using cached OCR/embeddings")
+async def rebuild_structured_tables():
+    pipeline = get_pipeline()
+    rebuild_fn = getattr(pipeline, "rebuild_structured_tables", None)
+    if not callable(rebuild_fn):
+        raise HTTPException(
+            status_code=501,
+            detail="Метод pipeline.rebuild_structured_tables() недоступен",
+        )
+    try:
+        return await asyncio.to_thread(rebuild_fn)
+    except Exception as exc:
+        logger.exception("Rebuild structured tables failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка перестроения таблиц: {exc}")
+
+
+@app.get("/api/tables/{table_id}", summary="Get full TablePassport schema, initial preview rows, and formula summary")
+async def get_table_detail(table_id: str):
+    pipeline = get_pipeline()
+
+    def _load_detail() -> dict[str, Any]:
+        passport = _get_structured_table(pipeline, table_id)
+        if passport is None:
+            raise KeyError(table_id)
+
+        passport_dict = passport.model_dump() if hasattr(passport, "model_dump") else dict(passport)
+
+        # Fetch up to 15 initial preview rows for richer interactive inspection
+        preview_rows = list(passport_dict.get("preview_rows") or [])
+        if passport.row_count > len(preview_rows):
+            try:
+                rows_resp = _query_structured_table(
+                    pipeline,
+                    TableQueryRequest(table_id=table_id, operation="get_rows", limit=15, offset=0),
+                )
+                if rows_resp.rows:
+                    preview_rows = rows_resp.rows
+            except Exception as prev_exc:
+                logger.debug("Initial preview rows query fallback for %s: %s", table_id, prev_exc)
+
+        formula_cols = [c.name for c in passport.columns if getattr(c, "has_formulas", False)]
+        sample_formulas: list[dict[str, Any]] = []
+        if passport.has_formulas:
+            try:
+                f_resp = _query_structured_table(
+                    pipeline,
+                    TableQueryRequest(table_id=table_id, operation="get_formulas", limit=15, offset=0),
+                )
+                sample_formulas = list(f_resp.formulas[:15])
+            except Exception as f_exc:
+                logger.debug("Formula summary query fallback for %s: %s", table_id, f_exc)
+
+        formula_summary = {
+            "has_formulas": bool(passport.has_formulas),
+            "formula_count": int(passport.formula_count or 0),
+            "formula_columns": formula_cols,
+            "sample_formulas": sample_formulas,
+        }
+
+        passport_dict["preview_rows"] = preview_rows
+        return {
+            **passport_dict,
+            "passport": passport_dict,
+            "preview_rows": preview_rows,
+            "formula_summary": formula_summary,
+        }
+
+    try:
+        return await asyncio.to_thread(_load_detail)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Структурированная таблица '{table_id}' не найдена в базе таблиц",
+        )
+    except Exception as exc:
+        logger.exception("Failed to load table detail for '%s': %s", table_id, exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка чтения паспорта таблицы: {exc}")
+
+
+# -----------------------------------------------------------------------------
+# Hybrid Search, Presets & Autonomous Table-Aware RAG Agent Endpoints
 # -----------------------------------------------------------------------------
 
 MIPT_QUERY_PRESETS: list[dict[str, Any]] = [
@@ -697,7 +939,7 @@ MIPT_QUERY_PRESETS: list[dict[str, Any]] = [
         "id": "scenario_2",
         "title": "Посвящение в студенты: репетиции в КЗ",
         "query": "Сколько дней репетиций в концертном зале предоставляется физтех-школам на Посвящение в студенты?",
-        "expected": "стр. 4 табл. 6.1 строка 13: не более 6 дней (Регламент бронирования конц зала.pdf)",
+        "expected": "стр. 4 табл. 6.1 строка 13: не более 6 дней (Inline Parent, компактная PDF-таблица)",
     },
     {
         "id": "scenario_3",
@@ -747,23 +989,98 @@ MIPT_QUERY_PRESETS: list[dict[str, Any]] = [
         "query": "Как приготовить классическую римскую пасту карбонара с гуанчиале и сыром пекорино?",
         "expected": "is_out_of_scope == True (кулинарный запрос вне предметной области)",
     },
+    {
+        "id": "table_xl_cfo_frkt",
+        "preset_mode": "tool_query",
+        "title": "📊 XL Tool Query: Подразделения ФРКТ (ЦФО 2026)",
+        "query": "Сколько подразделений подчиняется финансодержателю ФРКТ в финструктуре 2026?",
+        "expected": "Автономный SQL-дозапрос query_structured_table по Фин. структуре 2026г..xlsx (точный подсчет и список)",
+    },
+    {
+        "id": "table_xl_smeta_formulas",
+        "preset_mode": "tool_query",
+        "title": "🧮 XL Формулы: Накладные расходы и НДС в смете",
+        "query": "Покажи все строки и формулы расчета накладных расходов и НДС в смете",
+        "expected": "Вызов get_formulas / filter_rows к смете 2019.xlsx ([формула: =...], 20%) + Приказ 794-1",
+    },
+    {
+        "id": "table_pdf_inline_kz",
+        "preset_mode": "inline_parent",
+        "title": "📄 PDF Inline vs XL: Репетиции на Посвящение в КЗ",
+        "query": "Сколько дней репетиций дается физтех-школам на Посвящение в КЗ?",
+        "expected": "Компактная PDF-таблица (< 25 строк) отдается напрямую через ParentSectionRecord (6 дней, used_table_tools=False)",
+    },
 ]
 
 
-@app.get("/api/search/presets", summary="Get standard MIPT test query presets")
+@app.get("/api/search/presets", summary="Get standard MIPT test query presets (including XL Tool Query & Inline Table scenarios)")
 async def get_query_presets():
     return MIPT_QUERY_PRESETS
 
 
-@app.post("/api/search", response_model=SearchResponse, summary="Execute Hybrid RRF Search")
+@app.post("/api/search", response_model=SearchResponse, summary="Execute Hybrid RRF Search with Adaptive Table Linking")
 async def execute_search(query_req: SearchQuery) -> SearchResponse:
     search_svc = get_search_service()
     try:
-        response = search_svc.search(query_req)
-        return response
+        return await asyncio.to_thread(search_svc.search, query_req)
     except Exception as exc:
         logger.exception("Search execution failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Ошибка выполнения поиска: {exc}")
+
+
+@app.post(
+    "/api/chatbot/context",
+    response_model=ChatbotContextResponse,
+    summary="Build self-contained stateless RAG context package (multi-aspect RRF + structural expansion + SQLite table hydration)",
+)
+async def build_chatbot_context_endpoint(req: ChatbotContextRequest) -> ChatbotContextResponse:
+    search_svc = get_search_service()
+    build_fn = getattr(search_svc, "build_chatbot_context", None)
+    if not callable(build_fn):
+        raise HTTPException(
+            status_code=501,
+            detail="Метод search_service.build_chatbot_context() недоступен",
+        )
+    try:
+        if inspect.iscoroutinefunction(build_fn):
+            return await build_fn(req)
+        return await asyncio.to_thread(build_fn, req)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Chatbot context build failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка сборки контекста чат-бота: {exc}")
+
+
+@app.post("/api/documents/reconcile", summary="Reconcile document_registry.json, sections_store.json, tables_store.db, and Qdrant")
+async def reconcile_stores_endpoint():
+    pipeline = get_pipeline()
+    try:
+        return await asyncio.to_thread(pipeline.reconcile_stores, True)
+    except Exception as exc:
+        logger.exception("Store reconciliation failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка сверки хранилищ: {exc}")
+
+
+@app.post(
+    "/api/ask",
+    response_model=AgentAskResponse,
+    summary="Execute Autonomous Table-Aware RAG Agent with LLM Tool Calling over SQLite Tables",
+)
+async def execute_agent_ask(req: AgentAskRequest) -> AgentAskResponse:
+    try:
+        agent = _resolve_rag_agent()
+        ask_fn = getattr(agent, "ask")
+        if inspect.iscoroutinefunction(ask_fn):
+            response = await ask_fn(req)
+        else:
+            response = await asyncio.to_thread(ask_fn, req)
+        return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("RAG Agent ask failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка генерации ответа ИИ-агентом: {exc}")
 
 
 # -----------------------------------------------------------------------------

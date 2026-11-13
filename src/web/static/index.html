@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>МФТИ Нормативный RAG V3 — Загрузчик, Реестр и Гибридный Поиск</title>
+  <title>МФТИ Нормативный RAG V3 — Загрузчик, Реестр, Таблицы SQLite и Гибридный Поиск</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -22,11 +22,12 @@
             ФТ
           </div>
           <div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
               <h1 class="text-lg font-bold tracking-tight text-slate-900">МФТИ Нормативный RAG <span class="text-blue-600">V3</span></h1>
               <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-blue-50 text-blue-700 border border-blue-200">Parent-Child + 12% Overlap</span>
+              <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">3-Tier Adaptive Tables + Tool Calling</span>
             </div>
-            <p class="text-xs text-slate-500">Навигатор по внутренним регламентам, приказам, сметам и структуре ЦФО</p>
+            <p class="text-xs text-slate-500">Навигатор по внутренним регламентам, приказам, сметам Excel и финансовой структуре ЦФО</p>
           </div>
         </div>
 
@@ -38,7 +39,7 @@
             <span id="health-qdrant-text" class="font-mono-code">проверка...</span>
           </div>
 
-          <div id="health-polza-pill" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700" title="Статус Polza AI (baai/bge-m3 + Qwen3-VL)">
+          <div id="health-polza-pill" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700" title="Статус Polza AI (baai/bge-m3 + LLM Tool Calling)">
             <span id="health-polza-dot" class="w-2 h-2 rounded-full bg-slate-400"></span>
             <span class="font-medium">Polza AI:</span>
             <span id="health-polza-text" class="font-mono-code">...</span>
@@ -53,6 +54,11 @@
             <span class="font-medium">Parent-разделов:</span>
             <span id="health-sections-count" class="font-bold text-slate-900 font-mono-code">0</span>
           </div>
+
+          <button id="btn-header-open-tables" type="button" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 transition cursor-pointer" title="Открыть конструктор запросов к структурированным таблицам SQLite (Excel и большие таблицы Word/PDF)">
+            <span>📊 Таблиц SQLite:</span>
+            <span id="health-tables-count" class="font-bold text-emerald-900 font-mono-code">0</span>
+          </button>
 
           <a href="/docs" target="_blank" rel="noopener" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-medium transition">
             <span>OpenAPI /docs</span>
@@ -97,7 +103,7 @@
             </div>
             <h2 class="text-lg font-bold text-slate-900">Синхронизация рабочей папки <code class="px-1.5 py-0.5 rounded bg-white border border-blue-200 text-blue-700 font-mono-code text-base">доки/</code></h2>
             <p class="text-sm text-slate-600 max-w-3xl">
-              Сканирует директорию <code class="font-mono-code text-xs">доки/</code> по контрольным суммам <strong>SHA-256</strong>, автоматически распознает новые и изменившиеся файлы (<code class="font-mono-code text-xs">.pdf</code>, <code class="font-mono-code text-xs">.docx</code>, <code class="font-mono-code text-xs">.xlsx</code>), строит двусторонний граф редакций приказов и выполняет кросс-файловую дедупликацию приложений.
+              Сканирует директорию <code class="font-mono-code text-xs">доки/</code> по контрольным суммам <strong>SHA-256</strong>, автоматически распознает новые и изменившиеся файлы (<code class="font-mono-code text-xs">.pdf</code>, <code class="font-mono-code text-xs">.docx</code>, <code class="font-mono-code text-xs">.xlsx</code>), строит граф редакций приказов, сохраняет большие и Excel-таблицы в <strong>SQLite (<code class="font-mono-code text-xs">tables_store.db</code>)</strong> и выполняет кросс-файловую дедупликацию приложений.
             </p>
           </div>
 
@@ -239,7 +245,7 @@
             </div>
             <div data-stage-idx="4" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
               <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">4</span>
-              <span class="font-medium text-slate-700 leading-tight">12% overlap</span>
+              <span class="font-medium text-slate-700 leading-tight">12% overlap + SQLite</span>
             </div>
             <div data-stage-idx="5" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
               <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">5</span>
@@ -305,6 +311,11 @@
           </div>
           <div class="h-4 w-px bg-slate-200"></div>
           <div>
+            <span class="text-slate-500">Таблиц в SQLite:</span>
+            <span id="reg-stat-tables" class="ml-1 font-bold text-emerald-700 text-sm font-mono-code">0</span>
+          </div>
+          <div class="h-4 w-px bg-slate-200"></div>
+          <div>
             <span class="text-slate-500">Последний прогон:</span>
             <span id="reg-stat-last-run" class="ml-1 font-medium text-slate-800">—</span>
           </div>
@@ -315,7 +326,10 @@
           </div>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <button id="btn-registry-open-tables" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold transition cursor-pointer">
+            <span>📊 Конструктор SQLite-таблиц</span>
+          </button>
           <button id="btn-registry-sync-shortcut" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-semibold transition cursor-pointer">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             <span>Синхронизировать доки/</span>
@@ -330,7 +344,7 @@
       <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-col sm:flex-row items-stretch sm:items-center gap-3 text-sm">
         <div class="relative flex-1">
           <svg class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          <input id="reg-filter-search" type="text" placeholder="Фильтр по названию, имени файла, номеру приказа (напр. 794-1, 3065-1, КЗ)..." class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <input id="reg-filter-search" type="text" placeholder="Фильтр по названию, имени файла, номеру приказа (напр. 794-1, 3065-1, 3614-1, КЗ)..." class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
 
         <select id="reg-filter-status" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -360,7 +374,7 @@
                 <th class="px-3 py-3">№ и дата акта</th>
                 <th class="px-3 py-3 text-center">Формат</th>
                 <th class="px-3 py-3 text-center">Стр. / OCR</th>
-                <th class="px-3 py-3 text-center">Parent / Child</th>
+                <th class="px-3 py-3 text-center">Parent / Child / Таблицы</th>
                 <th class="px-3 py-3">Статус</th>
                 <th class="px-3 py-3">Граф редакций и дубли</th>
                 <th class="px-4 py-3 text-right">Действия</th>
@@ -377,37 +391,71 @@
     </section>
 
     <!-- =================================================================== -->
-    <!-- ВКЛАДКА 3: ТЕСТ ГИБРИДНОГО ПОИСКА (RAG PLAYGROUND)                  -->
+    <!-- ВКЛАДКА 3: ТЕСТ ГИБРИДНОГО ПОИСКА (RAG PLAYGROUND + TOOL CALLING)   -->
     <!-- =================================================================== -->
     <section id="panel-search" class="hidden space-y-5">
-      <!-- Query Box & Preset Chips -->
+      <!-- Query Box, Mode Toggle & Preset Chips -->
       <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
-        <div>
-          <h2 class="text-base font-bold text-slate-900">Песочница гибридного поиска RRF (Dense <code class="font-mono-code text-xs text-blue-700">baai/bge-m3</code> + Sparse <code class="font-mono-code text-xs text-indigo-700">BM25 pymorphy3</code>)</h2>
-          <p class="text-xs text-slate-500 mt-0.5">Проверяйте точность попадания в пункты, подтягивание чистых Parent-разделов, ко-ретривал изменений (<code class="font-mono-code">amends</code>) и детектор нерелевантных запросов (<code class="font-mono-code">Out-of-Scope</code>).</p>
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div>
+            <h2 class="text-base font-bold text-slate-900">
+              Песочница гибридного поиска RRF и автономного ИИ-агента с Tool Calling по таблицам
+            </h2>
+            <p class="text-xs text-slate-500 mt-0.5">
+              3-уровневая архитектура таблиц: 8-строчные чанки в Qdrant для поиска → встроенный <code class="font-mono-code">ParentSection</code> для компактных таблиц Word/PDF → детерминированный <strong>SQLite + Tool Calling</strong> для Excel и больших таблиц (≥ 25 строк).
+            </p>
+          </div>
+
+          <!-- Prominent Playground Execution Mode Toggle -->
+          <div class="inline-flex flex-wrap rounded-xl bg-slate-100 p-1 border border-slate-200 text-xs font-semibold shrink-0" role="group" aria-label="Режим работы песочницы">
+            <button id="btn-mode-search" type="button" data-playground-mode="search" class="px-3 py-2 rounded-lg bg-white text-slate-900 shadow-sm transition cursor-pointer">
+              🔍 Гибридный поиск (RRF)
+            </button>
+            <button id="btn-mode-ask" type="button" data-playground-mode="ask" class="px-3.5 py-2 rounded-lg text-indigo-700 hover:bg-indigo-50 transition cursor-pointer flex items-center gap-1.5">
+              <span>🤖 ИИ-ответ с авто-дозапросом таблиц (Tool Calling)</span>
+            </button>
+          </div>
         </div>
 
-        <!-- Search Input Row -->
-        <form id="search-form" class="flex flex-col sm:flex-row gap-2.5">
+        <!-- Search & AI Tool-Calling Input Row -->
+        <form id="search-form" class="flex flex-col lg:flex-row gap-2.5">
           <div class="relative flex-1">
-            <input id="search-query-input" type="text" required placeholder="Введите вопрос сотрудника МФТИ (например: за сколько месяцев подавать служебку на КЗ и на какую почту?)..." class="w-full pl-4 pr-10 py-3 rounded-xl border border-slate-300 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600" />
+            <input id="search-query-input" type="text" required placeholder="Введите вопрос по регламентам, сметам или финансовой структуре ЦФО МФТИ..." class="w-full pl-4 pr-10 py-3 rounded-xl border border-slate-300 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600" />
             <button id="btn-clear-query" type="button" title="Очистить запрос" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
             </button>
           </div>
-          <button id="btn-run-search" type="submit" class="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition cursor-pointer shrink-0">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-            <span>Найти нормы</span>
-          </button>
+          <div class="flex flex-col sm:flex-row gap-2 shrink-0">
+            <button id="btn-run-search" type="submit" class="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition cursor-pointer">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+              <span>Найти нормы</span>
+            </button>
+            <button id="btn-run-ask" type="button" class="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-emerald-600 hover:from-indigo-700 hover:to-emerald-700 text-white font-semibold text-sm shadow-md transition cursor-pointer">
+              <span>🤖 ИИ-ответ с авто-дозапросом таблиц (Tool Calling)</span>
+            </button>
+          </div>
         </form>
 
-        <!-- Quick Preset Chips -->
+        <!-- Dedicated Showcase Presets: Adaptive 3-Tier Tables & Autonomous Tool Calling -->
+        <div class="rounded-xl bg-gradient-to-r from-indigo-50/70 via-emerald-50/60 to-slate-50 border border-indigo-200/80 p-3 space-y-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="text-[11px] font-bold uppercase tracking-wider text-indigo-900 flex items-center gap-1.5">
+              <span>⚡ Демо-сценарии 3-Tier Table Architecture (XL SQLite Tool Query vs Компактная PDF Inline):</span>
+            </div>
+            <button id="btn-playground-open-explorer" type="button" class="text-[11px] font-semibold text-emerald-800 hover:underline cursor-pointer">
+              📊 Открыть конструктор запросов ко всем таблицам →
+            </button>
+          </div>
+          <div id="table-presets-container" class="flex flex-wrap gap-2"></div>
+        </div>
+
+        <!-- Standard 10 MIPT Retrieval Benchmark Preset Chips -->
         <div class="space-y-1.5">
-          <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Контрольные сценарии МФТИ (нажмите для быстрого теста):</div>
+          <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Контрольные сценарии корпуса МФТИ (нажмите для запуска в выбранном режиме):</div>
           <div id="search-presets-container" class="flex flex-wrap gap-1.5"></div>
         </div>
 
-        <!-- Search Controls Bar -->
+        <!-- Search & Agent Controls Bar -->
         <div class="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-4 text-xs">
           <div class="flex items-center gap-1.5">
             <label for="search-top-k" class="font-medium text-slate-600">Top-K слотов:</label>
@@ -445,16 +493,36 @@
             <input id="search-include-amendments" type="checkbox" checked class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
             <span>Подтягивать изменяющие акты (amends)</span>
           </label>
+
+          <label class="inline-flex items-center gap-1.5 cursor-pointer select-none font-semibold text-indigo-800 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200">
+            <input id="ask-enable-table-tools" type="checkbox" checked class="rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500" />
+            <span>Разрешить агенту SQLite Tool Calling</span>
+          </label>
         </div>
       </div>
 
-      <!-- Search Results Output Container -->
+      <!-- Search & AI Answer Output Container -->
       <div id="search-results-wrapper" class="hidden space-y-4">
+        <!-- AI Answer + ToolCallTrace Card (POST /api/ask) -->
+        <div id="agent-answer-container" class="hidden space-y-3"></div>
+
         <!-- Scope / Confidence Banner -->
         <div id="search-scope-banner" class="rounded-2xl p-4 border shadow-sm"></div>
 
         <!-- Version & Quality Alerts -->
         <div id="search-alerts-container" class="space-y-2"></div>
+
+        <!-- Linked Structured Tables (TablePassport Cards) -->
+        <div id="search-linked-tables-section" class="hidden space-y-2.5">
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-900">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-600"></span>
+              <span>Связанные структурированные таблицы в SQLite (TablePassport · Tool Query)</span>
+            </div>
+            <span class="text-[11px] text-slate-500">Полные листы Excel и большие таблицы (≥ 25 строк) доступны для фильтрации, агрегации и проверки формул</span>
+          </div>
+          <div id="search-linked-tables-list" class="grid grid-cols-1 lg:grid-cols-2 gap-3"></div>
+        </div>
 
         <!-- Co-retrieved Amendment Chunks -->
         <div id="search-amendments-section" class="hidden space-y-2.5">
@@ -601,6 +669,149 @@
           <button type="submit" class="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-sm cursor-pointer">Сохранить и обновить Qdrant</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- МОДАЛЬНОЕ ОКНО 3: КОНСТРУКТОР ЗАПРОСОВ К СТРУКТУРИРОВАННЫМ ТАБЛИЦАМ   -->
+  <!-- ===================================================================== -->
+  <div id="table-explorer-modal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-2 sm:p-4">
+    <div class="bg-white w-full max-w-7xl h-[93vh] rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
+      <!-- Explorer Top Header -->
+      <div class="px-5 py-3.5 bg-gradient-to-r from-slate-50 via-emerald-50/40 to-indigo-50/40 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+        <div class="min-w-0 flex-1 space-y-1.5">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+              📊 SQLite Table Store · Конструктор запросов
+            </span>
+            <h3 id="texp-title" class="text-base font-bold text-slate-900 truncate">Интерактивный проводник структурированных таблиц</h3>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-xs">
+            <label for="texp-table-select" class="font-semibold text-slate-600">Таблица:</label>
+            <select id="texp-table-select" class="max-w-xl w-full sm:w-auto rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"></select>
+            <button id="texp-btn-show-all-docs" type="button" class="hidden text-[11px] font-semibold text-blue-600 hover:underline cursor-pointer">
+              Показать таблицы всех документов
+            </button>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 shrink-0 flex-wrap">
+          <div id="texp-passport-badges" class="flex flex-wrap items-center gap-1.5 text-[11px] font-mono-code"></div>
+          <button id="btn-close-table-explorer" type="button" class="p-2 rounded-xl text-slate-500 hover:bg-slate-200 hover:text-slate-900 transition cursor-pointer" title="Закрыть конструктор">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Schema & Column Types Strip -->
+      <details id="texp-schema-details" open class="border-b border-slate-200 bg-slate-50/70">
+        <summary class="px-5 py-2 cursor-pointer text-xs font-semibold text-slate-700 flex items-center justify-between select-none hover:bg-slate-100/70">
+          <span>Схема колонок и типы данных TablePassport (нажмите на колонку для быстрого выбора в фильтре / группировке)</span>
+          <span id="texp-schema-summary-meta" class="font-mono-code text-[11px] text-slate-500"></span>
+        </summary>
+        <div id="texp-columns-strip" class="px-5 py-2.5 flex flex-wrap gap-1.5 max-h-28 overflow-y-auto border-t border-slate-200/70 bg-white"></div>
+      </details>
+
+      <!-- Query Builder Controls -->
+      <div class="px-5 py-3 bg-white border-b border-slate-200 space-y-3 text-xs">
+        <!-- Operation Tabs -->
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="inline-flex flex-wrap rounded-xl bg-slate-100 p-1 border border-slate-200 font-semibold">
+            <button type="button" data-texp-op="filter_rows" class="texp-op-btn px-3 py-1.5 rounded-lg bg-white text-slate-900 shadow-sm transition cursor-pointer">
+              🔍 Фильтр строк (filter_rows)
+            </button>
+            <button type="button" data-texp-op="aggregate" class="texp-op-btn px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition cursor-pointer">
+              📈 Агрегация и группировка (aggregate)
+            </button>
+            <button type="button" data-texp-op="get_formulas" class="texp-op-btn px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition cursor-pointer">
+              🧮 Формулы Excel (get_formulas)
+            </button>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <label for="texp-limit" class="text-slate-600 font-medium">Лимит строк:</label>
+            <select id="texp-limit" class="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1 font-mono-code font-semibold text-slate-800">
+              <option value="15">15</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="250">250</option>
+            </select>
+            <button id="texp-btn-reset" type="button" class="px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-100 font-medium cursor-pointer">
+              Сбросить
+            </button>
+            <button id="texp-btn-run" type="button" class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm transition cursor-pointer">
+              Выполнить запрос
+            </button>
+          </div>
+        </div>
+
+        <!-- Filter Inputs (shared across filter_rows, aggregate, get_formulas) -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-2.5 items-end">
+          <div class="lg:col-span-4">
+            <label for="texp-search-text" class="block text-[11px] font-semibold text-slate-600 mb-1">Поиск по тексту строки / формуле (search_text, ё=е):</label>
+            <input id="texp-search-text" type="text" placeholder="напр.: ФРКТ, накладные, НДС, 224, SUM..." class="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+          </div>
+
+          <div class="lg:col-span-4">
+            <label for="texp-filter-col" class="block text-[11px] font-semibold text-slate-600 mb-1">Фильтр по колонке (filters[col]):</label>
+            <select id="texp-filter-col" class="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600">
+              <option value="">— Любая колонка (без фильтра) —</option>
+            </select>
+          </div>
+
+          <div class="lg:col-span-4">
+            <label for="texp-filter-val" class="block text-[11px] font-semibold text-slate-600 mb-1">Значение / условие (подстрока или &gt;, &gt;=, &lt;, =):</label>
+            <input id="texp-filter-val" type="text" placeholder="напр.: ФРКТ или >= 20" class="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+          </div>
+        </div>
+
+        <!-- Aggregation Controls (shown when operation === 'aggregate') -->
+        <div id="texp-agg-controls" class="hidden pt-2 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          <div>
+            <label for="texp-agg-func" class="block text-[11px] font-semibold text-indigo-800 mb-1">Функция агрегации (agg_func):</label>
+            <select id="texp-agg-func" class="w-full rounded-lg border border-indigo-300 bg-indigo-50/40 px-2.5 py-1.5 font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600">
+              <option value="count">count — Количество строк</option>
+              <option value="distinct">distinct — Уникальные значения колонки</option>
+              <option value="sum">sum — Сумма числовых значений</option>
+              <option value="avg">avg — Среднее значение</option>
+              <option value="min">min — Минимум</option>
+              <option value="max">max — Максимум</option>
+            </select>
+          </div>
+
+          <div>
+            <label for="texp-agg-col" class="block text-[11px] font-semibold text-indigo-800 mb-1">Целевая колонка (agg_column):</label>
+            <select id="texp-agg-col" class="w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600">
+              <option value="">— Все строки (*) —</option>
+            </select>
+          </div>
+
+          <div>
+            <label for="texp-group-by" class="block text-[11px] font-semibold text-indigo-800 mb-1">Группировка (group_by):</label>
+            <select id="texp-group-by" class="w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600">
+              <option value="">— Без группировки —</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Query Execution Status & Pagination Strip -->
+      <div class="px-5 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div id="texp-results-meta" class="text-slate-600 font-medium">Выберите таблицу для просмотра данных</div>
+        <div id="texp-pagination-bar" class="flex items-center gap-2">
+          <button id="texp-btn-prev" type="button" class="px-2.5 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40 cursor-pointer">← Назад</button>
+          <span id="texp-page-label" class="font-mono-code text-[11px] text-slate-600">offset: 0</span>
+          <button id="texp-btn-next" type="button" class="px-2.5 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40 cursor-pointer">Вперед →</button>
+        </div>
+      </div>
+
+      <!-- Explorer Scrollable Results Body -->
+      <div class="flex-1 overflow-auto p-4 sm:p-5 space-y-4 bg-white">
+        <div id="texp-agg-result-box" class="hidden"></div>
+        <div id="texp-formulas-summary-box" class="hidden"></div>
+        <div id="texp-table-container" class="text-xs text-slate-500">Загрузка таблиц...</div>
+      </div>
     </div>
   </div>
 

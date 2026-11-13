@@ -51,6 +51,25 @@ _REQUISITE_CELL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Official registration / ЭДО stamp line pattern
+_REGISTRATION_STAMP_LINE_RE = re.compile(
+    r"^\s*(?:Зарегистрировано\s+(?:в\s+(?:ЭДО|СЭД|реестре|журнале)|от\b)|"
+    r"Регистрационный\s*(?:№|N|номер)\b|Рег\.\s*(?:№|N)\s*\d)",
+    re.IGNORECASE,
+)
+
+# Marker for detecting registration / ЭДО stamps inside embedded raster stamp images on digital PDFs
+_STAMP_OCR_MARKER_RE = re.compile(
+    r"(?:зарегистрирован[оа]?|регистрационн[а-яё]+\s*(?:№|n|номер)|рег\.\s*(?:№|n)\s*\d|в\s+эдо\b)",
+    re.IGNORECASE,
+)
+
+# Order / disposition header requisite marker for Word section headers
+_DOCX_ORDER_HEADER_RE = re.compile(
+    r"(?:ПРИКАЗ|РАСПОРЯЖЕНИЕ)\s+(?:от\s+\d{1,2}[.\s]|(?:№|N)\s*\d)",
+    re.IGNORECASE,
+)
+
 # Standalone single-level or multi-level clause number on its own line in PDFs
 _STANDALONE_CLAUSE_LINE_RE = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2})+|\d{1,2}\.)\s*$")
 
@@ -486,6 +505,20 @@ def _text_to_parsed_blocks(
         if ln.startswith("|") and ln.endswith("|") and ln.count("|") >= 3:
             _flush_para()
             md_table_buf.append(ln)
+        elif _REGISTRATION_STAMP_LINE_RE.match(ln):
+            if md_table_buf:
+                _flush_md_table()
+            _flush_para()
+            blocks.append(
+                ParsedBlock(
+                    text=ln,
+                    block_type=BlockType.STAMP.value,
+                    zone=ZoneType.NORMATIVE.value,
+                    page_num=page_num,
+                    page_numbers=[page_num],
+                    is_ocr=is_ocr,
+                )
+            )
         else:
             if md_table_buf:
                 _flush_md_table()
@@ -592,6 +625,96 @@ def _bbox_overlaps_any_table(
             if (inter_area / b_area) >= 0.45:
                 return True
     return False
+
+
+def _extract_digital_page_raster_stamps(
+    fitz_page: Any,
+    engine: HybridOCREngine,
+    page_num: int,
+    file_name: str,
+    native_text: str,
+) -> list[tuple[float, ParsedBlock]]:
+    """
+    Inspect small/medium embedded raster banner images on a digital PDF page (e.g. overlaid ЭДО registration stamps)
+    using cached local RapidOCR, returning `(y0, ParsedBlock(block_type='stamp'))` for genuine registration stamps
+    not already present in the native text layer.
+    """
+    rect = fitz_page.rect
+    page_area = float(rect.width * rect.height)
+    if page_area <= 0:
+        return []
+
+    images = fitz_page.get_images(full=True)
+    if not images:
+        return []
+
+    native_alnum = re.sub(r"[^а-яa-z0-9]+", "", (native_text or "").lower().replace("ё", "е"))
+    candidate_rects: list[Any] = []
+    seen_bbox_keys: set[tuple[int, int, int, int]] = set()
+
+    for img_info in images:
+        xref = img_info[0]
+        try:
+            for bbox in fitz_page.get_image_rects(xref):
+                clipped = bbox & rect
+                if clipped.is_empty:
+                    continue
+                cov = float(clipped.width * clipped.height) / page_area
+                if (
+                    clipped.width < 80
+                    or clipped.height < 18
+                    or clipped.width < 1.5 * clipped.height
+                    or cov >= OCR_MIN_IMAGE_COVERAGE
+                ):
+                    continue
+                bkey = (int(round(clipped.x0)), int(round(clipped.y0)), int(round(clipped.x1)), int(round(clipped.y1)))
+                if bkey not in seen_bbox_keys:
+                    seen_bbox_keys.add(bkey)
+                    candidate_rects.append(clipped)
+        except Exception as exc:
+            logger.debug("Skipping stamp image rect lookup on %s p.%d: %s", file_name, page_num, exc)
+
+    if not candidate_rects or len(candidate_rects) > 6:
+        return []
+
+    candidate_rects.sort(key=lambda r: (float(r.y0), float(r.x0)))
+    stamp_blocks: list[tuple[float, ParsedBlock]] = []
+
+    for clipped in candidate_rects[:4]:
+        try:
+            pix = fitz_page.get_pixmap(clip=clipped, dpi=300, alpha=False)
+            png_bytes = pix.tobytes("png")
+            ocr_res = engine.recognize_page(
+                png_bytes=png_bytes,
+                ocr_backend="local_rapidocr",
+                page_num=page_num,
+                file_name=f"{file_name}#stamp",
+            )
+            stamp_txt = _normalize_inline_whitespace(str(ocr_res.get("text") or ""))
+            if not stamp_txt or not _STAMP_OCR_MARKER_RE.search(stamp_txt):
+                continue
+            stamp_flat = re.sub(r"\s+", " ", stamp_txt).strip()
+            stamp_alnum = re.sub(r"[^а-яa-z0-9]+", "", stamp_flat.lower().replace("ё", "е"))
+            if len(stamp_alnum) < 6 or (stamp_alnum in native_alnum):
+                continue
+            native_alnum += stamp_alnum
+            stamp_blocks.append(
+                (
+                    float(clipped.y0),
+                    ParsedBlock(
+                        text=stamp_flat,
+                        block_type=BlockType.STAMP.value,
+                        zone=ZoneType.NORMATIVE.value,
+                        page_num=page_num,
+                        page_numbers=[page_num],
+                        is_ocr=True,
+                    ),
+                )
+            )
+        except Exception as exc:
+            logger.debug("Skipping raster stamp OCR on %s p.%d: %s", file_name, page_num, exc)
+
+    return stamp_blocks
 
 
 def parse_pdf(
@@ -720,6 +843,16 @@ def parse_pdf(
                 raw_native_text = fitz_page.get_text("text") or ""
                 norm_native_text = _normalize_inline_whitespace(raw_native_text)
 
+                raster_stamps: list[tuple[float, ParsedBlock]] = []
+                if page_idx == 0 or page_idx == pages_total - 1:
+                    raster_stamps = _extract_digital_page_raster_stamps(
+                        fitz_page=fitz_page,
+                        engine=engine,
+                        page_num=page_num,
+                        file_name=path.name,
+                        native_text=norm_native_text,
+                    )
+
                 # Digital page processing: check for genuine multi-column tables via pdfplumber
                 plumber_page = (
                     plumber_doc.pages[page_idx]
@@ -729,15 +862,22 @@ def parse_pdf(
                 digital_tables = _extract_valid_pdfplumber_tables(plumber_page, fitz_page)
 
                 if not digital_tables:
+                    top_stamps = [sb for sy0, sb in raster_stamps if sy0 < float(fitz_page.rect.height) * 0.5]
+                    bot_stamps = [sb for sy0, sb in raster_stamps if sy0 >= float(fitz_page.rect.height) * 0.5]
+                    blocks.extend(top_stamps)
                     page_blocks = _text_to_parsed_blocks(
                         norm_native_text, page_num=page_num, is_ocr=False, prev_blocks=blocks
                     )
                     blocks.extend(page_blocks)
+                    blocks.extend(bot_stamps)
                     continue
 
                 # Interleave non-overlapping PyMuPDF text blocks and extracted digital tables by vertical y0 order
                 table_bboxes = [t["bbox"] for t in digital_tables]
                 ordered_items: list[tuple[float, str, Any]] = []
+
+                for sy0, sb in raster_stamps:
+                    ordered_items.append((sy0, "stamp", sb))
 
                 for tbl in digital_tables:
                     ordered_items.append((tbl["bbox"][1], "table", tbl))
@@ -768,6 +908,9 @@ def parse_pdf(
                 for _, kind, payload in ordered_items:
                     if kind == "text":
                         text_acc.append(payload)
+                    elif kind == "stamp":
+                        _flush_text_acc()
+                        blocks.append(payload)
                     else:
                         _flush_text_acc()
                         headers = payload["headers"]
@@ -1247,6 +1390,7 @@ def parse_docx(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]
 
                 filled_rows, top_hier = _forward_fill_cfo_hierarchy(headers, data_rows)
                 md_str = _format_markdown_table(headers, filled_rows)
+                tbl_title = banners[-1] if banners else ""
 
                 blocks.append(
                     ParsedBlock(
@@ -1259,6 +1403,7 @@ def parse_docx(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]
                         table_headers=headers,
                         table_rows=filled_rows,
                         parent_hierarchy=top_hier,
+                        metadata={"table_title": tbl_title} if tbl_title else {},
                     )
                 )
 
@@ -1266,6 +1411,76 @@ def parse_docx(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]
             w_msg = f"Ошибка элемента DOCX в {path.name}: {child_exc}"
             logger.warning(w_msg)
             warnings_list.append(w_msg)
+
+    # Check Word section headers/footers ONLY for genuine order requisite headers or registration/ЭДО stamps
+    try:
+        body_alnum = re.sub(
+            r"[^а-яa-z0-9]+",
+            "",
+            "\n".join(b.text for b in blocks if b.text).lower().replace("ё", "е"),
+        )
+        hdr_blocks: list[ParsedBlock] = []
+        ftr_blocks: list[ParsedBlock] = []
+        seen_hf_elements: set[int] = set()
+
+        for sec in doc.sections:
+            for is_footer, hf_obj in (
+                (False, getattr(sec, "first_page_header", None)),
+                (False, getattr(sec, "header", None)),
+                (True, getattr(sec, "first_page_footer", None)),
+                (True, getattr(sec, "footer", None)),
+            ):
+                if hf_obj is None or getattr(hf_obj, "_element", None) is None:
+                    continue
+                el_id = id(hf_obj._element)
+                if el_id in seen_hf_elements:
+                    continue
+                seen_hf_elements.add(el_id)
+
+                hf_lines: list[str] = []
+                for p in getattr(hf_obj, "paragraphs", []):
+                    pt = _normalize_inline_whitespace(p.text)
+                    if pt:
+                        hf_lines.append(pt)
+                for tbl in getattr(hf_obj, "tables", []):
+                    grid = _extract_docx_table_grid(tbl)
+                    for row in grid:
+                        rt = " | ".join(c for c in row if c)
+                        if rt:
+                            hf_lines.append(rt)
+
+                if not hf_lines:
+                    continue
+                combined_hf = "\n".join(hf_lines).strip()
+                has_reg_stamp = any(_REGISTRATION_STAMP_LINE_RE.match(ln) for ln in hf_lines) or bool(
+                    _STAMP_OCR_MARKER_RE.search(combined_hf)
+                )
+                has_ord_hdr = (not is_footer) and bool(
+                    _DOCX_ORDER_HEADER_RE.search(combined_hf) or _REQUISITE_CELL_RE.search(combined_hf)
+                )
+                if not (has_reg_stamp or has_ord_hdr):
+                    continue
+                hf_alnum = re.sub(r"[^а-яa-z0-9]+", "", combined_hf.lower().replace("ё", "е"))
+                if len(hf_alnum) < 6 or hf_alnum in body_alnum:
+                    continue
+                body_alnum += hf_alnum
+                sb = ParsedBlock(
+                    text=combined_hf,
+                    block_type=BlockType.STAMP.value,
+                    zone=ZoneType.NORMATIVE.value,
+                    page_num=1 if not is_footer else max(1, page_num),
+                    page_numbers=[1 if not is_footer else max(1, page_num)],
+                    is_ocr=False,
+                )
+                if is_footer:
+                    ftr_blocks.append(sb)
+                else:
+                    hdr_blocks.append(sb)
+
+        if hdr_blocks or ftr_blocks:
+            blocks = hdr_blocks + blocks + ftr_blocks
+    except Exception as hf_exc:
+        logger.debug("Skipping DOCX header/footer stamp check for %s: %s", path.name, hf_exc)
 
     return blocks, {
         "file_format": "docx",
@@ -1372,6 +1587,7 @@ def _parse_xlsx_smeta_form_sheet(
         form_lines.append(" | ".join(non_empty))
 
     if header_row_idx is None:
+        fallback_headers = [f"Колонка {i + 1}" for i in range(max((len(r) for r in grid_cells), default=1))]
         return [
             ParsedBlock(
                 text="\n".join(form_lines),
@@ -1380,13 +1596,73 @@ def _parse_xlsx_smeta_form_sheet(
                 page_num=page_num,
                 page_numbers=[page_num],
                 sheet_name=sheet_title,
+                metadata={
+                    "sheet_name": sheet_title,
+                    "table_title": f"Лист: {sheet_title}",
+                    "structured_headers": fallback_headers,
+                    "structured_rows": [r for r in grid_cells if any(r)],
+                },
             )
         ]
 
-    # 2. Format smeta table rows with KVR inheritance and deduplicated period formulas
+    # 2. Format smeta table rows with KVR inheritance and deduplicated period formulas,
+    # while simultaneously building rich structured columns/rows for StructuredTableStore!
     hdr_row = grid_cells[header_row_idx]
     hdr_non_empty = [c for c in hdr_row if c and c != "None"]
     form_lines.append("Шапка сметы: " + " | ".join(hdr_non_empty[:10]))
+
+    # Identify period & total columns after KOSGU (e.g. 1 квартал..4 квартал, Сумма OR январь..декабрь, Сумма)
+    period_cols: list[tuple[int, str]] = []
+    notes_start_col = len(hdr_row)
+    for c_i in range(kosgu_col_idx + 1, len(hdr_row)):
+        h_lbl = hdr_row[c_i].strip()
+        if h_lbl and h_lbl != "None" and "[формула:" not in h_lbl:
+            period_cols.append((c_i, h_lbl))
+            if "сумма" in h_lbl.lower() or "итого" in h_lbl.lower():
+                notes_start_col = c_i + 1
+                break
+    if not period_cols:
+        notes_start_col = kosgu_col_idx + 1
+
+    structured_headers: list[str] = [
+        "Наименование показателя",
+        "Ставка",
+        "КВР",
+        "КОСГУ / Вид затрат",
+        *[lbl for _, lbl in period_cols],
+        "Формулы",
+        "Примечание",
+    ]
+    structured_rows: list[list[str]] = []
+
+    # Capture legend rate/formula definitions above header_row_idx (e.g. 20% (0.2), 8.2% (0.082))
+    app_banner = ""
+    for r_idx in range(preamble_end):
+        prow = grid_cells[r_idx]
+        non_empty = [c.strip() for c in prow if c and c.strip() and c.strip() != "None"]
+        if not non_empty:
+            continue
+        if any("приложение" in c.lower() for c in non_empty) and not app_banner:
+            app_banner = non_empty[0]
+        has_legend_rate_or_formula = any(
+            ("%" in c and any(ch.isdigit() for ch in c)) or "[формула:" in c
+            for c in non_empty
+        )
+        if has_legend_rate_or_formula:
+            leg_rate = next((c for c in non_empty if "%" in c and any(ch.isdigit() for ch in c)), "")
+            leg_form = next((c for c in non_empty if "[формула:" in c), "")
+            leg_notes = [c for c in non_empty if c not in {leg_rate, leg_form}]
+            structured_rows.append(
+                [
+                    "Условные обозначения бланка сметы",
+                    leg_rate,
+                    "",
+                    "",
+                    *["" for _ in period_cols],
+                    leg_form,
+                    " | ".join(leg_notes),
+                ]
+            )
 
     active_parent_kvr = ""
 
@@ -1459,6 +1735,28 @@ def _parse_xlsx_smeta_form_sheet(
         if row_pieces:
             form_lines.append(" | ".join(row_pieces))
 
+        period_vals = [
+            (row[col_idx].strip() if col_idx < len(row) and row[col_idx].strip() != "None" else "")
+            for col_idx, _ in period_cols
+        ]
+        side_notes = [
+            row[c_i].strip()
+            for c_i in range(notes_start_col, len(row))
+            if row[c_i].strip() and row[c_i].strip() != "None" and "[формула:" not in row[c_i]
+        ]
+        s_row = [
+            indicator,
+            ", ".join(rate_parts),
+            effective_kvr,
+            raw_kosgu,
+            *period_vals,
+            " ; ".join(formulas_seen),
+            " | ".join(side_notes or comments_seen),
+        ]
+        if any(s_row):
+            structured_rows.append(s_row)
+
+    smeta_title = f"{app_banner} — Смета доходов и расходов ({sheet_title})" if app_banner else f"Смета ({sheet_title})"
     blocks.append(
         ParsedBlock(
             text="\n".join(form_lines),
@@ -1467,6 +1765,12 @@ def _parse_xlsx_smeta_form_sheet(
             page_num=page_num,
             page_numbers=[page_num],
             sheet_name=sheet_title,
+            metadata={
+                "sheet_name": sheet_title,
+                "table_title": smeta_title,
+                "structured_headers": structured_headers,
+                "structured_rows": structured_rows,
+            },
         )
     )
     return blocks
@@ -1589,6 +1893,7 @@ def parse_xlsx(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]
 
                 filled_rows, top_hier = _forward_fill_cfo_hierarchy(headers, data_rows)
                 md_str = _format_markdown_table(headers, filled_rows)
+                tbl_title = banners[-1] if banners else f"Лист: {sheet_name}"
 
                 # Keep sheet_name in metadata so table slices hash identically to matching DOCX tables (e.g. 3614-1)
                 blocks.append(
@@ -1603,7 +1908,7 @@ def parse_xlsx(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]
                         table_rows=filled_rows,
                         parent_hierarchy=top_hier,
                         sheet_name=None,
-                        metadata={"sheet_name": sheet_name},
+                        metadata={"sheet_name": sheet_name, "table_title": tbl_title},
                     )
                 )
 
@@ -1637,11 +1942,13 @@ def parse_xlsx(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]
 def parse_document(
     file_path: str | Path,
     ocr_backend: str | None = None,
+    doc_id: str = "",
 ) -> tuple[list[ParsedBlock], dict[str, Any]]:
     """
     Unified fault-tolerant entrypoint for Module 1 Document Ingestion:
     Dispatches `.pdf`, `.docx`, and `.xlsx` files to their specialized parsers and returns
-    `(list[ParsedBlock], parser_meta_dict)`.
+    `(list[ParsedBlock], parser_meta_dict)`. If `doc_id` is supplied, pre-assigns deterministic
+    `table_id` (`<doc_id>::tbl_01`...) onto eligible structured table blocks.
     """
     path = Path(file_path)
     if not path.exists() or not path.is_file():
@@ -1657,21 +1964,33 @@ def parse_document(
 
     ext = path.suffix.lower()
     if ext == ".pdf":
-        return parse_pdf(path, ocr_backend=ocr_backend)
-    if ext == ".docx":
-        return parse_docx(path)
-    if ext in {".xlsx", ".xlsm"}:
-        return parse_xlsx(path)
+        blocks, meta = parse_pdf(path, ocr_backend=ocr_backend)
+    elif ext == ".docx":
+        blocks, meta = parse_docx(path)
+    elif ext in {".xlsx", ".xlsm"}:
+        blocks, meta = parse_xlsx(path)
+    else:
+        msg = f"Неподдерживаемый формат файла: {ext} ({path.name})"
+        logger.warning(msg)
+        return [], {
+            "file_format": ext.lstrip("."),
+            "pages_total": 0,
+            "ocr_pages": 0,
+            "warnings": [msg],
+            "errors": [msg],
+        }
 
-    msg = f"Неподдерживаемый формат файла: {ext} ({path.name})"
-    logger.warning(msg)
-    return [], {
-        "file_format": ext.lstrip("."),
-        "pages_total": 0,
-        "ocr_pages": 0,
-        "warnings": [msg],
-        "errors": [msg],
-    }
+    if doc_id and blocks:
+        from src.indexing.table_store import extract_logical_tables_and_assign_ids
+        from src.schemas import DocumentMeta
+
+        specs = extract_logical_tables_and_assign_ids(
+            blocks,
+            DocumentMeta(doc_id=doc_id, file_name=path.name, file_format=ext.lstrip(".")),
+        )
+        meta["tables_count"] = len(specs)
+
+    return blocks, meta
 
 
 parse_file = parse_document

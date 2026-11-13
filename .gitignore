@@ -21,3 +21,6 @@ data/embed_cache/
 data/uploads/
 data/index/
 *.log
+
+# Local benchmark evaluation dumps
+qwe/

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     POLZA_BASE_URL: str = Field(default="https://polza.ai/api/v1")
     POLZA_EMBEDDING_MODEL: str = Field(default="baai/bge-m3")
     POLZA_VLM_MODEL: str = Field(default="qwen/qwen3-vl-235b-a22b-instruct")
+    POLZA_LLM_MODEL: str = Field(default="openai/gpt-4o-mini")
 
     # OCR Backend ("hybrid_vlm" or "local_rapidocr")
     OCR_BACKEND: str = Field(default="hybrid_vlm")
@@ -84,6 +85,11 @@ QDRANT_STORAGE_DIR: Path = DATA_DIR / "qdrant_storage"
 SECTIONS_STORE_PATH: Path = DATA_DIR / "sections_store.json"
 DOCUMENT_REGISTRY_PATH: Path = DATA_DIR / "document_registry.json"
 INDEXING_REPORT_PATH: Path = DATA_DIR / "indexing_report.json"
+TABLES_DB_PATH: Path = DATA_DIR / "tables_store.db"
+
+# Adaptive 3-Tier Structured Table Thresholds
+LARGE_TABLE_MIN_ROWS: int = 25
+LARGE_TABLE_MIN_CHARS: int = 5000
 
 GLOSSARY_PATH: Path = CONFIG_DIR / "glossary.yaml"
 REGISTRY_OVERRIDES_PATH: Path = CONFIG_DIR / "registry_overrides.yaml"
@@ -180,8 +186,8 @@ APPROVAL_TRIGGER_RE = re.compile(
 
 NORMATIVE_RESET_RE = re.compile(
     r"^\s*(?:Приложени[ея]\s*(?:№|N)?\s*\d*[а-яa-z]?|УТВЕРЖДЕН[ОЫА]?\b|"
-    r"РЕГЛАМЕНТ\b|ПОЛОЖЕНИЕ\b|ИНСТРУКЦИЯ\b| ПОРЯДОК\b|КАРТОЧКА\s+ПРОЕКТА\b|"
-    r"ТЕХНИЧЕСКИЙ\s+РЕГЛАМЕНТ\b)",
+    r"(?:РЕГЛАМЕНТ|ПОЛОЖЕНИЕ|ИНСТРУКЦИЯ|ПОРЯДОК)\b(?!\s*\))|КАРТОЧКА\s+ПРОЕКТА\b|"
+    r"ТЕХНИЧЕСКИЙ\s+РЕГЛАМЕНТ\b(?!\s*\)))",
     re.IGNORECASE,
 )
 
@@ -190,7 +196,7 @@ UNIT_BOUNDARY_RE = re.compile(
     r"^\s*(?:"
     r"Приложени[ея]\s*(?:№|N)?\s*(?:\d+[а-яa-z]?|[а-яa-z])\b|"
     r"УТВЕРЖДЕН[ОЫА]?\s+(?:приказом|распоряжением)\b|"
-    r"(?:ВНУТРЕННИЙ\s+|ТЕХНИЧЕСКИЙ\s+)?РЕГЛАМЕНТ\b|"
+    r"(?:ВНУТРЕННИЙ\s+|ТЕХНИЧЕСКИЙ\s+)?РЕГЛАМЕНТ\b(?!\s*\))|"
     r"ПОЛОЖЕНИЕ\s+о\b|"
     r"ИНСТРУКЦИЯ\s+(?:по|о)\b|"
     r"КАРТОЧКА\s+ПРОЕКТА\b"
@@ -232,8 +238,11 @@ PAGE_FOOTER_RE = re.compile(
 # Hyphenated word wrap across PDF lines
 HYPHEN_WRAP_RE = re.compile(r"([а-яёА-ЯЁ]{2,})-\s*\n\s*([а-яё]{2,})")
 
-# Footnote superscript glued to order number (e.g., "№ 8123" where 3 is footnote marker)
-FOOTNOTE_ORDER_RE = re.compile(r"(№\s*\d{3})\d(?=\s|$|[,.;)])")
+# Footnote superscript glued to order number (e.g., "№ 8123" where 3 is a verified page footnote marker)
+FOOTNOTE_ORDER_RE = re.compile(r"(№\s*\d{3})(\d)(?=\s|$|[,.;)])")
+
+# Footnote definition line on the same page (bare single digit without dot/paren + uppercase start, or superscript)
+FOOTNOTE_DEF_LINE_RE = re.compile(r"^\s*([1-9])\s+[А-ЯЁA-Z«\"(\[]")
 
 # Section Title Starters (Level 3 Parent Section detection)
 SECTION_TITLE_STARTERS: tuple[str, ...] = (

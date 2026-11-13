@@ -1,4 +1,4 @@
-"""Pydantic v2 data schemas for MIPT Normative RAG V3 (Ingestion, Chunker V3, Indexing, Retrieval, Web UI)."""
+"""Pydantic v2 data schemas for MIPT Normative RAG V3 (Ingestion, Chunker V3, Indexing, Structured Tables, Retrieval, Web UI)."""
 
 from __future__ import annotations
 
@@ -126,6 +126,7 @@ class ParsedBlock(BaseModel):
     style_name: str = ""
     heading_level: int | None = None
     is_ocr: bool = False
+    table_id: str = ""
     table_headers: list[str] = Field(default_factory=list)
     table_rows: list[list[str]] = Field(default_factory=list)
     parent_hierarchy: list[str] = Field(default_factory=list)
@@ -166,6 +167,7 @@ class DocumentMeta(BaseModel):
     ocr_pages: int = 0
     parent_count: int = 0
     chunk_count: int = 0
+    tables_count: int = 0
     also_in_files: list[str] = Field(default_factory=list)
     indexed_at: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -203,6 +205,7 @@ class ChunkRecord(BaseModel):
     section_num: str = ""
     section_title: str = ""
     clause_no: str = ""
+    table_id: str = ""
     zone: ZoneType | str = ZoneType.NORMATIVE.value
     block_type: str = BlockType.PARAGRAPH.value
     clean_text: str = ""
@@ -238,6 +241,8 @@ class ChunkRecord(BaseModel):
             self.char_count = len(self.clean_text)
         if not self.content_hash and self.clean_text:
             self.content_hash = compute_content_hash(self.clean_text)
+        if not self.table_id and isinstance(self.metadata, dict) and self.metadata.get("table_id"):
+            self.table_id = str(self.metadata["table_id"])
         return self
 
 
@@ -263,6 +268,90 @@ class ParentSectionRecord(BaseModel):
         if not self.char_count and self.clean_text:
             self.char_count = len(self.clean_text)
         return self
+
+
+class TableColumnSchema(BaseModel):
+    """Column metadata and inferred type for a structured table stored in SQLite."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    name: str
+    col_index: int = 0
+    inferred_type: str = "text"
+    non_empty_count: int = 0
+    sample_values: list[str] = Field(default_factory=list)
+    is_hierarchy: bool = False
+    has_formulas: bool = False
+
+
+class TablePassport(BaseModel):
+    """Compact passport & schema descriptor for an Excel sheet or large Word/PDF table."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    table_id: str
+    doc_id: str
+    file_name: str = ""
+    doc_number: str = ""
+    doc_date: str = ""
+    file_format: str = ""
+    unit_id: str = ""
+    section_id: str = ""
+    section_title: str = ""
+    sheet_name: str = ""
+    table_title: str = ""
+    row_count: int = 0
+    col_count: int = 0
+    char_count: int = 0
+    columns: list[TableColumnSchema] = Field(default_factory=list)
+    has_formulas: bool = False
+    formula_count: int = 0
+    delivery_mode: str = "tool_query"
+    table_hash: str = ""
+    also_in_files: list[str] = Field(default_factory=list)
+    preview_rows: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("also_in_files", mode="before")
+    @classmethod
+    def _validate_also_in_files(cls, v: Any) -> list[str]:
+        return _coerce_str_list(v)
+
+
+class TableQueryRequest(BaseModel):
+    """Structured query payload for filtering, aggregating, or inspecting formulas in a table."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    table_id: str
+    operation: str = "filter_rows"
+    filters: dict[str, Any] = Field(default_factory=dict)
+    search_text: str = ""
+    select_columns: list[str] = Field(default_factory=list)
+    agg_func: str = "count"
+    agg_column: str = ""
+    group_by: str = ""
+    limit: int = Field(default=25, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class TableQueryResponse(BaseModel):
+    """Deterministic result from StructuredTableStore.query_table()."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    table_id: str
+    table_title: str = ""
+    operation: str = ""
+    total_table_rows: int = 0
+    matched_count: int = 0
+    returned_count: int = 0
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    aggregation_result: Any = None
+    formulas: list[dict[str, Any]] = Field(default_factory=list)
+    markdown_preview: str = ""
+    truncated: bool = False
+    latency_ms: float = 0.0
 
 
 class SearchQuery(BaseModel):
@@ -292,6 +381,8 @@ class SearchHit(BaseModel):
     file_name: str = ""
     doc_number: str = ""
     doc_date: str = ""
+    edo_number: str = ""
+    edo_date: str = ""
     doc_type: str = ""
     title: str = ""
     status: str = DocumentStatus.ACTIVE.value
@@ -302,6 +393,7 @@ class SearchHit(BaseModel):
     section_num: str = ""
     section_title: str = ""
     clause_no: str = ""
+    table_id: str = ""
     zone: str = ZoneType.NORMATIVE.value
     score: float = 0.0
     rrf_score: float = 0.0
@@ -310,6 +402,8 @@ class SearchHit(BaseModel):
     raw_text: str = ""
     clean_text: str = ""
     embed_text: str = ""
+    prev_id: str | None = None
+    next_id: str | None = None
     parent_section: ParentSectionRecord | None = None
     parent_text: str = ""
     roles: list[str] = Field(default_factory=list)
@@ -335,8 +429,11 @@ class SearchResponse(BaseModel):
 
     query: str = ""
     expanded_query: str = ""
+    sub_queries: list[str] = Field(default_factory=list)
     hits: list[SearchHit] = Field(default_factory=list)
     amendment_chunks: list[SearchHit] = Field(default_factory=list)
+    linked_tables: list[TablePassport] = Field(default_factory=list)
+    table_context: list[TableQueryResponse] = Field(default_factory=list)
     version_alerts: list[str] = Field(default_factory=list)
     quality_alerts: list[str] = Field(default_factory=list)
     is_out_of_scope: bool = False
@@ -344,6 +441,80 @@ class SearchResponse(BaseModel):
     top_dense_score: float = 0.0
     lexical_overlap: float = 0.0
     total_found: int = 0
+    latency_ms: float = 0.0
+
+
+class ChatbotContextRequest(BaseModel):
+    """Single-query stateless RAG context request payload for POST /api/chatbot/context."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    query: str
+    top_k: int = Field(default=12, ge=1, le=50)
+    include_tables: bool = True
+
+
+class ChatbotContextResponse(BaseModel):
+    """Self-contained multi-aspect RAG context package returned by POST /api/chatbot/context."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    query: str = ""
+    sub_queries: list[str] = Field(default_factory=list)
+    is_out_of_scope: bool = False
+    confidence_score: float = 0.0
+    hits: list[SearchHit] = Field(default_factory=list)
+    parent_sections: list[ParentSectionRecord] = Field(default_factory=list)
+    amendment_chunks: list[SearchHit] = Field(default_factory=list)
+    version_alerts: list[str] = Field(default_factory=list)
+    quality_alerts: list[str] = Field(default_factory=list)
+    linked_tables: list[TablePassport] = Field(default_factory=list)
+    table_context: list[TableQueryResponse] = Field(default_factory=list)
+    formatted_context: str = ""
+    retrieved_chunk_ids: list[str] = Field(default_factory=list)
+    latency_ms: float = 0.0
+
+
+class ToolCallTrace(BaseModel):
+    """Execution trace of a single LLM tool call against StructuredTableStore."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    step: int = 1
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    matched_count: int = 0
+    summary: str = ""
+    result_preview: str = ""
+    latency_ms: float = 0.0
+
+
+class AgentAskRequest(BaseModel):
+    """Request payload for POST /api/ask (Autonomous Table-Aware RAG Agent)."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    query: str
+    top_k: int = Field(default=5, ge=1, le=50)
+    status_filter: list[str] | str | None = None
+    year_filter: int | None = None
+    enable_table_tools: bool = True
+    max_tool_rounds: int = Field(default=4, ge=0, le=10)
+    model: str | None = None
+
+
+class AgentAskResponse(BaseModel):
+    """Response payload for POST /api/ask with grounded answer and tool-call traces."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    query: str
+    answer: str = ""
+    model_used: str = ""
+    used_table_tools: bool = False
+    tool_calls: list[ToolCallTrace] = Field(default_factory=list)
+    search_response: SearchResponse | None = None
+    linked_tables: list[TablePassport] = Field(default_factory=list)
     latency_ms: float = 0.0
 
 
@@ -363,6 +534,7 @@ class IndexingFileStatus(BaseModel):
     ocr_pages: int = 0
     parent_sections_created: int = 0
     chunks_created: int = 0
+    tables_count: int = 0
     deduplicated_chunks: int = 0
     duration_sec: float = 0.0
     warnings: list[str] = Field(default_factory=list)
@@ -384,6 +556,7 @@ class IndexingReport(BaseModel):
     failed_files: int = 0
     total_parent_sections: int = 0
     total_chunks: int = 0
+    tables_count: int = 0
     total_ocr_pages: int = 0
     total_duration_sec: float = 0.0
     files: list[IndexingFileStatus] = Field(default_factory=list)

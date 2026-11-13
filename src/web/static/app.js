@@ -1,22 +1,63 @@
 /**
  * MIPT Normative RAG V3 — Frontend SPA Controller (Vanilla JS, zero build step)
- * Connects to FastAPI REST & SSE endpoints at http://localhost:8000
+ * Connects to FastAPI REST & SSE endpoints:
+ *   - /api/health, /api/documents, /api/documents/upload, /api/documents/sync-folder
+ *   - /api/search, /api/ask (Autonomous Table-Aware RAG Agent with Tool Calling)
+ *   - /api/tables, /api/tables/{table_id}, /api/tables/query (Interactive SQLite Table Explorer)
  */
 
 (function () {
   'use strict';
 
   // ---------------------------------------------------------------------------
+  // Showcase Presets for 3-Tier Adaptive Table Architecture & Tool Calling
+  // ---------------------------------------------------------------------------
+  const TABLE_SHOWCASE_PRESETS = [
+    {
+      id: 'showcase_xl_cfo_frkt',
+      badge: '📊 XL Tool Query',
+      badgeCls: 'bg-emerald-100 text-emerald-900 border-emerald-300',
+      btnCls: 'bg-white hover:bg-emerald-50 text-slate-800 border-emerald-300 shadow-sm',
+      title: 'ЦФО 2026: Подразделения ФРКТ',
+      query: 'Сколько подразделений подчиняется финансодержателю ФРКТ в финструктуре 2026?',
+      hint: 'Автономный вызов query_structured_table (filter_rows / aggregate) по таблице Фин. структуры 2026 в SQLite',
+      mode: 'ask',
+    },
+    {
+      id: 'showcase_xl_smeta_formulas',
+      badge: '🧮 XL Формулы',
+      badgeCls: 'bg-indigo-100 text-indigo-900 border-indigo-300',
+      btnCls: 'bg-white hover:bg-indigo-50 text-slate-800 border-indigo-300 shadow-sm',
+      title: 'Смета: Формулы накладных и НДС',
+      query: 'Покажи все строки и формулы расчета накладных расходов и НДС в смете',
+      hint: 'Извлечение реальных формул Excel [формула: =...] и ставок 20% через Tool Calling + Приказ 794-1',
+      mode: 'ask',
+    },
+    {
+      id: 'showcase_pdf_inline_kz',
+      badge: '📄 PDF Inline vs XL',
+      badgeCls: 'bg-sky-100 text-sky-900 border-sky-300',
+      btnCls: 'bg-white hover:bg-sky-50 text-slate-800 border-sky-300 shadow-sm',
+      title: 'Посвящение в КЗ: Дни репетиций (Inline Parent)',
+      query: 'Сколько дней репетиций дается физтех-школам на Посвящение в КЗ?',
+      hint: 'Контраст архитектуры: компактная таблица из скана PDF (< 25 строк) отдается целиком через ParentSectionRecord без лишнего SQL-вызова',
+      mode: 'ask',
+    },
+  ];
+
+  // ---------------------------------------------------------------------------
   // Application State
   // ---------------------------------------------------------------------------
   const state = {
     activeTab: 'upload',
+    playgroundMode: 'ask', // 'search' | 'ask'
     selectedFiles: [],
     activeEventSource: null,
     activePollTimer: null,
     documents: [],
     reportSummary: null,
     presets: [],
+    linkedTablesById: new Map(),
     inspector: {
       doc: null,
       sections: [],
@@ -25,10 +66,21 @@
       selectedUnitId: null,
       selectedSectionId: null,
     },
+    tableExplorer: {
+      tables: [],
+      docIdFilter: null,
+      activeTableId: null,
+      activePassport: null,
+      formulaSummary: null,
+      operation: 'filter_rows', // 'filter_rows' | 'aggregate' | 'get_formulas'
+      offset: 0,
+      limit: 25,
+      lastResponse: null,
+    },
   };
 
   // ---------------------------------------------------------------------------
-  // Safe Formatting & Badge Helpers
+  // Safe Formatting, Markdown & Badge Helpers
   // ---------------------------------------------------------------------------
   function escapeHtml(value) {
     if (value === null || value === undefined) return '';
@@ -101,6 +153,185 @@
   }
 
   /**
+   * Formats cell text highlighting `[формула: =...]` tags cleanly.
+   */
+  function formatCellWithFormulaHighlight(rawVal) {
+    if (rawVal === null || rawVal === undefined || rawVal === '') {
+      return '<span class="text-slate-300">—</span>';
+    }
+    const str = String(rawVal);
+    const formulaRegex = /\[формула:\s*([^\]]+)\]/gi;
+    if (!formulaRegex.test(str)) {
+      return escapeHtml(str);
+    }
+    formulaRegex.lastIndex = 0;
+    let result = '';
+    let lastIdx = 0;
+    let match;
+    while ((match = formulaRegex.exec(str)) !== null) {
+      const before = str.slice(lastIdx, match.index);
+      if (before) result += escapeHtml(before);
+      result += `<span class="formula-cell-badge">ƒx ${escapeHtml(match[1].trim())}</span>`;
+      lastIdx = match.index + match[0].length;
+    }
+    if (lastIdx < str.length) {
+      result += escapeHtml(str.slice(lastIdx));
+    }
+    return result;
+  }
+
+  /**
+   * Inline Markdown formatter (input is raw string -> escaped safely first).
+   */
+  function formatInlineMarkdown(text) {
+    let safe = escapeHtml(text || '');
+    // Highlight [формула: =...]
+    safe = safe.replace(
+      /\[формула:\s*([^\]]+)\]/gi,
+      '<span class="formula-cell-badge">ƒx $1</span>'
+    );
+    // Inline code `...`
+    safe = safe.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Bold **...**
+    safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return safe;
+  }
+
+  /**
+   * Safe lightweight Markdown renderer supporting headings, lists, code blocks,
+   * blockquotes, bold/inline-code, and Markdown pipe tables.
+   */
+  function renderMarkdownSafe(markdownText) {
+    if (!markdownText) return '';
+    const lines = String(markdownText).replace(/\r\n/g, '\n').split('\n');
+    const htmlParts = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      // Empty line
+      if (!trimmed) {
+        i++;
+        continue;
+      }
+
+      // Fenced code block ```
+      if (trimmed.startsWith('```')) {
+        const codeLines = [];
+        i++;
+        while (i < lines.length && !lines[i].trim().startsWith('```')) {
+          codeLines.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) i++; // skip closing ```
+        htmlParts.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+        continue;
+      }
+
+      // Pipe table detection: current line has | and next line is separator |---|---| or pipe row
+      if (
+        trimmed.includes('|') &&
+        i + 1 < lines.length &&
+        /^\s*\|?[\s:-]+\|[\s|:-]*$/.test(lines[i + 1])
+      ) {
+        const parsePipeRow = (r) => {
+          let s = r.trim();
+          if (s.startsWith('|')) s = s.slice(1);
+          if (s.endsWith('|')) s = s.slice(0, -1);
+          return s.split('|').map((c) => c.trim());
+        };
+        const headers = parsePipeRow(trimmed);
+        i += 2; // skip header + separator
+        const bodyRows = [];
+        while (i < lines.length && lines[i].trim().includes('|') && lines[i].trim() !== '') {
+          bodyRows.push(parsePipeRow(lines[i]));
+          i++;
+        }
+        const thHtml = headers.map((h) => `<th>${formatInlineMarkdown(h)}</th>`).join('');
+        const trsHtml = bodyRows
+          .map(
+            (r) =>
+              `<tr>${headers
+                .map((_, cIdx) => `<td>${formatInlineMarkdown(r[cIdx] ?? '')}</td>`)
+                .join('')}</tr>`
+          )
+          .join('');
+        htmlParts.push(
+          `<div class="ai-md-table-wrap"><table class="ai-md-table"><thead><tr>${thHtml}</tr></thead><tbody>${trsHtml}</tbody></table></div>`
+        );
+        continue;
+      }
+
+      // Headings
+      const hMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+      if (hMatch) {
+        const lvl = Math.min(4, hMatch[1].length);
+        htmlParts.push(`<h${lvl}>${formatInlineMarkdown(hMatch[2])}</h${lvl}>`);
+        i++;
+        continue;
+      }
+
+      // Blockquote
+      if (trimmed.startsWith('>')) {
+        const qLines = [];
+        while (i < lines.length && lines[i].trim().startsWith('>')) {
+          qLines.push(lines[i].trim().replace(/^>\s?/, ''));
+          i++;
+        }
+        htmlParts.push(`<blockquote>${qLines.map(formatInlineMarkdown).join('<br/>')}</blockquote>`);
+        continue;
+      }
+
+      // Unordered list
+      if (/^[-*•]\s+/.test(trimmed)) {
+        const items = [];
+        while (i < lines.length && /^[-*•]\s+/.test(lines[i].trim())) {
+          items.push(lines[i].trim().replace(/^[-*•]\s+/, ''));
+          i++;
+        }
+        htmlParts.push(`<ul>${items.map((it) => `<li>${formatInlineMarkdown(it)}</li>`).join('')}</ul>`);
+        continue;
+      }
+
+      // Ordered list
+      if (/^\d+[.)]\s+/.test(trimmed)) {
+        const items = [];
+        while (i < lines.length && /^\d+[.)]\s+/.test(lines[i].trim())) {
+          items.push(lines[i].trim().replace(/^\d+[.)]\s+/, ''));
+          i++;
+        }
+        htmlParts.push(`<ol>${items.map((it) => `<li>${formatInlineMarkdown(it)}</li>`).join('')}</ol>`);
+        continue;
+      }
+
+      // Regular paragraph (group consecutive plain lines)
+      const pLines = [];
+      while (
+        i < lines.length &&
+        lines[i].trim() !== '' &&
+        !lines[i].trim().startsWith('```') &&
+        !/^(#{1,4})\s+/.test(lines[i].trim()) &&
+        !lines[i].trim().startsWith('>') &&
+        !/^[-*•]\s+/.test(lines[i].trim()) &&
+        !/^\d+[.)]\s+/.test(lines[i].trim()) &&
+        !(
+          lines[i].trim().includes('|') &&
+          i + 1 < lines.length &&
+          /^\s*\|?[\s:-]+\|[\s|:-]*$/.test(lines[i + 1])
+        )
+      ) {
+        pLines.push(lines[i].trim());
+        i++;
+      }
+      htmlParts.push(`<p>${pLines.map(formatInlineMarkdown).join('<br/>')}</p>`);
+    }
+
+    return htmlParts.join('');
+  }
+
+  /**
    * Renders raw_text visually highlighting top `...overlap` and bottom `overlap...`
    * in subtle grey/italic (.overlap-segment), while keeping core clean_text crisp.
    */
@@ -110,7 +341,6 @@
     const explicitPrefix = item.overlap_prefix || '';
     const explicitSuffix = item.overlap_suffix || '';
 
-    // Case 1: explicit overlap_prefix / overlap_suffix available on ChunkRecord
     if ((explicitPrefix || explicitSuffix) && clean) {
       let html = '';
       if (explicitPrefix) {
@@ -123,7 +353,6 @@
       return html;
     }
 
-    // Case 2: SearchHit or ChunkRecord where raw_text wraps clean_text
     if (raw && clean && raw !== clean) {
       const idx = raw.indexOf(clean);
       if (idx !== -1) {
@@ -159,7 +388,7 @@
       badges.push(`<span class="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-rose-50 text-rose-700 border border-rose-200">Отменен № ${escapeHtml(num)}</span>`);
     });
     (doc.also_in_files || []).forEach((fname) => {
-      badges.push(`<span class="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200" title="Кросс-файловая дедупликация по content_hash">Дублируется в: ${escapeHtml(fname)}</span>`);
+      badges.push(`<span class="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200" title="Кросс-файловая дедупликация по content_hash / table_hash">Дублируется в: ${escapeHtml(fname)}</span>`);
     });
     if (doc.applicable_years && doc.applicable_years.length > 0) {
       badges.push(`<span class="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-mono-code bg-slate-100 text-slate-700 border border-slate-200">Годы: ${escapeHtml(doc.applicable_years.join(', '))}</span>`);
@@ -220,6 +449,11 @@
 
       document.getElementById('health-docs-count').textContent = data.registry_docs_count ?? 0;
       document.getElementById('health-sections-count').textContent = data.sections_count ?? 0;
+
+      const tblEl = document.getElementById('health-tables-count');
+      if (tblEl) {
+        tblEl.textContent = String(data.structured_tables_count ?? data.tables_count ?? 0);
+      }
     } catch (err) {
       document.getElementById('health-qdrant-dot').className = 'w-2 h-2 rounded-full bg-red-500';
       document.getElementById('health-qdrant-text').textContent = 'ошибка связи';
@@ -227,7 +461,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Tab Navigation
+  // Tab & Playground Mode Navigation
   // ---------------------------------------------------------------------------
   function switchTab(tabName) {
     state.activeTab = tabName;
@@ -248,6 +482,25 @@
 
     if (tabName === 'registry') {
       loadDocumentsRegistry();
+    }
+  }
+
+  function setPlaygroundMode(mode) {
+    state.playgroundMode = mode === 'search' ? 'search' : 'ask';
+    const btnSearch = document.getElementById('btn-mode-search');
+    const btnAsk = document.getElementById('btn-mode-ask');
+    if (!btnSearch || !btnAsk) return;
+
+    if (state.playgroundMode === 'ask') {
+      btnAsk.className =
+        'px-3.5 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-emerald-600 text-white shadow-sm transition cursor-pointer flex items-center gap-1.5';
+      btnSearch.className =
+        'px-3 py-2 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-white/60 transition cursor-pointer';
+    } else {
+      btnSearch.className =
+        'px-3 py-2 rounded-lg bg-white text-slate-900 shadow-sm transition cursor-pointer';
+      btnAsk.className =
+        'px-3.5 py-2 rounded-lg text-indigo-700 hover:bg-indigo-50 transition cursor-pointer flex items-center gap-1.5';
     }
   }
 
@@ -424,7 +677,6 @@
     stopActiveTaskTracking();
     let seenEventCount = 0;
 
-    // Reset counters visually
     document.getElementById('prog-parent-count').textContent = '0';
     document.getElementById('prog-chunk-count').textContent = '0';
     document.getElementById('prog-ocr-count').textContent = '0';
@@ -441,7 +693,6 @@
       }
     };
 
-    // Primary real-time channel: Server-Sent Events
     try {
       const es = new EventSource(`/api/tasks/${encodeURIComponent(taskId)}/stream`);
       state.activeEventSource = es;
@@ -450,7 +701,6 @@
         if (!e.data) return;
         try {
           const payload = JSON.parse(e.data);
-          // Initial snapshot contains events array
           if (Array.isArray(payload.events)) {
             payload.events.forEach((ev) => {
               appendEventLog(ev.message || ev.stage_label || '', ev.stage, ev.timestamp);
@@ -458,7 +708,6 @@
             seenEventCount = payload.events.length;
             applyProgressEvent(payload);
             if (payload.status === 'completed' || payload.status === 'failed') {
-              // Update aggregate counts from result if sync_folder report
               if (payload.result && typeof payload.result.total_chunks === 'number') {
                 document.getElementById('prog-parent-count').textContent = String(payload.result.total_parent_sections || 0);
                 document.getElementById('prog-chunk-count').textContent = String(payload.result.total_chunks || 0);
@@ -473,7 +722,6 @@
             }
             applyProgressEvent(payload);
             if (payload.stage === 'done' || payload.stage === 'error') {
-              // Fetch final task snapshot once to populate report summary counters
               fetch(`/api/tasks/${encodeURIComponent(taskId)}`)
                 .then((r) => r.json())
                 .then((snap) => {
@@ -493,7 +741,6 @@
       };
 
       es.onerror = () => {
-        // Fallback to polling /api/tasks/{task_id} if SSE disconnects
         if (state.activeEventSource) {
           state.activeEventSource.close();
           state.activeEventSource = null;
@@ -611,8 +858,13 @@
       state.documents = data.documents || [];
       state.reportSummary = data.report_summary || null;
 
-      // Update summary strip
       document.getElementById('reg-stat-total').textContent = String(data.total_documents ?? state.documents.length);
+      const regTblEl = document.getElementById('reg-stat-tables');
+      if (regTblEl) {
+        const sumTbl = state.documents.reduce((acc, d) => acc + Number(d.tables_count || 0), 0);
+        regTblEl.textContent = String(data.structured_tables_count ?? data.tables_count ?? sumTbl);
+      }
+
       if (state.reportSummary && state.reportSummary.finished_at) {
         const dt = new Date(state.reportSummary.finished_at).toLocaleString('ru-RU');
         const dur = state.reportSummary.total_duration_sec ? ` (${state.reportSummary.total_duration_sec.toFixed(1)} сек)` : '';
@@ -671,6 +923,12 @@
         const warnTip = doc.quality_warning
           ? `<div class="mt-1 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1 leading-snug">⚠ ${escapeHtml(doc.quality_warning)}</div>`
           : '';
+        const tablesCount = Number(doc.tables_count || 0);
+        const tablesBadgeHtml = tablesCount > 0
+          ? `<button type="button" data-action="explore-tables" data-doc-id="${escapeHtml(doc.doc_id)}" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-semibold text-[11px] transition cursor-pointer" title="Открыть таблицы документа в конструкторе SQLite">
+               📊 ${tablesCount} табл. SQLite
+             </button>`
+          : '';
 
         return `
           <tr class="hover:bg-slate-50/90 transition align-top">
@@ -693,8 +951,11 @@
               <span class="${(doc.ocr_pages || 0) > 0 ? 'text-indigo-700 font-bold' : 'text-slate-400'}" title="Распознано страниц OCR">${doc.ocr_pages || 0} OCR</span>
             </td>
             <td class="px-3 py-3 text-center font-mono-code whitespace-nowrap">
-              <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-800 font-semibold" title="ParentSectionRecord">${doc.parent_count || 0} P</span>
-              <span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-bold ml-1" title="ChunkRecord">${doc.chunk_count || 0} C</span>
+              <div>
+                <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-800 font-semibold" title="ParentSectionRecord">${doc.parent_count || 0} P</span>
+                <span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-bold ml-1" title="ChunkRecord">${doc.chunk_count || 0} C</span>
+              </div>
+              ${tablesBadgeHtml}
             </td>
             <td class="px-3 py-3 whitespace-nowrap">
               ${formatStatusBadge(doc.status)}
@@ -704,6 +965,11 @@
             </td>
             <td class="px-4 py-3 text-right whitespace-nowrap">
               <div class="inline-flex flex-wrap justify-end gap-1.5">
+                ${tablesCount > 0 ? `
+                  <button type="button" data-action="explore-tables" data-doc-id="${escapeHtml(doc.doc_id)}" class="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] shadow-sm transition cursor-pointer">
+                    📊 Таблицы (${tablesCount})
+                  </button>
+                ` : ''}
                 <button type="button" data-action="inspect" data-doc-id="${escapeHtml(doc.doc_id)}" class="px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-[11px] shadow-sm transition cursor-pointer">
                   Открыть чанки
                 </button>
@@ -727,7 +993,8 @@
       btn.addEventListener('click', () => {
         const action = btn.getAttribute('data-action');
         const docId = btn.getAttribute('data-doc-id');
-        if (action === 'inspect') openDocumentInspector(docId);
+        if (action === 'explore-tables') openTableExplorer({ docId: docId });
+        else if (action === 'inspect') openDocumentInspector(docId);
         else if (action === 'edit-meta') openMetadataModal(docId);
         else if (action === 'reindex') reindexSingleDocument(docId);
         else if (action === 'delete') deleteSingleDocument(docId);
@@ -758,7 +1025,7 @@
   async function deleteSingleDocument(docId) {
     const doc = state.documents.find((d) => d.doc_id === docId);
     const name = doc ? doc.title || doc.file_name : docId;
-    if (!window.confirm(`Удалить документ «${name}» из Qdrant, хранилища разделов и реестра?`)) {
+    if (!window.confirm(`Удалить документ «${name}» из Qdrant, SQLite-таблиц, хранилища разделов и реестра?`)) {
       return;
     }
     try {
@@ -853,7 +1120,6 @@
 
       state.inspector.doc = data.document;
       state.inspector.sections = data.sections || [];
-      // Sort chunks stably by chunk_id
       state.inspector.chunks = (data.chunks || []).sort((a, b) =>
         String(a.chunk_id || '').localeCompare(String(b.chunk_id || ''), undefined, { numeric: true })
       );
@@ -877,7 +1143,6 @@
     const treeEl = document.getElementById('insp-tree-container');
     const { sections, chunks, selectedUnitId, selectedSectionId } = state.inspector;
 
-    // Group sections & chunks by unit_id
     const unitsMap = new Map();
     sections.forEach((sec) => {
       const uid = sec.unit_id || 'u01_main';
@@ -967,7 +1232,6 @@
     const chunksContainer = document.getElementById('insp-chunks-container');
     const { sections, chunks, viewMode, selectedUnitId, selectedSectionId } = state.inspector;
 
-    // Show clean ParentSectionRecord box if a section is selected
     if (selectedSectionId) {
       const sec = sections.find((s) => s.section_id === selectedSectionId);
       if (sec) {
@@ -1020,6 +1284,12 @@
         const dedupBadge = (ch.also_in_files || []).length
           ? `<span class="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 text-[11px]">Дублируется в: ${escapeHtml(ch.also_in_files.join(', '))}</span>`
           : '';
+        const tableId = ch.table_id || (ch.metadata && ch.metadata.table_id) || '';
+        const tableBtn = tableId
+          ? `<button type="button" data-open-table-id="${escapeHtml(tableId)}" class="px-2 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-semibold text-[11px] cursor-pointer">
+               📊 SQLite: ${escapeHtml(tableId)} →
+             </button>`
+          : '';
 
         return `
           <article class="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
@@ -1029,6 +1299,7 @@
                   ${ch.clause_no ? 'п. ' + escapeHtml(ch.clause_no) : 'Без номера п.'}
                 </span>
                 ${formatZoneBadge(ch.zone)}
+                ${tableBtn}
                 <span class="font-mono-code text-[11px] text-slate-500">${escapeHtml(ch.chunk_id)}</span>
                 ${pagesStr ? `<span class="text-[11px] text-slate-500 font-mono-code">• ${escapeHtml(pagesStr)}</span>` : ''}
               </div>
@@ -1052,12 +1323,45 @@
         `;
       })
       .join('');
+
+    chunksContainer.querySelectorAll('[data-open-table-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        openTableExplorer({ tableId: btn.getAttribute('data-open-table-id') });
+      });
+    });
   }
 
   // ---------------------------------------------------------------------------
-  // Tab 3: Hybrid Search Playground (POST /api/search)
+  // Tab 3: Hybrid Search & Autonomous Table-Aware AI Agent (/api/search & /api/ask)
   // ---------------------------------------------------------------------------
+  function renderTableShowcasePresets() {
+    const container = document.getElementById('table-presets-container');
+    if (!container) return;
+
+    container.innerHTML = TABLE_SHOWCASE_PRESETS.map(
+      (p, idx) => `
+        <button type="button" data-showcase-idx="${idx}" title="${escapeHtml(p.hint)}" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-medium transition cursor-pointer ${p.btnCls}">
+          <span class="px-1.5 py-0.5 rounded-md text-[10px] font-bold border ${p.badgeCls}">${escapeHtml(p.badge)}</span>
+          <span class="font-semibold">${escapeHtml(p.title)}</span>
+        </button>
+      `
+    ).join('');
+
+    container.querySelectorAll('[data-showcase-idx]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-showcase-idx'), 10);
+        const preset = TABLE_SHOWCASE_PRESETS[idx];
+        if (!preset) return;
+        document.getElementById('search-query-input').value = preset.query;
+        setPlaygroundMode('ask');
+        executeAgentAsk();
+      });
+    });
+  }
+
   async function loadSearchPresets() {
+    renderTableShowcasePresets();
+
     const container = document.getElementById('search-presets-container');
     try {
       const res = await fetch('/api/search/presets');
@@ -1071,9 +1375,13 @@
     container.innerHTML = state.presets
       .map((p, idx) => {
         const isOos = (p.id || '').includes('9') || (p.id || '').includes('10');
-        const cls = isOos
-          ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200'
-          : 'bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border-slate-200 hover:border-blue-300';
+        const isTablePreset = p.preset_mode === 'tool_query' || (p.id || '').startsWith('table_');
+        let cls = 'bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border-slate-200 hover:border-blue-300';
+        if (isOos) {
+          cls = 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200';
+        } else if (isTablePreset) {
+          cls = 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200';
+        }
         return `
           <button type="button" data-preset-idx="${idx}" title="${escapeHtml(p.expected || p.query)}" class="px-2.5 py-1 rounded-lg border text-xs font-medium transition cursor-pointer ${cls}">
             ${idx + 1}. ${escapeHtml(p.title)}
@@ -1088,9 +1396,126 @@
         const preset = state.presets[idx];
         if (!preset) return;
         document.getElementById('search-query-input').value = preset.query;
-        executeHybridSearch();
+        if (state.playgroundMode === 'ask') {
+          executeAgentAsk();
+        } else {
+          executeHybridSearch();
+        }
       });
     });
+  }
+
+  /**
+   * Renders a TablePassport card (for XL sheets and large >=25-row Word/PDF tables).
+   */
+  function renderTablePassportCard(tp) {
+    const title = tp.table_title || tp.sheet_name || tp.section_title || tp.file_name || tp.table_id;
+    const cols = tp.columns || [];
+    const colCount = tp.col_count || cols.length;
+    const rowCount = tp.row_count || 0;
+
+    const colPills = cols.slice(0, 8).map((c) => {
+      const icon = c.has_formulas ? 'ƒx ' : c.inferred_type === 'number' || c.inferred_type === 'numeric' ? '# ' : c.is_hierarchy ? '🌳 ' : '';
+      const cls = c.has_formulas
+        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+        : c.is_hierarchy
+        ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+        : 'bg-slate-100 text-slate-700 border-slate-200';
+      return `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10.5px] font-medium border ${cls}" title="Тип: ${escapeHtml(c.inferred_type || 'text')}">${escapeHtml(icon + c.name)}</span>`;
+    });
+    if (cols.length > 8) {
+      colPills.push(`<span class="px-2 py-0.5 rounded text-[10.5px] font-mono-code bg-slate-50 text-slate-500 border border-slate-200">+${cols.length - 8} ещё</span>`);
+    }
+
+    const formulaBadge = tp.has_formulas
+      ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-900 border border-amber-200">🧮 Формул: ${tp.formula_count || 'есть'}</span>`
+      : '';
+
+    const alsoBadge = (tp.also_in_files || []).length
+      ? `<div class="text-[11px] text-indigo-700 font-medium">🔗 Дедупликация (также в): ${escapeHtml(tp.also_in_files.join(', '))}</div>`
+      : '';
+
+    return `
+      <div class="rounded-2xl border border-emerald-300 bg-gradient-to-br from-white via-emerald-50/20 to-slate-50 p-4 shadow-sm flex flex-col justify-between gap-3">
+        <div class="space-y-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+              📊 XL / Большая таблица · SQLite + Tool Query (${rowCount} строк)
+            </span>
+            <div class="flex items-center gap-1.5">
+              ${formatFileBadge(tp.file_format || (tp.file_name || '').split('.').pop())}
+              ${formulaBadge}
+            </div>
+          </div>
+
+          <div>
+            <div class="font-bold text-sm text-slate-900 leading-snug">${escapeHtml(title)}</div>
+            <div class="text-[11px] text-slate-600 font-mono-code mt-0.5">
+              ${escapeHtml(tp.file_name || '')}
+              ${tp.sheet_name ? ` • лист: «${escapeHtml(tp.sheet_name)}»` : ''}
+              • ${rowCount} стр. × ${colCount} кол.
+            </div>
+            ${alsoBadge}
+          </div>
+
+          ${colPills.length ? `<div class="flex flex-wrap gap-1 pt-0.5">${colPills.join('')}</div>` : ''}
+        </div>
+
+        <div class="pt-2 border-t border-emerald-100 flex items-center justify-between gap-2">
+          <code class="text-[10.5px] font-mono-code text-slate-500 truncate">${escapeHtml(tp.table_id)}</code>
+          <button type="button" data-open-table-id="${escapeHtml(tp.table_id)}" class="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs shadow-sm transition cursor-pointer">
+            <span>Открыть конструктор запросов к таблице</span>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Renders architecture delivery badge inside individual SearchHit cards:
+   *  - `📊 XL / Большая таблица · SQLite + Tool Query (N строк)` + Explorer button
+   *  - vs `📄 Компактная таблица Word/PDF · Встроена целиком в Parent`
+   */
+  function renderHitTableArchitectureBar(hit) {
+    const meta = hit.metadata || {};
+    const deliveryMode = meta.table_delivery_mode || '';
+    const tableId = hit.table_id || meta.table_id || '';
+    const linkedTp = tableId ? state.linkedTablesById.get(tableId) : null;
+
+    if (deliveryMode === 'tool_query' || linkedTp || (tableId && deliveryMode !== 'inline_parent')) {
+      const rowsLabel = linkedTp && linkedTp.row_count ? `${linkedTp.row_count} строк` : 'SQLite';
+      const targetId = tableId || (linkedTp ? linkedTp.table_id : '');
+      return `
+        <div class="px-4 py-2 bg-emerald-50/80 border-b border-emerald-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-bold text-[11px] bg-emerald-100 text-emerald-900 border border-emerald-300">
+              📊 XL / Большая таблица · SQLite + Tool Query (${escapeHtml(rowsLabel)})
+            </span>
+            <span class="text-[11px] text-emerald-900">В Qdrant хранится 8-строчный поисковый срез, а полная таблица доступна через SQL-фильтрацию и агрегацию</span>
+          </div>
+          ${targetId ? `
+            <button type="button" data-open-table-id="${escapeHtml(targetId)}" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-[11px] shadow-sm transition cursor-pointer">
+              Открыть конструктор запросов к таблице
+            </button>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    if (deliveryMode === 'inline_parent' || hit.zone === 'table') {
+      return `
+        <div class="px-4 py-2 bg-sky-50/80 border-b border-sky-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-bold text-[11px] bg-sky-100 text-sky-900 border border-sky-300">
+              📄 Компактная таблица Word/PDF · Встроена целиком в Parent
+            </span>
+            <span class="text-[11px] text-sky-900">Таблица (&lt; 25 строк) передается в контекст целиком через ParentSectionRecord без лишних SQL-раундов</span>
+          </div>
+        </div>
+      `;
+    }
+
+    return '';
   }
 
   function renderSearchHitCard(hit, rankLabel, isAmendmentCard = false) {
@@ -1139,6 +1564,8 @@
       ? `<div class="mt-2 px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900"><strong>Примечание редакции:</strong> ${escapeHtml(hit.version_note)}</div>`
       : '';
 
+    const tableArchBar = renderHitTableArchitectureBar(hit);
+
     return `
       <article class="rounded-2xl border ${borderCls} shadow-sm overflow-hidden">
         <!-- Hit Top Metadata Bar -->
@@ -1168,6 +1595,8 @@
           </div>
         </div>
 
+        ${tableArchBar}
+
         <!-- Exact Source Citation Breadcrumb -->
         <div class="px-4 py-2 bg-white border-b border-slate-100 text-[11px] text-slate-600 flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -1195,6 +1624,125 @@
     `;
   }
 
+  /**
+   * Renders the AI Answer card + expandable visual ToolCallTrace block.
+   */
+  function renderAgentAnswerCard(askResp) {
+    const container = document.getElementById('agent-answer-container');
+    if (!container) return;
+
+    container.classList.remove('hidden');
+    const toolCalls = askResp.tool_calls || [];
+    const usedTools = Boolean(askResp.used_table_tools || toolCalls.length > 0);
+    const isOos = Boolean(askResp.search_response && askResp.search_response.is_out_of_scope);
+
+    let modePill = '';
+    if (usedTools) {
+      modePill = `<span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">⚡ SQLite Tool Calling: ${toolCalls.length} выз.</span>`;
+    } else if (isOos) {
+      modePill = `<span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300">🛡️ Out-of-Scope (0 вызовов инструмента)</span>`;
+    } else {
+      modePill = `<span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-sky-100 text-sky-900 border border-sky-300">📄 Контекст ParentSection (0 SQL-дозапросов)</span>`;
+    }
+
+    const tracesHtml = toolCalls.length > 0
+      ? `
+        <details open class="border-t border-indigo-100 bg-slate-50/80">
+          <summary class="px-5 py-3 cursor-pointer text-xs font-bold text-indigo-950 hover:bg-indigo-50/60 flex flex-wrap items-center justify-between gap-2 select-none">
+            <span>🔧 Трассировка вызовов инструмента таблиц (ToolCallTrace · ${toolCalls.length} шаг${toolCalls.length === 1 ? '' : toolCalls.length < 5 ? 'а' : 'ов'})</span>
+            <span class="text-[11px] font-normal text-slate-500">Детерминированные запросы ИИ-агента к SQLite tables_store.db</span>
+          </summary>
+          <div class="px-5 pb-4 pt-1 space-y-3">
+            ${toolCalls
+              .map((tc, idx) => {
+                const args = tc.arguments || {};
+                const op = args.operation || (tc.tool_name === 'get_table_schema' ? 'get_schema' : 'query');
+                const tblId = args.table_id || '';
+                const argsPretty = JSON.stringify(args, null, 2);
+                const previewHtml = tc.result_preview
+                  ? renderMarkdownSafe(tc.result_preview)
+                  : '<span class="text-slate-400">Нет превью строк</span>';
+
+                return `
+                  <div class="rounded-xl border border-indigo-200 bg-white shadow-sm overflow-hidden">
+                    <div class="px-3.5 py-2 bg-indigo-50/70 border-b border-indigo-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class="px-2 py-0.5 rounded bg-indigo-600 text-white font-mono-code font-bold text-[11px]">Шаг #${tc.step || idx + 1}</span>
+                        <code class="font-mono-code font-bold text-indigo-950">${escapeHtml(tc.tool_name || 'query_structured_table')}</code>
+                        <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300 font-mono-code font-semibold text-[11px]">op: ${escapeHtml(op)}</span>
+                        <span class="px-2 py-0.5 rounded bg-white border border-slate-200 font-mono-code text-[11px] text-slate-700">Найдено строк: <strong>${tc.matched_count ?? 0}</strong></span>
+                      </div>
+                      <div class="flex items-center gap-2 font-mono-code text-[11px] text-slate-500">
+                        <span>${Number(tc.latency_ms || 0).toFixed(1)} мс</span>
+                        ${tblId ? `
+                          <button type="button" data-open-table-id="${escapeHtml(tblId)}" class="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-sans font-semibold cursor-pointer">
+                            Открыть таблицу →
+                          </button>
+                        ` : ''}
+                      </div>
+                    </div>
+
+                    <div class="p-3.5 space-y-2.5 text-xs">
+                      ${tc.summary ? `<div class="font-medium text-slate-800">${escapeHtml(tc.summary)}</div>` : ''}
+                      <div class="grid grid-cols-1 lg:grid-cols-12 gap-3">
+                        <div class="lg:col-span-4">
+                          <div class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Аргументы вызова (JSON):</div>
+                          <pre class="bg-slate-900 text-emerald-300 font-mono-code text-[11px] p-2.5 rounded-lg overflow-x-auto max-h-48">${escapeHtml(argsPretty)}</pre>
+                        </div>
+                        <div class="lg:col-span-8 min-w-0">
+                          <div class="text-[10.5px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Результат выборки / агрегации из SQLite:</div>
+                          <div class="ai-markdown-body text-xs bg-slate-50 border border-slate-200 rounded-lg p-2.5 max-h-56 overflow-auto">${previewHtml}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              })
+              .join('')}
+          </div>
+        </details>
+      `
+      : `
+        <div class="px-5 py-2.5 border-t border-slate-100 bg-slate-50/70 text-[11px] text-slate-600 flex flex-wrap items-center justify-between gap-2">
+          <span>
+            ${isOos
+              ? '🛡️ Детектор Out-of-Scope заблокировал нерелевантный запрос до вызова табличных инструментов (0 лишних токенов).'
+              : '📄 Трассировка ToolCallTrace: 0 вызовов SQLite — полный ответ получен напрямую из найденных нормативных пунктов и компактных ParentSectionRecord.'}
+          </span>
+        </div>
+      `;
+
+    container.innerHTML = `
+      <div class="rounded-2xl border-2 border-indigo-200 bg-white shadow-md overflow-hidden">
+        <!-- AI Answer Header -->
+        <div class="px-5 py-3.5 bg-gradient-to-r from-indigo-50 via-emerald-50/60 to-white border-b border-indigo-100 flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-sm font-bold text-slate-900">🤖 ИИ-ответ по нормативной базе и таблицам МФТИ</span>
+            ${modePill}
+          </div>
+          <div class="flex flex-wrap items-center gap-2 font-mono-code text-xs">
+            ${askResp.model_used ? `<span class="px-2.5 py-0.5 rounded-lg bg-white border border-indigo-200 text-indigo-900 font-semibold">Модель: ${escapeHtml(askResp.model_used)}</span>` : ''}
+            <span class="px-2.5 py-0.5 rounded-lg bg-white border border-slate-200 text-slate-700">${Number(askResp.latency_ms || 0).toFixed(0)} мс</span>
+          </div>
+        </div>
+
+        <!-- Formatted Grounded Answer -->
+        <div class="p-5 text-xs sm:text-sm ai-markdown-body">
+          ${renderMarkdownSafe(askResp.answer || 'Ответ не сформирован.')}
+        </div>
+
+        <!-- ToolCallTrace Section -->
+        ${tracesHtml}
+      </div>
+    `;
+
+    container.querySelectorAll('[data-open-table-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        openTableExplorer({ tableId: btn.getAttribute('data-open-table-id') });
+      });
+    });
+  }
+
   async function executeHybridSearch(e) {
     if (e) e.preventDefault();
     const query = document.getElementById('search-query-input').value.trim();
@@ -1203,6 +1751,7 @@
       return;
     }
 
+    setPlaygroundMode('search');
     const topK = parseInt(document.getElementById('search-top-k').value, 10) || 5;
     const rawStatus = document.getElementById('search-status-filter').value;
     const rawYear = document.getElementById('search-year-filter').value.trim();
@@ -1222,6 +1771,13 @@
     const btn = document.getElementById('btn-run-search');
     btn.disabled = true;
 
+    // Hide previous AI answer card when running pure vector/BM25 search
+    const agentContainer = document.getElementById('agent-answer-container');
+    if (agentContainer) {
+      agentContainer.classList.add('hidden');
+      agentContainer.innerHTML = '';
+    }
+
     try {
       const res = await fetch('/api/search', {
         method: 'POST',
@@ -1231,7 +1787,7 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
 
-      renderSearchResults(data);
+      renderSearchResults(data, data.linked_tables || []);
     } catch (err) {
       showToast(`Ошибка поиска: ${err.message}`, 'error');
     } finally {
@@ -1239,15 +1795,103 @@
     }
   }
 
-  function renderSearchResults(data) {
+  async function executeAgentAsk(e) {
+    if (e) e.preventDefault();
+    const query = document.getElementById('search-query-input').value.trim();
+    if (!query) {
+      showToast('Введите вопрос для ИИ-агента', 'warning');
+      return;
+    }
+
+    setPlaygroundMode('ask');
+    const topK = parseInt(document.getElementById('search-top-k').value, 10) || 5;
+    const rawStatus = document.getElementById('search-status-filter').value;
+    const rawYear = document.getElementById('search-year-filter').value.trim();
+    const enableTools = document.getElementById('ask-enable-table-tools').checked;
+
+    const payload = {
+      query: query,
+      top_k: topK,
+      status_filter: rawStatus ? rawStatus.split(',') : null,
+      year_filter: rawYear ? parseInt(rawYear, 10) : null,
+      enable_table_tools: enableTools,
+      max_tool_rounds: 4,
+    };
+
+    const btnAsk = document.getElementById('btn-run-ask');
+    const btnSearch = document.getElementById('btn-run-search');
+    btnAsk.disabled = true;
+    btnSearch.disabled = true;
+
+    const wrapper = document.getElementById('search-results-wrapper');
+    const agentContainer = document.getElementById('agent-answer-container');
+    wrapper.classList.remove('hidden');
+    agentContainer.classList.remove('hidden');
+    agentContainer.innerHTML = `
+      <div class="rounded-2xl border border-indigo-200 bg-indigo-50/50 p-5 flex items-center gap-3 text-xs text-indigo-950 shadow-sm">
+        <div class="w-5 h-5 rounded-full border-2 border-indigo-600 border-t-transparent animate-spin shrink-0"></div>
+        <div>
+          <div class="font-bold text-sm">Выполняется гибридный поиск RRF и синтез ответа ИИ-агентом...</div>
+          <div class="text-indigo-700 mt-0.5">При обнаружении связанных Excel или больших таблиц агент автоматически вызовет <code>query_structured_table</code> к SQLite.</div>
+        </div>
+      </div>
+    `;
+
+    try {
+      const res = await fetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const askData = await res.json();
+      if (!res.ok) throw new Error(askData.detail || `HTTP ${res.status}`);
+
+      const combinedLinked =
+        (askData.linked_tables && askData.linked_tables.length > 0)
+          ? askData.linked_tables
+          : ((askData.search_response && askData.search_response.linked_tables) || []);
+
+      // Index linked tables BEFORE rendering cards so hit badges resolve row counts
+      state.linkedTablesById = new Map();
+      combinedLinked.forEach((tp) => {
+        if (tp && tp.table_id) state.linkedTablesById.set(tp.table_id, tp);
+      });
+
+      renderAgentAnswerCard(askData);
+      if (askData.search_response) {
+        renderSearchResults(askData.search_response, combinedLinked);
+      }
+    } catch (err) {
+      agentContainer.innerHTML = `
+        <div class="rounded-2xl border border-red-300 bg-red-50 p-4 text-xs text-red-900">
+          <strong>Ошибка генерации ИИ-ответа:</strong> ${escapeHtml(err.message)}
+        </div>
+      `;
+      showToast(`Ошибка ИИ-ответа: ${err.message}`, 'error');
+    } finally {
+      btnAsk.disabled = false;
+      btnSearch.disabled = false;
+    }
+  }
+
+  function renderSearchResults(data, explicitLinkedTables = null) {
+    if (!data) return;
     const wrapper = document.getElementById('search-results-wrapper');
     const banner = document.getElementById('search-scope-banner');
     const alertsEl = document.getElementById('search-alerts-container');
+    const linkedSec = document.getElementById('search-linked-tables-section');
+    const linkedList = document.getElementById('search-linked-tables-list');
     const amendSec = document.getElementById('search-amendments-section');
     const amendList = document.getElementById('search-amendments-list');
     const hitsList = document.getElementById('search-hits-list');
 
     wrapper.classList.remove('hidden');
+
+    const linkedTables = explicitLinkedTables || data.linked_tables || [];
+    state.linkedTablesById = new Map();
+    linkedTables.forEach((tp) => {
+      if (tp && tp.table_id) state.linkedTablesById.set(tp.table_id, tp);
+    });
 
     // 1. Out-of-Scope / Confidence Banner
     if (data.is_out_of_scope) {
@@ -1276,7 +1920,7 @@
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div>
             <div class="flex items-center gap-2 font-bold text-sm text-emerald-900">
-              <span>✅ Уверенный ответ по нормативной базе МФТИ (In-Scope)</span>
+              <span>✅ Уверенный поиск по нормативной базе МФТИ (In-Scope)</span>
             </div>
             ${data.expanded_query && data.expanded_query !== data.query
               ? `<p class="text-[11px] text-emerald-800 mt-1">Расширение глоссария: <code class="font-mono-code bg-white/80 px-1.5 py-0.5 rounded">${escapeHtml(data.expanded_query)}</code></p>`
@@ -1286,6 +1930,7 @@
             <span class="px-2.5 py-1 rounded-lg bg-white border border-emerald-200 font-semibold">Confidence: ${Number(data.confidence_score || 0).toFixed(3)}</span>
             <span class="px-2.5 py-1 rounded-lg bg-white border border-emerald-200">Top Dense: ${Number(data.top_dense_score || 0).toFixed(3)}</span>
             <span class="px-2.5 py-1 rounded-lg bg-white border border-emerald-200">Найдено: ${data.total_found || (data.hits || []).length}</span>
+            ${linkedTables.length > 0 ? `<span class="px-2.5 py-1 rounded-lg bg-emerald-100 border border-emerald-300 text-emerald-900 font-semibold">Таблиц SQLite: ${linkedTables.length}</span>` : ''}
             <span class="px-2.5 py-1 rounded-lg bg-white border border-emerald-200">${Number(data.latency_ms || 0).toFixed(0)} мс</span>
           </div>
         </div>
@@ -1312,7 +1957,18 @@
     });
     alertsEl.innerHTML = alertHtml.join('');
 
-    // 3. Amendment Chunks
+    // 3. Linked Structured Tables (TablePassport cards)
+    if (linkedSec && linkedList) {
+      if (linkedTables.length > 0 && !data.is_out_of_scope) {
+        linkedSec.classList.remove('hidden');
+        linkedList.innerHTML = linkedTables.map((tp) => renderTablePassportCard(tp)).join('');
+      } else {
+        linkedSec.classList.add('hidden');
+        linkedList.innerHTML = '';
+      }
+    }
+
+    // 4. Amendment Chunks
     const amends = data.amendment_chunks || [];
     if (amends.length > 0) {
       amendSec.classList.remove('hidden');
@@ -1324,7 +1980,7 @@
       amendList.innerHTML = '';
     }
 
-    // 4. Ranked Primary Hits
+    // 5. Ranked Primary Hits
     const hits = data.hits || [];
     if (hits.length === 0) {
       hitsList.innerHTML = `
@@ -1336,7 +1992,7 @@
       hitsList.innerHTML = hits.map((hit, i) => renderSearchHitCard(hit, `#${i + 1}`, false)).join('');
     }
 
-    // Wire "Открыть в инспекторе" buttons inside search cards
+    // Wire "Открыть в инспекторе" buttons
     wrapper.querySelectorAll('[data-open-insp-doc]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const dId = btn.getAttribute('data-open-insp-doc');
@@ -1344,6 +2000,495 @@
         openDocumentInspector(dId, sId);
       });
     });
+
+    // Wire "Открыть конструктор запросов к таблице" buttons on TablePassport & SearchHit cards
+    wrapper.querySelectorAll('[data-open-table-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tId = btn.getAttribute('data-open-table-id');
+        if (tId) openTableExplorer({ tableId: tId });
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Interactive Table Explorer Modal (/api/tables, /api/tables/{id}, /api/tables/query)
+  // ---------------------------------------------------------------------------
+  async function openTableExplorer(opts = {}) {
+    const { tableId = null, docId = null } = opts;
+    const modal = document.getElementById('table-explorer-modal');
+    const selectEl = document.getElementById('texp-table-select');
+    const tableContainer = document.getElementById('texp-table-container');
+    const showAllBtn = document.getElementById('texp-btn-show-all-docs');
+
+    modal.classList.remove('hidden');
+    state.tableExplorer.docIdFilter = docId || null;
+    state.tableExplorer.offset = 0;
+
+    if (showAllBtn) {
+      if (state.tableExplorer.docIdFilter) showAllBtn.classList.remove('hidden');
+      else showAllBtn.classList.add('hidden');
+    }
+
+    tableContainer.innerHTML = '<div class="p-6 text-center text-slate-400">Загрузка списка структурированных таблиц из SQLite...</div>';
+
+    try {
+      const url = state.tableExplorer.docIdFilter
+        ? `/api/tables?doc_id=${encodeURIComponent(state.tableExplorer.docIdFilter)}`
+        : '/api/tables';
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+
+      const tables = Array.isArray(data) ? data : (data.tables || []);
+      state.tableExplorer.tables = tables;
+
+      if (tables.length === 0) {
+        selectEl.innerHTML = '<option value="">Нет таблиц в SQLite</option>';
+        document.getElementById('texp-columns-strip').innerHTML = '<span class="text-xs text-slate-400">Таблицы отсутствуют</span>';
+        document.getElementById('texp-passport-badges').innerHTML = '';
+        document.getElementById('texp-results-meta').textContent = 'Структурированные таблицы не найдены';
+        tableContainer.innerHTML = `
+          <div class="p-8 text-center text-slate-500 space-y-2">
+            <div class="font-semibold text-sm text-slate-700">В хранилище SQLite (tables_store.db) пока нет таблиц${state.tableExplorer.docIdFilter ? ' для выбранного документа' : ''}.</div>
+            <div class="text-xs">Синхронизируйте папку <code>доки/</code> (с флагом force при необходимости), чтобы индексировать все листы Excel и большие таблицы Word/PDF (≥ 25 строк).</div>
+          </div>
+        `;
+        return;
+      }
+
+      selectEl.innerHTML = tables
+        .map((t) => {
+          const lbl = `${t.file_name || t.doc_id}${t.sheet_name ? ' [' + t.sheet_name + ']' : ''} — ${t.table_title || t.section_title || t.table_id} (${t.row_count || 0} стр.)`;
+          return `<option value="${escapeHtml(t.table_id)}">${escapeHtml(lbl)}</option>`;
+        })
+        .join('');
+
+      const targetId =
+        tableId && tables.some((t) => t.table_id === tableId)
+          ? tableId
+          : tables[0].table_id;
+
+      selectEl.value = targetId;
+      await selectExplorerTable(targetId);
+    } catch (err) {
+      tableContainer.innerHTML = `<div class="p-6 text-red-600 font-medium">Ошибка загрузки таблиц: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function closeTableExplorer() {
+    document.getElementById('table-explorer-modal').classList.add('hidden');
+  }
+
+  async function selectExplorerTable(tableId) {
+    if (!tableId) return;
+    state.tableExplorer.activeTableId = tableId;
+    state.tableExplorer.offset = 0;
+
+    // Reset filter inputs on table switch
+    document.getElementById('texp-search-text').value = '';
+    document.getElementById('texp-filter-val').value = '';
+
+    try {
+      const res = await fetch(`/api/tables/${encodeURIComponent(tableId)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+
+      const passport = data.passport || data;
+      state.tableExplorer.activePassport = passport;
+      state.tableExplorer.formulaSummary = data.formula_summary || null;
+
+      renderExplorerPassportHeader(passport);
+      populateExplorerColumnSelectors(passport);
+      await runExplorerQuery();
+    } catch (err) {
+      showToast(`Ошибка загрузки схемы таблицы: ${err.message}`, 'error');
+    }
+  }
+
+  function renderExplorerPassportHeader(tp) {
+    const titleEl = document.getElementById('texp-title');
+    const badgesEl = document.getElementById('texp-passport-badges');
+    const summaryMetaEl = document.getElementById('texp-schema-summary-meta');
+    const stripEl = document.getElementById('texp-columns-strip');
+
+    titleEl.textContent = tp.table_title || tp.sheet_name || tp.section_title || tp.file_name || tp.table_id;
+
+    const badges = [];
+    badges.push(`<span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold">${tp.row_count || 0} строк × ${tp.col_count || (tp.columns || []).length} кол.</span>`);
+    if (tp.has_formulas) {
+      badges.push(`<span class="px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 font-semibold">🧮 формул: ${tp.formula_count || 'есть'}</span>`);
+    }
+    if ((tp.also_in_files || []).length > 0) {
+      badges.push(`<span class="px-2 py-0.5 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 font-sans" title="Кросс-файловая дедупликация по table_hash">🔗 Также в: ${escapeHtml(tp.also_in_files.join(', '))}</span>`);
+    }
+    badgesEl.innerHTML = badges.join('');
+
+    const cols = tp.columns || [];
+    summaryMetaEl.textContent = `table_id: ${tp.table_id} • колонок: ${cols.length}`;
+
+    if (cols.length === 0) {
+      stripEl.innerHTML = '<span class="text-xs text-slate-400">Схема колонок пуста</span>';
+      return;
+    }
+
+    stripEl.innerHTML = cols
+      .map((col) => {
+        const typeLabel = col.inferred_type || 'text';
+        const samples = (col.sample_values || []).slice(0, 3).join(' | ');
+        const tip = `Колонка: ${col.name}\nТип: ${typeLabel}\nЗаполнено: ${col.non_empty_count || 0}\nПримеры: ${samples || '—'}`;
+        let cls = 'bg-slate-50 hover:bg-emerald-50 text-slate-800 border-slate-200 hover:border-emerald-400';
+        if (col.has_formulas) cls = 'bg-amber-50 hover:bg-amber-100 text-amber-950 border-amber-300';
+        else if (col.is_hierarchy) cls = 'bg-indigo-50 hover:bg-indigo-100 text-indigo-950 border-indigo-300';
+        else if (typeLabel === 'number' || typeLabel === 'numeric' || typeLabel === 'float') {
+          cls = 'bg-emerald-50/70 hover:bg-emerald-100 text-emerald-950 border-emerald-300';
+        }
+
+        return `
+          <button type="button" data-pick-col="${escapeHtml(col.name)}" title="${escapeHtml(tip)}" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-medium transition cursor-pointer ${cls}">
+            <span class="font-semibold">${escapeHtml(col.name)}</span>
+            <span class="font-mono-code text-[10px] opacity-75">(${escapeHtml(typeLabel)}${col.has_formulas ? ', ƒx' : ''}${col.is_hierarchy ? ', иерарх.' : ''})</span>
+          </button>
+        `;
+      })
+      .join('');
+
+    stripEl.querySelectorAll('[data-pick-col]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const colName = btn.getAttribute('data-pick-col');
+        if (state.tableExplorer.operation === 'aggregate') {
+          const grpEl = document.getElementById('texp-group-by');
+          const aggColEl = document.getElementById('texp-agg-col');
+          if (!grpEl.value) {
+            grpEl.value = colName;
+            showToast(`Колонка группировки: «${colName}»`, 'info');
+          } else {
+            aggColEl.value = colName;
+            showToast(`Целевая колонка агрегации: «${colName}»`, 'info');
+          }
+        } else {
+          document.getElementById('texp-filter-col').value = colName;
+          document.getElementById('texp-filter-val').focus();
+        }
+      });
+    });
+  }
+
+  function populateExplorerColumnSelectors(tp) {
+    const cols = (tp.columns || []).map((c) => c.name);
+    const filterColEl = document.getElementById('texp-filter-col');
+    const aggColEl = document.getElementById('texp-agg-col');
+    const groupByEl = document.getElementById('texp-group-by');
+
+    const colOptions = cols.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+    filterColEl.innerHTML = `<option value="">— Любая колонка (без фильтра) —</option>${colOptions}`;
+    aggColEl.innerHTML = `<option value="">— Все строки (*) —</option>${colOptions}`;
+    groupByEl.innerHTML = `<option value="">— Без группировки —</option>${colOptions}`;
+  }
+
+  function setExplorerOperation(op) {
+    state.tableExplorer.operation = op;
+    state.tableExplorer.offset = 0;
+
+    document.querySelectorAll('.texp-op-btn').forEach((btn) => {
+      const active = btn.getAttribute('data-texp-op') === op;
+      btn.className = active
+        ? 'texp-op-btn px-3 py-1.5 rounded-lg bg-white text-slate-900 shadow-sm transition cursor-pointer'
+        : 'texp-op-btn px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition cursor-pointer';
+    });
+
+    const aggControls = document.getElementById('texp-agg-controls');
+    if (op === 'aggregate') {
+      aggControls.classList.remove('hidden');
+    } else {
+      aggControls.classList.add('hidden');
+    }
+  }
+
+  async function runExplorerQuery() {
+    const tableId = state.tableExplorer.activeTableId;
+    if (!tableId) return;
+
+    const op = state.tableExplorer.operation;
+    const limit = parseInt(document.getElementById('texp-limit').value, 10) || 25;
+    state.tableExplorer.limit = limit;
+
+    const searchText = document.getElementById('texp-search-text').value.trim();
+    const filterCol = document.getElementById('texp-filter-col').value;
+    const filterVal = document.getElementById('texp-filter-val').value.trim();
+
+    const filters = {};
+    if (filterCol && filterVal) {
+      filters[filterCol] = filterVal;
+    }
+
+    const payload = {
+      table_id: tableId,
+      operation: op,
+      filters: filters,
+      search_text: searchText,
+      limit: limit,
+      offset: state.tableExplorer.offset,
+    };
+
+    if (op === 'aggregate') {
+      payload.agg_func = document.getElementById('texp-agg-func').value || 'count';
+      payload.agg_column = document.getElementById('texp-agg-col').value || '';
+      payload.group_by = document.getElementById('texp-group-by').value || '';
+    }
+
+    const runBtn = document.getElementById('texp-btn-run');
+    runBtn.disabled = true;
+
+    try {
+      const res = await fetch('/api/tables/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const qData = await res.json();
+      if (!res.ok) throw new Error(qData.detail || `HTTP ${res.status}`);
+
+      state.tableExplorer.lastResponse = qData;
+      renderExplorerResults(qData);
+    } catch (err) {
+      showToast(`Ошибка запроса к таблице: ${err.message}`, 'error');
+    } finally {
+      runBtn.disabled = false;
+    }
+  }
+
+  function renderExplorerResults(qData) {
+    const metaEl = document.getElementById('texp-results-meta');
+    const aggBox = document.getElementById('texp-agg-result-box');
+    const formulasBox = document.getElementById('texp-formulas-summary-box');
+    const tableContainer = document.getElementById('texp-table-container');
+    const prevBtn = document.getElementById('texp-btn-prev');
+    const nextBtn = document.getElementById('texp-btn-next');
+    const pageLbl = document.getElementById('texp-page-label');
+
+    const totalRows = qData.total_table_rows ?? 0;
+    const matched = qData.matched_count ?? 0;
+    const returned = qData.returned_count ?? (qData.rows || []).length;
+    const offset = state.tableExplorer.offset;
+    const limit = state.tableExplorer.limit;
+
+    metaEl.innerHTML = `
+      Операция: <code class="font-mono-code font-bold text-slate-900">${escapeHtml(qData.operation)}</code> •
+      Совпало строк: <strong class="text-emerald-700 font-mono-code">${matched}</strong> из <span class="font-mono-code">${totalRows}</span> •
+      Показано: <span class="font-mono-code">${returned}</span> •
+      Время SQLite: <span class="font-mono-code">${Number(qData.latency_ms || 0).toFixed(1)} мс</span>
+    `;
+
+    pageLbl.textContent = `offset: ${offset}`;
+    prevBtn.disabled = offset <= 0;
+    nextBtn.disabled = offset + limit >= matched;
+
+    // 1. Aggregation Result Box
+    if (qData.operation === 'aggregate' && qData.aggregation_result !== null && qData.aggregation_result !== undefined) {
+      aggBox.classList.remove('hidden');
+      const agg = qData.aggregation_result;
+
+      if (Array.isArray(agg)) {
+        // Group-by array or distinct values array
+        if (agg.length > 0 && typeof agg[0] === 'object' && agg[0] !== null) {
+          const keys = Object.keys(agg[0]);
+          aggBox.innerHTML = `
+            <div class="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-2">
+              <div class="text-xs font-bold text-indigo-950">📊 Результат группировки (${agg.length} групп):</div>
+              <div class="ai-md-table-wrap bg-white">
+                <table class="ai-md-table">
+                  <thead><tr>${keys.map((k) => `<th>${escapeHtml(k)}</th>`).join('')}</tr></thead>
+                  <tbody>
+                    ${agg
+                      .map(
+                        (row) =>
+                          `<tr>${keys
+                            .map((k) => `<td class="font-mono-code">${escapeHtml(typeof row[k] === 'object' ? JSON.stringify(row[k]) : row[k])}</td>`)
+                            .join('')}</tr>`
+                      )
+                      .join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          `;
+        } else {
+          aggBox.innerHTML = `
+            <div class="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-2">
+              <div class="text-xs font-bold text-indigo-950">📊 Уникальные значения (${agg.length}):</div>
+              <div class="flex flex-wrap gap-1.5">
+                ${agg.map((v) => `<span class="px-2.5 py-1 rounded-lg bg-white border border-indigo-200 text-xs font-medium text-slate-800">${escapeHtml(v)}</span>`).join('')}
+              </div>
+            </div>
+          `;
+        }
+      } else if (typeof agg === 'object') {
+        // Object: check if it contains `groups` array or key-value KPIs
+        if (Array.isArray(agg.groups)) {
+          const keys = agg.groups.length > 0 ? Object.keys(agg.groups[0]) : [];
+          aggBox.innerHTML = `
+            <div class="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-2">
+              <div class="flex items-center justify-between text-xs font-bold text-indigo-950">
+                <span>📊 Результат агрегации по группам (${agg.groups.length}):</span>
+                ${agg.total !== undefined ? `<span class="font-mono-code">Итого: ${escapeHtml(agg.total)}</span>` : ''}
+              </div>
+              ${keys.length > 0 ? `
+                <div class="ai-md-table-wrap bg-white">
+                  <table class="ai-md-table">
+                    <thead><tr>${keys.map((k) => `<th>${escapeHtml(k)}</th>`).join('')}</tr></thead>
+                    <tbody>
+                      ${agg.groups
+                        .map(
+                          (row) =>
+                            `<tr>${keys.map((k) => `<td class="font-mono-code">${escapeHtml(row[k])}</td>`).join('')}</tr>`
+                        )
+                        .join('')}
+                    </tbody>
+                  </table>
+                </div>
+              ` : `<pre class="text-xs font-mono-code bg-white p-3 rounded-lg border border-indigo-100">${escapeHtml(JSON.stringify(agg, null, 2))}</pre>`}
+            </div>
+          `;
+        } else if (Array.isArray(agg.values)) {
+          aggBox.innerHTML = `
+            <div class="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-2">
+              <div class="text-xs font-bold text-indigo-950">📊 Уникальных значений: ${escapeHtml(agg.count ?? agg.values.length)}</div>
+              <div class="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">
+                ${agg.values.map((v) => `<span class="px-2.5 py-1 rounded-lg bg-white border border-indigo-200 text-xs font-medium text-slate-800">${escapeHtml(v)}</span>`).join('')}
+              </div>
+            </div>
+          `;
+        } else {
+          const entries = Object.entries(agg);
+          aggBox.innerHTML = `
+            <div class="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-2">
+              <div class="text-xs font-bold text-indigo-950">📊 Результат агрегации:</div>
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                ${entries
+                  .map(
+                    ([k, v]) => `
+                      <div class="p-3 rounded-xl bg-white border border-indigo-200">
+                        <div class="text-[11px] text-slate-500 font-medium truncate" title="${escapeHtml(k)}">${escapeHtml(k)}</div>
+                        <div class="text-base font-bold text-indigo-900 font-mono-code mt-0.5 break-all">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : v)}</div>
+                      </div>
+                    `
+                  )
+                  .join('')}
+              </div>
+            </div>
+          `;
+        }
+      } else {
+        aggBox.innerHTML = `
+          <div class="rounded-xl border border-indigo-200 bg-indigo-50 p-4 flex items-center justify-between">
+            <span class="text-xs font-bold text-indigo-950">📊 Вычисленное значение агрегации:</span>
+            <span class="text-xl font-bold font-mono-code text-indigo-700">${escapeHtml(agg)}</span>
+          </div>
+        `;
+      }
+    } else {
+      aggBox.classList.add('hidden');
+      aggBox.innerHTML = '';
+    }
+
+    // 2. Formulas Summary Box (for get_formulas)
+    const formulas = qData.formulas || [];
+    if (qData.operation === 'get_formulas' && formulas.length > 0) {
+      formulasBox.classList.remove('hidden');
+      formulasBox.innerHTML = `
+        <div class="rounded-xl border border-amber-300 bg-amber-50/50 p-4 space-y-2.5">
+          <div class="text-xs font-bold text-amber-950">🧮 Извлеченные ячейки с формулами Excel (${formulas.length}):</div>
+          <div class="ai-md-table-wrap bg-white">
+            <table class="ai-md-table">
+              <thead>
+                <tr>
+                  <th>Строка</th>
+                  <th>Колонка / Ячейка</th>
+                  <th>Формула</th>
+                  <th>Значение / Контекст строки</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${formulas
+                  .map((f) => {
+                    const rIdx = f.row_index ?? f.row ?? '—';
+                    const col = f.column || f.col_name || f.cell || '—';
+                    const expr = f.formula || f.expression || (f.formulas ? JSON.stringify(f.formulas) : '—');
+                    let ctx = f.cell_text || f.value || f.cell_value || f.row_label || f.row_preview || '';
+                    if (f.row_label && f.cell_text && !f.cell_text.includes(f.row_label)) {
+                      ctx = `${f.row_label} → ${f.cell_text}`;
+                    } else if (!ctx && f.context) {
+                      ctx = typeof f.context === 'object' ? JSON.stringify(f.context) : String(f.context);
+                    }
+                    return `
+                      <tr>
+                        <td class="font-mono-code font-semibold">${escapeHtml(rIdx)}</td>
+                        <td class="font-semibold">${escapeHtml(col)}</td>
+                        <td><span class="formula-cell-badge">ƒx ${escapeHtml(expr)}</span></td>
+                        <td>${formatCellWithFormulaHighlight(ctx)}</td>
+                      </tr>
+                    `;
+                  })
+                  .join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    } else {
+      formulasBox.classList.add('hidden');
+      formulasBox.innerHTML = '';
+    }
+
+    // 3. Rows Data Table
+    const rows = qData.rows || [];
+    if (rows.length === 0) {
+      if (qData.operation === 'aggregate' && qData.aggregation_result !== null) {
+        tableContainer.innerHTML = '';
+      } else if (qData.markdown_preview) {
+        tableContainer.innerHTML = `<div class="ai-markdown-body">${renderMarkdownSafe(qData.markdown_preview)}</div>`;
+      } else {
+        tableContainer.innerHTML = '<div class="p-6 text-center text-slate-400 text-xs">По заданным условиям строки не найдены.</div>';
+      }
+      return;
+    }
+
+    const cols =
+      qData.columns && qData.columns.length > 0
+        ? qData.columns
+        : Object.keys(rows[0]).filter((k) => k !== '_row_index');
+
+    const ths = cols.map((c) => `<th class="px-3 py-2.5 text-left text-[11px] font-bold text-slate-700 whitespace-nowrap border-b border-slate-200">${escapeHtml(c)}</th>`).join('');
+    const trs = rows
+      .map((r, idx) => {
+        const rowNum = r._row_index ?? r.row_index ?? offset + idx + 1;
+        const tds = cols
+          .map((c) => `<td class="px-3 py-2 border-b border-slate-100 text-slate-800 align-top">${formatCellWithFormulaHighlight(r[c])}</td>`)
+          .join('');
+        return `
+          <tr class="hover:bg-emerald-50/40 transition">
+            <td class="px-2.5 py-2 border-b border-slate-100 font-mono-code text-[11px] text-slate-400 text-right select-none">${escapeHtml(rowNum)}</td>
+            ${tds}
+          </tr>
+        `;
+      })
+      .join('');
+
+    tableContainer.innerHTML = `
+      <div class="border border-slate-200 rounded-xl overflow-auto max-h-[54vh]">
+        <table class="min-w-full text-xs explorer-data-table">
+          <thead>
+            <tr>
+              <th class="px-2.5 py-2.5 text-right text-[11px] font-mono-code text-slate-400 border-b border-slate-200 w-12">#</th>
+              ${ths}
+            </tr>
+          </thead>
+          <tbody>
+            ${trs}
+          </tbody>
+        </table>
+      </div>
+    `;
   }
 
   // ---------------------------------------------------------------------------
@@ -1354,6 +2499,29 @@
     document.querySelectorAll('.tab-nav-btn').forEach((btn) => {
       btn.addEventListener('click', () => switchTab(btn.getAttribute('data-tab')));
     });
+
+    // Playground mode toggle buttons
+    const btnModeSearch = document.getElementById('btn-mode-search');
+    const btnModeAsk = document.getElementById('btn-mode-ask');
+    if (btnModeSearch && btnModeAsk) {
+      btnModeSearch.addEventListener('click', () => setPlaygroundMode('search'));
+      btnModeAsk.addEventListener('click', () => setPlaygroundMode('ask'));
+      setPlaygroundMode(state.playgroundMode);
+    }
+
+    // Header & Registry & Playground Table Explorer shortcuts
+    const btnHeaderTables = document.getElementById('btn-header-open-tables');
+    if (btnHeaderTables) {
+      btnHeaderTables.addEventListener('click', () => openTableExplorer());
+    }
+    const btnRegTables = document.getElementById('btn-registry-open-tables');
+    if (btnRegTables) {
+      btnRegTables.addEventListener('click', () => openTableExplorer());
+    }
+    const btnPlayTables = document.getElementById('btn-playground-open-explorer');
+    if (btnPlayTables) {
+      btnPlayTables.addEventListener('click', () => openTableExplorer());
+    }
 
     // Dropzone & file input
     const dropzone = document.getElementById('upload-dropzone');
@@ -1434,16 +2602,82 @@
     document.getElementById('btn-cancel-meta-modal').addEventListener('click', closeMetadataModal);
     document.getElementById('metadata-edit-form').addEventListener('submit', submitMetadataPatch);
 
+    // Table Explorer modal controls
+    document.getElementById('btn-close-table-explorer').addEventListener('click', closeTableExplorer);
+    document.getElementById('texp-table-select').addEventListener('change', (e) => {
+      selectExplorerTable(e.target.value);
+    });
+    document.getElementById('texp-btn-show-all-docs').addEventListener('click', () => {
+      openTableExplorer({ tableId: state.tableExplorer.activeTableId, docId: null });
+    });
+    document.querySelectorAll('.texp-op-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        setExplorerOperation(btn.getAttribute('data-texp-op'));
+        runExplorerQuery();
+      });
+    });
+    document.getElementById('texp-btn-run').addEventListener('click', () => {
+      state.tableExplorer.offset = 0;
+      runExplorerQuery();
+    });
+    document.getElementById('texp-btn-reset').addEventListener('click', () => {
+      document.getElementById('texp-search-text').value = '';
+      document.getElementById('texp-filter-col').value = '';
+      document.getElementById('texp-filter-val').value = '';
+      document.getElementById('texp-agg-func').value = 'count';
+      document.getElementById('texp-agg-col').value = '';
+      document.getElementById('texp-group-by').value = '';
+      state.tableExplorer.offset = 0;
+      runExplorerQuery();
+    });
+    ['texp-search-text', 'texp-filter-val'].forEach((inpId) => {
+      document.getElementById(inpId).addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          state.tableExplorer.offset = 0;
+          runExplorerQuery();
+        }
+      });
+    });
+    document.getElementById('texp-limit').addEventListener('change', () => {
+      state.tableExplorer.offset = 0;
+      runExplorerQuery();
+    });
+    document.getElementById('texp-btn-prev').addEventListener('click', () => {
+      state.tableExplorer.offset = Math.max(0, state.tableExplorer.offset - state.tableExplorer.limit);
+      runExplorerQuery();
+    });
+    document.getElementById('texp-btn-next').addEventListener('click', () => {
+      state.tableExplorer.offset += state.tableExplorer.limit;
+      runExplorerQuery();
+    });
+
     // Close modals on Escape key
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         document.getElementById('inspector-modal').classList.add('hidden');
         closeMetadataModal();
+        closeTableExplorer();
       }
     });
 
-    // Search Playground controls
-    document.getElementById('search-form').addEventListener('submit', executeHybridSearch);
+    // Search & AI Agent Playground controls
+    document.getElementById('search-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (state.playgroundMode === 'ask') {
+        executeAgentAsk();
+      } else {
+        executeHybridSearch();
+      }
+    });
+    document.getElementById('btn-run-search').addEventListener('click', (e) => {
+      e.preventDefault();
+      executeHybridSearch();
+    });
+    document.getElementById('btn-run-ask').addEventListener('click', (e) => {
+      e.preventDefault();
+      executeAgentAsk();
+    });
     document.getElementById('btn-clear-query').addEventListener('click', () => {
       const inp = document.getElementById('search-query-input');
       inp.value = '';

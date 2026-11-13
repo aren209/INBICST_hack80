@@ -330,34 +330,91 @@ RUSSIAN_MONTHS_MAP: dict[str, str] = {
 
 # Requisite extraction regexes
 HEADER_TABLE_REQUISITE_RE = re.compile(
-    r"(?:от\s*)?(\d{2}\.\d{2}\.\d{4})\s*(?:г\.?)?\s*[|\t ]+\s*(?:№|N)\s*([0-9А-Яа-яA-Za-z\-/]+)|"
-    r"(?:№|N)\s*([0-9А-Яа-яA-Za-z\-/]+)\s*[|\t ]+\s*(?:от\s*)?(\d{2}\.\d{2}\.\d{4})",
+    r"(?:от\s*)?(\d{2}\.\d{2}\.\d{4})\s*(?:г\.?)?\s*[|\t]+\s*(?:№|N)\s*([0-9][0-9А-ЯЁа-яёA-Za-z\-/]{0,15})|"
+    r"(?:№|N)\s*([0-9][0-9А-ЯЁа-яёA-Za-z\-/]{0,15})\s*[|\t]+\s*(?:от\s*)?(\d{2}\.\d{2}\.\d{4})",
     re.IGNORECASE,
 )
 
 EDO_STAMP_RE = re.compile(
-    r"(?:Зарегистрировано\s+в\s+ЭДО(?:\s+МФТИ)?|Регистрационный\s+номер|Дата\s+регистрации)"
-    r"[^\n]{0,80}?(?:от\s*(\d{2}\.\d{2}\.\d{4}))?[^\n]{0,40}?(?:№|N)\s*([0-9А-Яа-яA-Za-z\-/]+)",
+    r"\bЗарегистрировано\s+(?:в\s+(?:ЭДО|СЭД|реестре|журнале)(?:\s+[А-ЯЁA-Z0-9«»\"\-]+)?\s*)?"
+    r"(?:от\s*)?(?:[«\"']?(\d{1,2})[»\"']?\s+([а-яё]+)\s+(\d{4})|(\d{2}\.\d{2}\.\d{4}))\s*(?:г\.?|года)?\s*"
+    r"[^\n]{0,40}?(?:Рег(?:истрационный)?\.?\s*)?(?:№|N)\s*([0-9][0-9А-ЯЁа-яёA-Za-z\-/]{0,15})",
+    re.IGNORECASE,
+)
+
+EDO_STAMP_REV_RE = re.compile(
+    r"(?:\bЗарегистрировано\s+(?:в\s+(?:ЭДО|СЭД|реестре|журнале)(?:\s+[А-ЯЁA-Z0-9«»\"\-]+)?\s*)?[^\n]{0,40}?(?:№|N)\s*|"
+    r"(?m:^\s*)(?:Регистрационный\s*(?:№|N|номер[:\s]*)|Рег\.\s*(?:№|N))\s*)"
+    r"([0-9][0-9А-ЯЁа-яёA-Za-z\-/]{0,15})"
+    r"(?:[^\n]{0,40}?(?:от|дата\s+регистрации[:\s]*)\s*"
+    r"(?:[«\"']?(\d{1,2})[»\"']?\s+([а-яё]+)\s+(\d{4})|(\d{2}\.\d{2}\.\d{4})))?",
     re.IGNORECASE,
 )
 
 ORDER_HEADER_RE = re.compile(
-    r"(?:ПРИКАЗ|РАСПОРЯЖЕНИЕ)\s+(?:[^\n]{0,40}?\s+)?"
+    r"(?m)^\s*(?:ПРИКАЗ|РАСПОРЯЖЕНИЕ)\b"
+    r"(?:[ \t]*\n?[ \t]*(?:г\.\s*[А-ЯЁа-яё\-]+|[А-ЯЁа-яё]{2,25}))?\s+"
     r"от\s*(?:[«\"']?(\d{1,2})[»\"']?\s+([а-яё]+)\s+(\d{4})|(\d{2}\.\d{2}\.\d{4}))\s*(?:г\.?|года)?\s*"
-    r"(?:№|N)\s*([0-9А-Яа-яA-Za-z\-/]+)",
+    r"(?:№|N)\s*([0-9][0-9А-ЯЁа-яёA-Za-z\-/]{0,15})",
     re.IGNORECASE,
 )
 
 ORDER_HEADER_REV_RE = re.compile(
-    r"(?:ПРИКАЗ|РАСПОРЯЖЕНИЕ)\s+(?:[^\n]{0,40}?\s+)?"
-    r"(?:№|N)\s*([0-9А-Яа-яA-Za-z\-/]+)\s+от\s*(\d{2}\.\d{2}\.\d{4})",
+    r"(?m)^\s*(?:ПРИКАЗ|РАСПОРЯЖЕНИЕ)\b"
+    r"(?:[ \t]*\n?[ \t]*(?:г\.\s*[А-ЯЁа-яё\-]+|[А-ЯЁа-яё]{2,25}))?\s+"
+    r"(?:№|N)\s*([0-9][0-9А-ЯЁа-яёA-Za-z\-/]{0,15})\s+"
+    r"от\s*(?:[«\"']?(\d{1,2})[»\"']?\s+([а-яё]+)\s+(\d{4})|(\d{2}\.\d{2}\.\d{4}))",
+    re.IGNORECASE,
+)
+
+HEADER_APPROVED_BY_RE = re.compile(
+    r"(?m)^\s*(?:УТВЕРЖДЕН[ОЫА]?|Утвержден[оыа]?)\s+"
+    r"(?:приказом|распоряжением)(?:\s+[^\n]{0,70}?)?\s+"
+    r"от\s*(?:[«\"']?(\d{1,2})[»\"']?\s+([а-яё]+)\s+(\d{4})|(\d{2}\.\d{2}\.\d{4}))\s*(?:г\.?|года)?\s*"
+    r"(?:№|N)\s*([0-9][0-9А-ЯЁа-яёA-Za-z\-/]{0,15})",
+    re.IGNORECASE,
+)
+
+HEADER_APPROVED_BY_REV_RE = re.compile(
+    r"(?m)^\s*(?:УТВЕРЖДЕН[ОЫА]?|Утвержден[оыа]?)\s+"
+    r"(?:приказом|распоряжением)(?:\s+[^\n]{0,70}?)?\s+"
+    r"(?:№|N)\s*([0-9][0-9А-ЯЁа-яёA-Za-z\-/]{0,15})\s+"
+    r"от\s*(?:[«\"']?(\d{1,2})[»\"']?\s+([а-яё]+)\s+(\d{4})|(\d{2}\.\d{2}\.\d{4}))",
     re.IGNORECASE,
 )
 
 FILENAME_REQUISITES_RE = re.compile(
-    r"(Приказ|Распоряжение|Регламент|Положение|Инструкция|Приложение)?.*?"
-    r"(?:№|N)\s*([0-9]{1,5}(?:-[0-9А-Яа-яA-Za-z]+)?)"
-    r"(?:.*?от\s*(\d{2}\.\d{2}\.\d{4}))?",
+    r"(Приказ|Распоряжение|Регламент|Положение|Инструкция|Порядок|Приложение)?.*?"
+    r"(?:№|N|No)\s*([0-9]{1,6}(?:[-/][0-9А-ЯЁа-яёA-Za-z]{1,6})?)"
+    r"(?:.*?от\s*(\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2}))?",
+    re.IGNORECASE,
+)
+
+FILENAME_REQUISITES_REV_RE = re.compile(
+    r"(Приказ|Распоряжение|Регламент|Положение|Инструкция|Порядок|Приложение)?.*?"
+    r"от\s*(\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2}).*?"
+    r"(?:№|N|No)\s*([0-9]{1,6}(?:[-/][0-9А-ЯЁа-яёA-Za-z]{1,6})?)",
+    re.IGNORECASE,
+)
+
+# Structural boundaries marking the end of the document's top header/title zone
+_HEADER_BODY_STOP_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:ПРИКАЗЫВАЮ|РАСПОРЯЖАЮСЬ|ОБЯЗЫВАЮ|ПОСТАНОВЛЯЮ)\s*:|"
+    r"(?:Раздел|Глава)\s+(?:[0-9]{1,2}|[IVXLCDM]+)\b|"
+    r"(?:1\.|I\.)\s+[А-ЯЁ]|"
+    r"1\.1\.?\s+[А-ЯЁ]|"
+    r"Общие\s+положения\s*$|"
+    r"ЛИСТ\s+СОГЛАСОВАНИЯ\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Inline body/preamble citation phrases that reference OTHER acts rather than the document's own requisites
+_EXTERNAL_ACT_CITATION_LINE_RE = re.compile(
+    r"(?:в\s+соответствии\s+с|на\s+основании|во\s+исполнение|руководствуясь|"
+    r"утративши[ми]+\s+силу|отменить\s+приказ|внести\s+изменения\s+в|"
+    r"о\s+внесении\s+изменений\s+в)",
     re.IGNORECASE,
 )
 
@@ -365,14 +422,16 @@ FILENAME_REQUISITES_RE = re.compile(
 SUPERSEDES_PHRASE_RE = re.compile(
     r"(?:признать\s+утративши[ми]+\s+силу|отменить\s+действие|отменить\s+приказ|"
     r"считать\s+утративши[ми]+\s+силу|взамен\s+приказа)"
-    r"[^.;\n]{0,160}?(?:№|N)\s*(\d{1,5}(?:-[0-9А-Яа-яA-Za-z]+)?)",
+    r"[^.;\n]{0,140}?\b(?:приказ[ауом]?|распоряжени[еяюем]+|регламент[ауом]?|положени[еяюем]+|поряд[окауом]+|инструкци[юией]+)"
+    r"[^.;\n]{0,80}?(?<!приложени[еяй]\s)(?:№|N)\s*(\d{1,5}(?:-[0-9А-Яа-яA-Za-z]+)?)",
     re.IGNORECASE,
 )
 
 AMENDS_PHRASE_RE = re.compile(
     r"(?:внести\s+изменения\s+в|во\s+изменение\s+приказа|изменить\s+редакцию|"
     r"дополнить\s+приказ|о\s+внесении\s+изменений\s+в)"
-    r"[^.;\n]{0,180}?(?:№|N)\s*(\d{1,5}(?:-[0-9А-Яа-яA-Za-z]+)?)",
+    r"[^.;\n]{0,140}?\b(?:приказ[ауом]?|распоряжени[еяюем]+|регламент[ауом]?|положени[еяюем]+|поряд[окауом]+|инструкци[юией]+)"
+    r"[^.;\n]{0,80}?(?<!приложени[еяй]\s)(?:№|N)\s*(\d{1,5}(?:-[0-9А-Яа-яA-Za-z]+)?)",
     re.IGNORECASE,
 )
 
@@ -386,16 +445,165 @@ def _normalize_lookup_key(text: str) -> str:
 
 
 def _to_iso_date(date_str: str) -> str:
-    """Convert DD.MM.YYYY or already-ISO YYYY-MM-DD to YYYY-MM-DD."""
-    s = date_str.strip()
+    """Convert DD.MM.YYYY, Russian text date ('18 августа 2025'), or YYYY-MM-DD to ISO YYYY-MM-DD."""
+    s = (date_str or "").strip()
+    if not s or "_" in s or "[" in s:
+        return ""
     if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-        return s
+        y, mo, d = int(s[:4]), int(s[5:7]), int(s[8:10])
+        if 1990 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31:
+            return s
+        return ""
     m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$", s)
     if m:
         day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= month <= 12 and 1 <= day <= 31:
+        if 1990 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
             return f"{year:04d}-{month:02d}-{day:02d}"
+    m_ru = re.match(r"^[«\"']?(\d{1,2})[»\"']?\s+([а-яё]+)\s+(\d{4})", s, re.IGNORECASE)
+    if m_ru:
+        day, month_name, year = int(m_ru.group(1)), m_ru.group(2).lower(), int(m_ru.group(3))
+        month_num = RUSSIAN_MONTHS_MAP.get(month_name, "")
+        if month_num and 1990 <= year <= 2100 and 1 <= day <= 31:
+            return f"{year:04d}-{month_num}-{day:02d}"
     return ""
+
+
+def _parse_flex_date_groups(
+    day_s: str | None,
+    month_s: str | None,
+    year_s: str | None,
+    ddmmyyyy_s: str | None,
+) -> str:
+    """Convert regex capture groups `(day, month_ru, year, ddmmyyyy)` into ISO YYYY-MM-DD."""
+    if ddmmyyyy_s:
+        return _to_iso_date(ddmmyyyy_s)
+    if day_s and month_s and year_s:
+        month_num = RUSSIAN_MONTHS_MAP.get(month_s.strip().lower(), "")
+        if month_num:
+            day_i, year_i = int(day_s), int(year_s)
+            if 1990 <= year_i <= 2100 and 1 <= day_i <= 31:
+                return f"{year_i:04d}-{month_num}-{day_i:02d}"
+    return ""
+
+
+def _clean_valid_doc_number(raw: str | None) -> str:
+    """
+    Validate and normalize an extracted document/registration number.
+    Rejects blank placeholders ('___', '[___]', '_____-1', '-1', 'б/н') and requires a leading digit.
+    """
+    if not raw:
+        return ""
+    cand = raw.strip().strip(".,;:)»\"'")
+    if not cand or "_" in cand or "[" in cand or "]" in cand:
+        return ""
+    if cand.lower() in {"б/н", "б/д", "н/д", "none"}:
+        return ""
+    if not re.match(r"^\d{1,6}(?:[-/][0-9А-ЯЁа-яёA-Za-z]{1,6})?[А-ЯЁа-яёA-Za-z]?$", cand):
+        return ""
+    return cand
+
+
+def _normalize_filename_for_requisites(file_name: str) -> str:
+    """
+    Normalize underscores and separators in uploaded filenames so patterns like
+    `Приказ_№_2990_1_от_19_06_2026_Об_утверждении_регламента_поселения.pdf`
+    become `Приказ № 2990-1 от 19.06.2026 Об утверждении регламента поселения`.
+    """
+    if not file_name:
+        return ""
+    stem = re.sub(r"\.(?:pdf|docx?|xlsx?|txt|md)$", "", Path(file_name).name, flags=re.IGNORECASE)
+    # 1. Convert DD_MM_YYYY -> DD.MM.YYYY and YYYY_MM_DD -> YYYY-MM-DD
+    s = re.sub(r"(?<!\d)(\d{2})_(\d{2})_((?:19|20)\d{2})(?!\d)", r"\1.\2.\3", stem)
+    s = re.sub(r"(?<!\d)((?:19|20)\d{2})_(\d{2})_(\d{2})(?!\d)", r"\1-\2-\3", s)
+    # 2. Convert underscore-separated order numbers after № / N / No (e.g. №_2990_1_от -> № 2990-1_от)
+    s = re.sub(
+        r"((?:№|N|No)[\s_]*)(\d{1,6})_(\d{1,4}[А-ЯЁа-яёA-Za-z]?)(?=[\s_]|$)",
+        r"\1\2-\3",
+        s,
+        flags=re.IGNORECASE,
+    )
+    # 3. Replace remaining underscores with spaces and collapse whitespace
+    s = s.replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _extract_strict_header_zone(blocks_or_text: list[ParsedBlock] | str, max_chars: int = 1200) -> str:
+    """
+    Extract strictly the top document header/title zone from Page 1 BEFORE any body clauses,
+    directives ('ПРИКАЗЫВАЮ:'), section headings ('1. Общие положения'), or data tables,
+    filtering out lines that cite external/repealed/amended acts ('в соответствии с...', 'О внесении изменений в...').
+    """
+    raw_lines: list[str] = []
+    if isinstance(blocks_or_text, list):
+        non_empty = [b for b in blocks_or_text if (b.text and b.text.strip()) or b.table_rows]
+        if not non_empty:
+            return ""
+        first_page = non_empty[0].page_num or 1
+        for b in non_empty:
+            if (b.page_num or 1) != first_page:
+                break
+            # Stop at multi-row data tables (1x2 requisite tables have 0 or 1 data row)
+            if b.block_type == BlockType.TABLE.value and len(b.table_rows or []) >= 2:
+                break
+            if b.text:
+                raw_lines.extend(b.text.split("\n"))
+    else:
+        raw_lines = str(blocks_or_text or "")[:2500].split("\n")
+
+    kept_lines: list[str] = []
+    total_len = 0
+    for raw_ln in raw_lines:
+        ln = raw_ln.strip()
+        if not ln:
+            continue
+        if _HEADER_BODY_STOP_RE.match(ln):
+            break
+        if _EXTERNAL_ACT_CITATION_LINE_RE.search(ln):
+            continue
+        if total_len + len(ln) > max_chars:
+            break
+        kept_lines.append(ln)
+        total_len += len(ln) + 1
+
+    return "\n".join(kept_lines)
+
+
+def _extract_edo_stamp(blocks_or_text: list[ParsedBlock] | str, full_text: str) -> tuple[str, str]:
+    """
+    Extract `(edo_number, edo_date)` from official ЭДО / registration stamps anywhere in the document.
+    Prioritizes explicit `BlockType.STAMP` blocks first, then scans full document text.
+    """
+    probe_texts: list[str] = []
+    if isinstance(blocks_or_text, list):
+        stamp_texts = [
+            b.text.strip()
+            for b in blocks_or_text
+            if b.text and b.block_type == BlockType.STAMP.value
+        ]
+        if stamp_texts:
+            probe_texts.append("\n".join(stamp_texts))
+    if full_text:
+        probe_texts.append(full_text)
+
+    for probe in probe_texts:
+        for m_edo in EDO_STAMP_RE.finditer(probe):
+            cand_num = _clean_valid_doc_number(m_edo.group(5))
+            cand_date = _parse_flex_date_groups(
+                m_edo.group(1), m_edo.group(2), m_edo.group(3), m_edo.group(4)
+            )
+            if cand_num:
+                return cand_num, cand_date
+
+        for m_rev in EDO_STAMP_REV_RE.finditer(probe):
+            cand_num = _clean_valid_doc_number(m_rev.group(1))
+            cand_date = _parse_flex_date_groups(
+                m_rev.group(2), m_rev.group(3), m_rev.group(4), m_rev.group(5)
+            )
+            if cand_num:
+                return cand_num, cand_date
+
+    return "", ""
 
 
 def _slugify_doc_id(file_name: str, doc_number: str = "", doc_date: str = "") -> str:
@@ -863,64 +1071,114 @@ class GlossaryManager:
             ocr_pages = 0
 
         clean_fname = Path(file_name).name if file_name else (Path(file_path).name if file_path else "")
-        head_slice = full_text[:4500]
+        norm_fname = _normalize_filename_for_requisites(clean_fname)
+        header_zone = _extract_strict_header_zone(blocks_or_text, max_chars=1200)
 
-        doc_number = ""
-        doc_date = ""
+        order_number = ""
+        order_date = ""
         doc_type = "Документ"
 
-        # 1. Check 1x2 header table requisites ("от 28.03.2023 | № 794-1")
-        m_tbl = HEADER_TABLE_REQUISITE_RE.search(head_slice)
+        # 1. Check 1x2 header table requisites strictly inside header_zone ("от 28.03.2023 | № 794-1")
+        m_tbl = HEADER_TABLE_REQUISITE_RE.search(header_zone)
         if m_tbl:
             raw_date = m_tbl.group(1) or m_tbl.group(4) or ""
             raw_num = m_tbl.group(2) or m_tbl.group(3) or ""
-            doc_date = _to_iso_date(raw_date)
-            doc_number = raw_num.strip()
+            cand_num = _clean_valid_doc_number(raw_num)
+            cand_date = _to_iso_date(raw_date)
+            if cand_num:
+                order_number = cand_num
+                order_date = cand_date
 
-        # 2. Check standard ORDER_HEADER_RE ("ПРИКАЗ от 25.11.2021 № 3065-1" or "от «18» августа 2025 г. № 3699-1")
-        if not doc_number or not doc_date:
-            m_ord = ORDER_HEADER_RE.search(head_slice)
+        # 2. Check standalone ORDER_HEADER_RE / ORDER_HEADER_REV_RE strictly inside header_zone
+        if not order_number or not order_date:
+            m_ord = ORDER_HEADER_RE.search(header_zone)
             if m_ord:
-                if m_ord.group(4):
-                    doc_date = doc_date or _to_iso_date(m_ord.group(4))
-                elif m_ord.group(1) and m_ord.group(2) and m_ord.group(3):
-                    month_num = RUSSIAN_MONTHS_MAP.get(m_ord.group(2).lower(), "")
-                    if month_num:
-                        doc_date = doc_date or f"{int(m_ord.group(3)):04d}-{month_num}-{int(m_ord.group(1)):02d}"
-                doc_number = doc_number or m_ord.group(5).strip()
+                cand_num = _clean_valid_doc_number(m_ord.group(5))
+                cand_date = _parse_flex_date_groups(
+                    m_ord.group(1), m_ord.group(2), m_ord.group(3), m_ord.group(4)
+                )
+                if cand_num:
+                    order_number = order_number or cand_num
+                    order_date = order_date or cand_date
 
-        if not doc_number or not doc_date:
-            m_rev = ORDER_HEADER_REV_RE.search(head_slice)
+        if not order_number or not order_date:
+            m_rev = ORDER_HEADER_REV_RE.search(header_zone)
             if m_rev:
-                doc_number = doc_number or m_rev.group(1).strip()
-                doc_date = doc_date or _to_iso_date(m_rev.group(2))
+                cand_num = _clean_valid_doc_number(m_rev.group(1))
+                cand_date = _parse_flex_date_groups(
+                    m_rev.group(2), m_rev.group(3), m_rev.group(4), m_rev.group(5)
+                )
+                if cand_num:
+                    order_number = order_number or cand_num
+                    order_date = order_date or cand_date
 
-        # 3. Check ЭДО registration stamp ("Зарегистрировано в ЭДО МФТИ от ... № ...")
-        if not doc_number or not doc_date:
-            m_edo = EDO_STAMP_RE.search(full_text)
-            if m_edo:
-                if m_edo.group(1):
-                    doc_date = doc_date or _to_iso_date(m_edo.group(1))
-                if m_edo.group(2):
-                    doc_number = doc_number or m_edo.group(2).strip()
+        # 3. Check top-of-document approval stamp ("УТВЕРЖДЕН приказом ... от DD.MM.YYYY № ...") in header_zone
+        if not order_number or not order_date:
+            m_app = HEADER_APPROVED_BY_RE.search(header_zone)
+            if m_app:
+                cand_num = _clean_valid_doc_number(m_app.group(5))
+                cand_date = _parse_flex_date_groups(
+                    m_app.group(1), m_app.group(2), m_app.group(3), m_app.group(4)
+                )
+                if cand_num:
+                    order_number = order_number or cand_num
+                    order_date = order_date or cand_date
 
-        # 4. Fallback to filename ("Приказ N 3065-1 от 25.11.2021.docx")
-        if clean_fname:
-            m_fn = FILENAME_REQUISITES_RE.search(clean_fname)
+        if not order_number or not order_date:
+            m_app_rev = HEADER_APPROVED_BY_REV_RE.search(header_zone)
+            if m_app_rev:
+                cand_num = _clean_valid_doc_number(m_app_rev.group(1))
+                cand_date = _parse_flex_date_groups(
+                    m_app_rev.group(2), m_app_rev.group(3), m_app_rev.group(4), m_app_rev.group(5)
+                )
+                if cand_num:
+                    order_number = order_number or cand_num
+                    order_date = order_date or cand_date
+
+        # 4. Check normalized filename requisites ("Приказ_№_2990_1_от_19_06_2026_..." -> "2990-1", "2026-06-19")
+        if norm_fname:
+            m_fn = FILENAME_REQUISITES_RE.search(norm_fname)
             if m_fn:
                 if m_fn.group(1) and doc_type == "Документ":
                     doc_type = m_fn.group(1).capitalize()
-                if m_fn.group(2) and not doc_number:
-                    doc_number = m_fn.group(2).strip()
-                if m_fn.group(3) and not doc_date:
-                    doc_date = _to_iso_date(m_fn.group(3))
+                cand_num = _clean_valid_doc_number(m_fn.group(2))
+                cand_date = _to_iso_date(m_fn.group(3) or "")
+                if cand_num:
+                    order_number = order_number or cand_num
+                    order_date = order_date or cand_date
+            elif not order_number:
+                m_fn_rev = FILENAME_REQUISITES_REV_RE.search(norm_fname)
+                if m_fn_rev:
+                    if m_fn_rev.group(1) and doc_type == "Документ":
+                        doc_type = m_fn_rev.group(1).capitalize()
+                    cand_num = _clean_valid_doc_number(m_fn_rev.group(3))
+                    cand_date = _to_iso_date(m_fn_rev.group(2) or "")
+                    if cand_num:
+                        order_number = order_number or cand_num
+                        order_date = order_date or cand_date
 
-        # 5. Classify doc_type from header/filename if still generic
-        upper_head = (clean_fname + "\n" + head_slice[:1000]).upper()
+        # 5. Extract official ЭДО / registration stamp anywhere in the document
+        edo_number, edo_date = _extract_edo_stamp(blocks_or_text, full_text)
+
+        # Resolve primary doc_number / doc_date while preserving both order requisites & ЭДО stamp
+        is_edo_stamp = False
+        if order_number:
+            doc_number = order_number
+            doc_date = order_date
+        elif edo_number:
+            doc_number = edo_number
+            doc_date = edo_date
+            is_edo_stamp = True
+        else:
+            doc_number = ""
+            doc_date = ""
+
+        # 6. Classify doc_type from normalized filename + strict header zone
+        upper_head = (norm_fname + "\n" + header_zone).upper()
         if doc_type == "Документ":
             if "РАСПОРЯЖЕНИЕ" in upper_head:
                 doc_type = "Распоряжение"
-            elif "ПРИКАЗ" in upper_head:
+            elif re.search(r"(?m)^\s*ПРИКАЗ\b", upper_head) or norm_fname.upper().startswith("ПРИКАЗ"):
                 doc_type = "Приказ"
             elif "РЕГЛАМЕНТ" in upper_head:
                 doc_type = "Регламент"
@@ -930,23 +1188,28 @@ class GlossaryManager:
                 doc_type = "Инструкция"
             elif "СМЕТА" in upper_head or "БЛАНК СМЕТЫ" in upper_head:
                 doc_type = "Смета"
+            elif "АНКЕТА" in upper_head:
+                doc_type = "Анкета"
+            elif "СОГЛАСИЕ" in upper_head:
+                doc_type = "Согласие"
             elif "ПРИЛОЖЕНИЕ" in upper_head:
                 doc_type = "Приложение"
 
-        # 6. Auto-extract relations from text
+        # 7. Auto-extract relations from text
         auto_rels = self.extract_relations_from_text(full_text, self_doc_number=doc_number)
         supersedes = list(auto_rels["supersedes"])
         amends = list(auto_rels["amends"])
 
-        # Extract applicable years from text/filename
+        # Extract applicable years strictly from normalized filename + header_zone + resolved doc_date/edo_date
         found_years: list[int] = []
-        for ym in re.findall(r"\b(20(?:19|2\d))\b", clean_fname + " " + head_slice[:1500]):
+        year_probe = f"{norm_fname}\n{header_zone}\n{doc_date[:4] if doc_date else ''}\n{edo_date[:4] if edo_date else ''}"
+        for ym in re.findall(r"\b(20(?:19|2\d))\b", year_probe):
             y_int = int(ym)
             if 2018 <= y_int <= 2030 and y_int not in found_years:
                 found_years.append(y_int)
         found_years.sort()
 
-        # 7. Merge with config/registry_overrides.yaml (by filename first, then by doc_number)
+        # 8. Merge with config/registry_overrides.yaml (by filename first, then by doc_number)
         yaml_override: dict[str, Any] = {}
         if clean_fname and clean_fname in self.overrides_documents:
             yaml_override = dict(self.overrides_documents[clean_fname])
@@ -965,21 +1228,24 @@ class GlossaryManager:
                 if v is not None and v != "" and v != []:
                     merged_ov[k] = v
 
-        final_doc_number = str(merged_ov.get("doc_number") or doc_number or "").strip()
-        final_doc_date = str(merged_ov.get("doc_date") or doc_date or "").strip()
-        if final_doc_date and not re.match(r"^\d{4}-\d{2}-\d{2}$", final_doc_date):
-            iso_conv = _to_iso_date(final_doc_date)
-            if iso_conv:
-                final_doc_date = iso_conv
+        ov_num = _clean_valid_doc_number(str(merged_ov.get("doc_number") or ""))
+        final_doc_number = ov_num or doc_number or ""
+        if ov_num and ov_num != edo_number:
+            is_edo_stamp = False
+
+        raw_ov_date = str(merged_ov.get("doc_date") or "").strip()
+        final_doc_date = (_to_iso_date(raw_ov_date) if raw_ov_date else "") or doc_date or ""
 
         final_doc_id = str(
             merged_ov.get("doc_id")
             or _slugify_doc_id(clean_fname or "document", final_doc_number, final_doc_date)
         )
         final_doc_type = str(merged_ov.get("doc_type") or doc_type or "Документ")
+        default_clean_title = norm_fname or (clean_fname.rsplit(".", 1)[0] if clean_fname else "")
         final_title = str(
             merged_ov.get("title")
-            or (clean_fname.rsplit(".", 1)[0] if clean_fname else f"{final_doc_type} № {final_doc_number}".strip())
+            or default_clean_title
+            or (f"{final_doc_type} № {final_doc_number}".strip() if final_doc_number else final_doc_type)
         )
         final_status = str(merged_ov.get("status") or DocumentStatus.ACTIVE.value)
 
@@ -1024,7 +1290,15 @@ class GlossaryManager:
                 notes.append(f"Действует с учетом изменений, внесенных: № {', '.join(final_amended_by)}.")
             final_version_note = " ".join(notes)
 
-        return DocumentMeta(
+        doc_metadata: dict[str, Any] = dict(merged_ov.get("metadata") or {})
+        doc_metadata["edo_number"] = edo_number
+        doc_metadata["edo_date"] = edo_date
+        doc_metadata["is_edo_stamp"] = is_edo_stamp
+        if order_number:
+            doc_metadata["order_number"] = order_number
+            doc_metadata["order_date"] = order_date
+
+        doc_meta_obj = DocumentMeta(
             doc_id=final_doc_id,
             file_name=clean_fname,
             file_path=str(file_path or ""),
@@ -1044,10 +1318,16 @@ class GlossaryManager:
             pages_total=pages_total,
             ocr_pages=ocr_pages,
             also_in_files=final_also_in_files,
+            metadata=doc_metadata,
         )
+        return doc_meta_obj
 
     def build_u00_meta_chunk(self, doc_meta: DocumentMeta) -> ChunkRecord | None:
         """Build synthetic u00_meta passport ChunkRecord (zone='meta', in NON_ANSWER_ZONES) when alerts/relations exist."""
+        edo_number = str((doc_meta.metadata or {}).get("edo_number") or getattr(doc_meta, "edo_number", "") or "").strip()
+        edo_date = str((doc_meta.metadata or {}).get("edo_date") or getattr(doc_meta, "edo_date", "") or "").strip()
+        is_edo_stamp = bool((doc_meta.metadata or {}).get("is_edo_stamp", getattr(doc_meta, "is_edo_stamp", False)))
+
         has_meta_Trigger = any(
             [
                 doc_meta.version_note,
@@ -1070,6 +1350,8 @@ class GlossaryManager:
             f"ПАСПОРТ РЕДАКЦИИ ДОКУМЕНТА: {doc_meta.title}",
             f"Реквизиты: {doc_meta.doc_type} № {doc_meta.doc_number or 'б/н'} от {doc_meta.doc_date or 'б/д'} | Статус: {status_ru}",
         ]
+        if edo_number:
+            lines.append(f"Регистрация ЭДО: Зарег. в ЭДО {edo_date or 'б/д'} № {edo_number}")
         if doc_meta.applicable_years:
             lines.append(f"Применимые годы: {', '.join(str(y) for y in doc_meta.applicable_years)}")
         if doc_meta.supersedes:
@@ -1099,9 +1381,11 @@ class GlossaryManager:
         terms_str = "; ".join(terms) if terms else "нет"
         num_str = doc_meta.doc_number or "б/н"
         date_str = doc_meta.doc_date or "б/д"
+        edo_hdr_part = f"Зарег. в ЭДО {edo_date or 'б/д'} № {edo_number} | " if edo_number else ""
 
         embed_text = (
             f"[Документ: {doc_meta.title} (№ {num_str} от {date_str}) | "
+            f"{edo_hdr_part}"
             f"Редакция/Статус: {status_ru} | Годы: {years_str} | "
             f"Часть: Паспорт редакции и метаданные | Раздел 0: Паспорт редакции | "
             f"Пункт: META | Роли: {roles_str} | Темы: {topics_str}]\n"
@@ -1134,6 +1418,9 @@ class GlossaryManager:
                 "file_name": doc_meta.file_name,
                 "doc_number": doc_meta.doc_number,
                 "doc_date": doc_meta.doc_date,
+                "edo_number": edo_number,
+                "edo_date": edo_date,
+                "is_edo_stamp": is_edo_stamp,
                 "doc_type": doc_meta.doc_type,
                 "title": doc_meta.title,
                 "status": doc_meta.status,

@@ -17,6 +17,7 @@ from src.config import (
     CONTINUATION_HEADER_PREVIEW_CHARS,
     DATE_PREFIX_RE,
     DETACHED_CLAUSE_NUM_RE,
+    FOOTNOTE_DEF_LINE_RE,
     FOOTNOTE_ORDER_RE,
     HYPHEN_WRAP_RE,
     IMPERATIVE_VERB_STOPWORDS,
@@ -64,7 +65,7 @@ APPENDIX_LINE_RE = re.compile(
     r"^\s*(?:"
     r"Приложени[ея]\s*(?:№|N)?\s*(?:\d+[а-яa-z]?|[а-яa-z]|к\s+приказу|к\s+распоряжению|к\s+регламенту|к\s+положению)\b|"
     r"УТВЕРЖДЕН[ОЫА]?\s*(?:приказом|распоряжением|$)|"
-    r"(?:ВНУТРЕННИЙ\s+|ТЕХНИЧЕСКИЙ\s+)?РЕГЛАМЕНТ\b|"
+    r"(?:ВНУТРЕННИЙ\s+|ТЕХНИЧЕСКИЙ\s+)?РЕГЛАМЕНТ\b(?!\s*\))|"
     r"ПОЛОЖЕНИЕ\s+(?:о|об)\b|"
     r"ИНСТРУКЦИЯ\s+(?:по|о|об)\b|"
     r"ПОРЯДОК\s+(?:присвоения|открытия|формирования|проведения|по\s+определению)\b|"
@@ -146,16 +147,56 @@ CAPS_FOOTNOTE_RE = re.compile(r"\b([А-ЯЁ]{4,})\d(?=\s|$|[,.:;)])")
 # Unicode superscript digits
 UNICODE_SUPERSCRIPT_RE = re.compile(r"(№\s*\d+(?:-\d+)?)[\u00b9\u00b2\u00b3\u2070-\u2079]+")
 
+_SUPERSCRIPT_TO_ASCII: dict[str, str] = {
+    "\u2070": "0",
+    "\u00b9": "1",
+    "\u00b2": "2",
+    "\u00b3": "3",
+    "\u2074": "4",
+    "\u2075": "5",
+    "\u2076": "6",
+    "\u2077": "7",
+    "\u2078": "8",
+    "\u2079": "9",
+}
+_UNICODE_FN_DEF_LINE_RE = re.compile(r"^\s*([\u00b9\u00b2\u00b3\u2070-\u2079])\s*\S")
+
+
+def extract_page_footnote_digits(text: str) -> set[str]:
+    """
+    Scan lines of a page/block for explicit footnote definitions:
+    - Bare single digit without dot/paren followed by uppercase start (`3 Не облагается НДФЛ...`)
+    - Explicit Unicode superscript marker at line start (`³ Не облагается...`)
+    """
+    if not text:
+        return set()
+    digits: set[str] = set()
+    norm = text.replace("\r\n", "\n").replace("\r", "\n").replace("\u00a0", " ")
+    for line in norm.split("\n"):
+        m_sup = _UNICODE_FN_DEF_LINE_RE.match(line)
+        if m_sup:
+            mapped = _SUPERSCRIPT_TO_ASCII.get(m_sup.group(1))
+            if mapped:
+                digits.add(mapped)
+            continue
+        m_def = FOOTNOTE_DEF_LINE_RE.match(line)
+        if m_def:
+            digits.add(m_def.group(1))
+    return digits
+
 
 # ---------------------------------------------------------------------------
 # Stage 1 & 2 Helper Functions (Exported for direct unit testing)
 # ---------------------------------------------------------------------------
-def clean_block_text(text: str) -> str:
+def clean_block_text(text: str, page_footnotes: set[str] | None = None) -> str:
     """
     Stage 1 text cleaner:
     - De-hyphenates PDF word wraps across lines
     - Strips page footers ('Стр. 3 из 14', standalone page numbers)
-    - Strips footnote superscripts glued to order numbers ('№ 8123' -> '№ 812') and uppercase headings
+    - Strips footnote superscripts glued to order numbers ONLY when either:
+      (a) it is an explicit Unicode superscript character (`¹²³⁴⁵⁶⁷⁸⁹⁰`), OR
+      (b) a matching footnote definition line exists on the same page (`page_footnotes`),
+      preserving real 4-digit act numbers (`№ 1138`, `№ 1363`, `№ 1853`, `№ 3065`, `№ 3699`)!
     """
     if not text:
         return ""
@@ -166,9 +207,22 @@ def clean_block_text(text: str) -> str:
     # 1. De-hyphenate wrapped Russian words across line breaks
     cleaned = HYPHEN_WRAP_RE.sub(r"\1\2", cleaned)
 
-    # 2. Strip footnote superscripts glued to order numbers ("№ 8123" -> "№ 812")
+    # 2. Strip footnote superscripts glued to order numbers & uppercase headings
     cleaned = UNICODE_SUPERSCRIPT_RE.sub(r"\1", cleaned)
-    cleaned = FOOTNOTE_ORDER_RE.sub(r"\1", cleaned)
+    if page_footnotes is not None:
+        cleaned = FOOTNOTE_ORDER_RE.sub(
+            lambda m: m.group(1) if m.group(2) in page_footnotes else m.group(0),
+            cleaned,
+        )
+    elif "\n" in cleaned:
+        fn_digits = extract_page_footnote_digits(cleaned)
+        cleaned = FOOTNOTE_ORDER_RE.sub(
+            lambda m: m.group(1) if m.group(2) in fn_digits else m.group(0),
+            cleaned,
+        )
+    else:
+        # Standalone 1-line helper invocation without page context (unit-test compatibility)
+        cleaned = FOOTNOTE_ORDER_RE.sub(r"\1", cleaned)
     cleaned = CAPS_FOOTNOTE_RE.sub(r"\1", cleaned)
 
     # 3. Strip page footers line by line
@@ -669,6 +723,9 @@ def _split_long_chunk(
         return [chunk]
 
     split_records: list[ChunkRecord] = []
+    base_pages = sorted(set(chunk.page_numbers or [1]))
+    orig_cpm = dict((chunk.metadata or {}).get("clause_page_map") or {})
+
     for idx, body_part in enumerate(parts_bodies, start=1):
         part_text = body_part if idx == 1 else f"{cont_header}\n{body_part}"
         part_clause_no = f"п. {clean_clause_label} (ч. {idx})"
@@ -676,6 +733,11 @@ def _split_long_chunk(
         part_meta["base_clause_no"] = clean_clause_label
         part_meta["part_index"] = idx
         part_meta["parts_total"] = len(parts_bodies)
+        part_cpm = dict(orig_cpm)
+        if clean_clause_label and clean_clause_label != "б/н":
+            part_cpm.setdefault(clean_clause_label, list(base_pages))
+        part_cpm[part_clause_no] = list(base_pages)
+        part_meta["clause_page_map"] = part_cpm
 
         rec = chunk.model_copy(
             update={
@@ -734,6 +796,9 @@ def _can_merge_pair(
     if a.zone != b.zone:
         return False
 
+    if a.table_id and b.table_id and a.table_id != b.table_id:
+        return False
+
     # Never merge two chunks that have the exact same non-empty clause_no (duplicate clause protection: e.g. two "2.6")
     if a.clause_no and b.clause_no and a.clause_no.strip() == b.clause_no.strip():
         return False
@@ -755,17 +820,41 @@ def _can_merge_pair(
 
 
 def _merge_two_chunks(first: ChunkRecord, second: ChunkRecord, keep_section_of: ChunkRecord) -> ChunkRecord:
-    """Merge `first` and `second` into a single ChunkRecord preserving combined clause_no and page_numbers."""
+    """Merge `first` and `second` into a single ChunkRecord preserving combined clause_no and exact per-clause page_numbers."""
     merged_text = f"{first.clean_text.strip()}\n{second.clean_text.strip()}".strip()
     merged_clause = _combine_clause_nos(first.clause_no, second.clause_no)
     merged_pages = sorted(set((first.page_numbers or []) + (second.page_numbers or [])))
     merged_roles = list(dict.fromkeys((first.roles or []) + (second.roles or [])))
     merged_topics = list(dict.fromkeys((first.topics or []) + (second.topics or [])))
     merged_terms = list(dict.fromkeys((first.terms or []) + (second.terms or [])))
+    merged_tid = first.table_id or second.table_id
+    merged_meta = dict(keep_section_of.metadata or {})
+    if merged_tid:
+        merged_meta["table_id"] = merged_tid
+
+    # Preserve exact individual clause -> page_numbers mapping across merges
+    combined_cpm: dict[str, list[int]] = {}
+    for src_ch in (first, second):
+        src_pages = sorted(set(src_ch.page_numbers or []))
+        src_cpm = (src_ch.metadata or {}).get("clause_page_map")
+        if isinstance(src_cpm, dict) and src_cpm:
+            for cl_k, p_list in src_cpm.items():
+                cl_str = str(cl_k).strip()
+                if cl_str and p_list:
+                    combined_cpm[cl_str] = sorted(set(combined_cpm.get(cl_str, [])) | {int(p) for p in p_list})
+        elif src_ch.clause_no and src_pages:
+            cl_str = src_ch.clause_no.strip()
+            if cl_str:
+                combined_cpm[cl_str] = sorted(set(combined_cpm.get(cl_str, [])) | set(src_pages))
+    if merged_clause and merged_pages:
+        combined_cpm[merged_clause] = list(merged_pages)
+    if combined_cpm:
+        merged_meta["clause_page_map"] = combined_cpm
 
     rec = keep_section_of.model_copy(
         update={
             "clause_no": merged_clause,
+            "table_id": merged_tid,
             "clean_text": merged_text,
             "raw_text": merged_text,
             "char_count": len(merged_text),
@@ -774,6 +863,7 @@ def _merge_two_chunks(first: ChunkRecord, second: ChunkRecord, keep_section_of: 
             "roles": merged_roles,
             "topics": merged_topics,
             "terms": merged_terms,
+            "metadata": merged_meta,
         }
     )
     return rec
@@ -957,6 +1047,12 @@ class HierarchicalChunker:
         )
         self.glossary.learn_from_text(norm_text_for_learning)
 
+        # Assign deterministic table_id ('<doc_id>::tbl_01'...) onto eligible structured table/XLSX blocks
+        from src.indexing.table_store import extract_logical_tables_and_assign_ids
+
+        eligible_table_specs = extract_logical_tables_and_assign_ids(typed_blocks, actual_meta)
+        actual_meta.tables_count = len(eligible_table_specs)
+
         # Stage 1: Zoning & Noise Cleanup
         cleaned_blocks = self._stage1_zone_and_clean(typed_blocks, actual_meta)
 
@@ -1003,8 +1099,29 @@ class HierarchicalChunker:
         """
         unwrapped: list[ParsedBlock] = []
 
+        # Pre-scan non-table blocks per page for explicit footnote definition lines
+        # so real 4-digit act numbers (e.g. № 1138, № 1363, № 1853) are never stripped on pages without footnotes.
+        footnotes_by_page: dict[int, set[str]] = {}
+        for raw_b in blocks:
+            if raw_b.block_type == BlockType.TABLE.value or raw_b.table_rows:
+                continue
+            fn_set = extract_page_footnote_digits(raw_b.text or "")
+            if not fn_set:
+                continue
+            pages_for_b = list(raw_b.page_numbers or [])
+            if raw_b.page_num and raw_b.page_num not in pages_for_b:
+                pages_for_b.append(raw_b.page_num)
+            if not pages_for_b:
+                pages_for_b = [1]
+            for pg_n in pages_for_b:
+                footnotes_by_page.setdefault(pg_n, set()).update(fn_set)
+
         for b in blocks:
             blk = b.model_copy(deep=True)
+            blk_pg = blk.page_num or (blk.page_numbers[0] if blk.page_numbers else 1)
+            page_fns: set[str] = set(footnotes_by_page.get(blk_pg, set()))
+            for extra_pg in blk.page_numbers or []:
+                page_fns.update(footnotes_by_page.get(extra_pg, set()))
 
             # 1. Unwrap 1x2 requisite header frame tables
             if is_header_requisite_table(blk):
@@ -1018,12 +1135,12 @@ class HierarchicalChunker:
                 combined = " | ".join(p for p in parts if p)
 
                 m_req = HEADER_TABLE_REQUISITE_RE.search(combined)
-                if m_req:
+                if m_req and (blk.page_num or 1) == 1:
                     raw_d = m_req.group(1) or m_req.group(4) or ""
-                    raw_n = m_req.group(2) or m_req.group(3) or ""
-                    if raw_n and not doc_meta.doc_number:
-                        doc_meta.doc_number = raw_n.strip()
-                    if raw_d and not doc_meta.doc_date:
+                    raw_n = (m_req.group(2) or m_req.group(3) or "").strip()
+                    if raw_n and re.match(r"^\d", raw_n) and "_" not in raw_n and not doc_meta.doc_number:
+                        doc_meta.doc_number = raw_n
+                    if raw_d and doc_meta.doc_number and not doc_meta.doc_date:
                         m_d = re.match(r"^(\d{2})\.(\d{2})\.(\d{4})$", raw_d.strip())
                         if m_d:
                             doc_meta.doc_date = f"{m_d.group(3)}-{m_d.group(2)}-{m_d.group(1)}"
@@ -1040,8 +1157,8 @@ class HierarchicalChunker:
                 if pref and not blk.text.lstrip().startswith(pref):
                     blk.text = f"{pref} {blk.text.lstrip()}"
 
-            # Clean block text
-            blk.text = clean_block_text(blk.text)
+            # Clean block text with page-scoped footnote awareness
+            blk.text = clean_block_text(blk.text, page_footnotes=page_fns)
 
             # Skip empty non-table blocks
             if not blk.text and not blk.table_rows:
@@ -1276,11 +1393,13 @@ class HierarchicalChunker:
         curr_clause_no: str = ""
         curr_lines: list[str] = []
         curr_pages: list[int] = []
+        curr_clause_pages: list[int] = []
         curr_zone: str = ZoneType.NORMATIVE.value
         curr_block_type: str = BlockType.PARAGRAPH.value
 
         # Active form buffer for packing adjacent form paragraphs into 380-560 chars
         form_buffer_lines: list[str] = []
+        form_buffer_tids: list[str] = []
         form_buffer_pages: list[int] = []
         form_title_header: str = ""
 
@@ -1294,12 +1413,21 @@ class HierarchicalChunker:
             return f"{doc_id}::{target_unit_id}::c{unit_chunk_counter:03d}"
 
         def _flush_clause_buffer() -> None:
-            nonlocal curr_clause_no, curr_lines, curr_pages, unit_has_content
+            nonlocal curr_clause_no, curr_lines, curr_pages, curr_clause_pages, unit_has_content
             if not curr_lines:
                 return
             text_val = "\n".join(curr_lines).strip()
             if text_val:
                 cid = _next_chunk_id(unit_id)
+                eff_clause_pages = sorted(set(curr_clause_pages)) if curr_clause_pages else (
+                    sorted(set(curr_pages)) if curr_pages else [1]
+                )
+                eff_chunk_pages = eff_clause_pages if curr_clause_no else (
+                    sorted(set(curr_pages)) if curr_pages else [1]
+                )
+                rec_meta: dict[str, Any] = {}
+                if curr_clause_no:
+                    rec_meta["clause_page_map"] = {curr_clause_no: list(eff_clause_pages)}
                 rec = ChunkRecord(
                     chunk_id=cid,
                     doc_id=doc_id,
@@ -1313,16 +1441,18 @@ class HierarchicalChunker:
                     block_type=curr_block_type,
                     clean_text=text_val,
                     raw_text=text_val,
-                    page_numbers=sorted(set(curr_pages)) if curr_pages else [1],
+                    page_numbers=eff_chunk_pages,
+                    metadata=rec_meta,
                 )
                 chunks.append(rec)
                 unit_has_content = True
             curr_clause_no = ""
             curr_lines = []
             curr_pages = []
+            curr_clause_pages = []
 
         def _flush_form_buffer() -> None:
-            nonlocal form_buffer_lines, form_buffer_pages, unit_has_content
+            nonlocal form_buffer_lines, form_buffer_tids, form_buffer_pages, unit_has_content
             if not form_buffer_lines:
                 return
             packed_chunks = self._pack_form_lines(
@@ -1337,11 +1467,13 @@ class HierarchicalChunker:
                 clause_no=curr_clause_no or "Форма",
                 pages=sorted(set(form_buffer_pages)) if form_buffer_pages else [1],
                 next_id_fn=lambda: _next_chunk_id(unit_id),
+                line_table_ids=form_buffer_tids,
             )
             if packed_chunks:
                 chunks.extend(packed_chunks)
                 unit_has_content = True
             form_buffer_lines = []
+            form_buffer_tids = []
             form_buffer_pages = []
 
         def _flush_approval_buffer() -> None:
@@ -1487,6 +1619,7 @@ class HierarchicalChunker:
             # 4. Stage 3 Special Zone: Form (`zone="form"`)
             if blk.zone == ZoneType.FORM.value or blk.block_type == BlockType.FORM.value:
                 _flush_clause_buffer()
+                blk_tid = blk.table_id or str((blk.metadata or {}).get("table_id") or "")
                 if blk.sheet_name and not form_title_header:
                     form_title_header = f"Лист: {blk.sheet_name}"
                 if blk.table_rows:
@@ -1503,8 +1636,11 @@ class HierarchicalChunker:
                         )
                         if row_str:
                             form_buffer_lines.append(row_str)
+                            form_buffer_tids.append(blk_tid)
                 elif blk_text:
-                    form_buffer_lines.extend([ln.strip() for ln in blk_text.split("\n") if ln.strip()])
+                    added_lines = [ln.strip() for ln in blk_text.split("\n") if ln.strip()]
+                    form_buffer_lines.extend(added_lines)
+                    form_buffer_tids.extend([blk_tid] * len(added_lines))
                 form_buffer_pages.extend(blk_pages)
                 continue
             elif form_buffer_lines:
@@ -1557,17 +1693,22 @@ class HierarchicalChunker:
                 curr_block_type = BlockType.PARAGRAPH.value
                 curr_lines.append(blk_text)
                 curr_pages.extend(blk_pages)
+                curr_clause_pages.extend(blk_pages)
                 continue
 
             # Level 5: Sub-item (`а)`, `б)`, `1)`, `-`, `•`) or continuation paragraph -> accumulate in active clause
             if SUBITEM_RE.match(first_line):
                 curr_lines.append(blk_text)
                 curr_pages.extend(blk_pages)
+                if curr_clause_no:
+                    curr_clause_pages.extend(blk_pages)
                 continue
 
             # Ordinary unnumbered paragraph (preamble, continuation of clause, or sign-off)
             curr_lines.append(blk_text)
             curr_pages.extend(blk_pages)
+            if curr_clause_no:
+                curr_clause_pages.extend(blk_pages)
 
         # Final flushes at end of document
         _flush_clause_buffer()
@@ -1609,6 +1750,7 @@ class HierarchicalChunker:
             else:
                 # Single-block fallback
                 cid = next_id_fn()
+                blk_tid = block.table_id or str((block.metadata or {}).get("table_id") or "")
                 return [
                     ChunkRecord(
                         chunk_id=cid,
@@ -1619,11 +1761,13 @@ class HierarchicalChunker:
                         section_num=section_num,
                         section_title=section_title,
                         clause_no=active_clause_no or "Таблица",
+                        table_id=blk_tid,
                         zone=ZoneType.TABLE.value,
                         block_type=BlockType.TABLE.value,
                         clean_text=block.text.strip(),
                         raw_text=block.text.strip(),
                         page_numbers=block.page_numbers or [block.page_num or 1],
+                        metadata={"table_id": blk_tid} if blk_tid else {},
                     )
                 ]
 
@@ -1697,6 +1841,18 @@ class HierarchicalChunker:
             base_cl = active_clause_no or "Таблица"
             cl_label = f"{base_cl} (табл. ч. {slice_idx})" if total_slices > 1 else base_cl
 
+            blk_tid = block.table_id or str((block.metadata or {}).get("table_id") or "")
+            eff_sheet = block.sheet_name or str((block.metadata or {}).get("sheet_name") or "")
+            slice_meta: dict[str, Any] = {
+                "table_headers": headers,
+                "parent_hierarchy": top_hier,
+                "sheet_name": eff_sheet,
+                "slice_index": slice_idx,
+                "slices_total": total_slices,
+            }
+            if blk_tid:
+                slice_meta["table_id"] = blk_tid
+
             slices_out.append(
                 ChunkRecord(
                     chunk_id=cid,
@@ -1707,18 +1863,13 @@ class HierarchicalChunker:
                     section_num=section_num,
                     section_title=section_title,
                     clause_no=cl_label,
+                    table_id=blk_tid,
                     zone=ZoneType.TABLE.value,
                     block_type=BlockType.TABLE.value,
                     clean_text=slice_text,
                     raw_text=slice_text,
                     page_numbers=block.page_numbers or [block.page_num or 1],
-                    metadata={
-                        "table_headers": headers,
-                        "parent_hierarchy": top_hier,
-                        "sheet_name": block.sheet_name or "",
-                        "slice_index": slice_idx,
-                        "slices_total": total_slices,
-                    },
+                    metadata=slice_meta,
                 )
             )
 
@@ -1737,6 +1888,7 @@ class HierarchicalChunker:
         clause_no: str,
         pages: list[int],
         next_id_fn: Any,
+        line_table_ids: list[str] | None = None,
     ) -> list[ChunkRecord]:
         """
         Stage 3 Form Packer:
@@ -1744,24 +1896,31 @@ class HierarchicalChunker:
         compact 380-560 char blocks (`MIN_TABLE_FORM_CHARS=380`, `MAX_TABLE_FORM_CHARS=560`)
         preserving the sheet/form header in every packed chunk.
         """
-        clean_lines = [
-            re.sub(r"\bNone\b", "", ln).strip(" |")
-            for ln in lines
-            if ln and ln.strip() and ln.strip() != "None"
-        ]
-        clean_lines = [ln for ln in clean_lines if ln]
-        if not clean_lines:
+        clean_pairs: list[tuple[str, str]] = []
+        for idx_ln, ln in enumerate(lines):
+            if not ln or not ln.strip() or ln.strip() == "None":
+                continue
+            cleaned_ln = re.sub(r"\bNone\b", "", ln).strip(" |")
+            if cleaned_ln:
+                tid_ln = (
+                    line_table_ids[idx_ln]
+                    if (line_table_ids is not None and idx_ln < len(line_table_ids))
+                    else ""
+                )
+                clean_pairs.append((cleaned_ln, tid_ln))
+
+        if not clean_pairs:
             return []
 
         header_prefix = f"[Форма: {form_title.strip()}]" if form_title else ""
         header_len = (len(header_prefix) + 1) if header_prefix else 0
         body_budget = max(MAX_TABLE_FORM_CHARS - header_len, 220)
 
-        batches: list[list[str]] = []
-        curr_batch: list[str] = []
+        batches: list[list[tuple[str, str]]] = []
+        curr_batch: list[tuple[str, str]] = []
         curr_len = 0
 
-        for ln in clean_lines:
+        for ln, tid_ln in clean_pairs:
             # If a single line exceeds body_budget, split it on word boundaries
             if len(ln) > body_budget:
                 sub_segs = _split_into_atomic_segments(ln, body_budget)
@@ -1772,15 +1931,15 @@ class HierarchicalChunker:
                 sep = 1 if curr_batch else 0
                 if curr_batch and (curr_len + sep + len(seg) > body_budget):
                     batches.append(curr_batch)
-                    curr_batch = [seg]
+                    curr_batch = [(seg, tid_ln)]
                     curr_len = len(seg)
                 else:
-                    curr_batch.append(seg)
+                    curr_batch.append((seg, tid_ln))
                     curr_len += sep + len(seg)
 
         if curr_batch:
             if batches and curr_len < MIN_CLAUSE_CHARS and (
-                sum(len(x) for x in batches[-1]) + len(batches[-1]) + curr_len <= body_budget
+                sum(len(x) for x, _ in batches[-1]) + len(batches[-1]) + curr_len <= body_budget
             ):
                 batches[-1].extend(curr_batch)
             else:
@@ -1789,10 +1948,22 @@ class HierarchicalChunker:
         out_chunks: list[ChunkRecord] = []
         total_b = len(batches)
         for idx, batch in enumerate(batches, start=1):
-            body_str = "\n".join(batch).strip()
+            body_str = "\n".join(seg for seg, _ in batch).strip()
             full_str = f"{header_prefix}\n{body_str}".strip() if header_prefix and not body_str.startswith(header_prefix) else body_str
             cid = next_id_fn()
             cl_label = f"{clause_no} (ч. {idx})" if total_b > 1 else clause_no
+
+            batch_tids = [t for _, t in batch if t]
+            primary_tid = batch_tids[-1] if batch_tids else ""
+            unique_tids = list(dict.fromkeys(batch_tids))
+            f_meta: dict[str, Any] = {
+                "form_title": form_title,
+                "MIN_TABLE_FORM_CHARS": MIN_TABLE_FORM_CHARS,
+            }
+            if primary_tid:
+                f_meta["table_id"] = primary_tid
+            if len(unique_tids) > 1:
+                f_meta["table_ids"] = unique_tids
 
             out_chunks.append(
                 ChunkRecord(
@@ -1804,12 +1975,13 @@ class HierarchicalChunker:
                     section_num=section_num,
                     section_title=section_title,
                     clause_no=cl_label,
+                    table_id=primary_tid,
                     zone=ZoneType.FORM.value,
                     block_type=BlockType.FORM.value,
                     clean_text=full_str,
                     raw_text=full_str,
                     page_numbers=pages,
-                    metadata={"form_title": form_title, "MIN_TABLE_FORM_CHARS": MIN_TABLE_FORM_CHARS},
+                    metadata=f_meta,
                 )
             )
         return out_chunks
@@ -1916,6 +2088,10 @@ class HierarchicalChunker:
             if curr_b:
                 batches.append(curr_b)
 
+            edo_number = str((doc_meta.metadata or {}).get("edo_number") or getattr(doc_meta, "edo_number", "") or "").strip()
+            edo_date = str((doc_meta.metadata or {}).get("edo_date") or getattr(doc_meta, "edo_date", "") or "").strip()
+            is_edo_stamp = bool((doc_meta.metadata or {}).get("is_edo_stamp", getattr(doc_meta, "is_edo_stamp", False)))
+
             total_parts = len(batches)
             for p_idx, batch in enumerate(batches, start=1):
                 actual_sec_id = sec_id if total_parts == 1 else f"{sec_id}_p{p_idx}"
@@ -1925,17 +2101,82 @@ class HierarchicalChunker:
                     else f"{first_ch.section_title} (ч. {p_idx})"
                 )
 
+                unique_sec_pages = sorted({int(p) for ch in batch for p in (ch.page_numbers or []) if p})
+                is_multipage = len(unique_sec_pages) > 1
+
                 text_pieces: list[str] = []
                 if sec_header and not batch[0].clean_text.startswith(sec_header[:30]):
                     text_pieces.append(sec_header)
 
                 batch_chunk_ids: list[str] = []
                 batch_pages: list[int] = []
+                clause_page_map: dict[str, list[int]] = {}
+                chunk_pages: list[dict[str, Any]] = []
+                active_page: int | None = None
+
+                def _register_clause_pages(cl_key: str, pages_list: list[int]) -> None:
+                    ck = cl_key.strip()
+                    if not ck or ck == "META" or not pages_list:
+                        return
+                    clause_page_map[ck] = sorted(set(clause_page_map.get(ck, [])) | {int(x) for x in pages_list if x})
+                    # Also register clean base clause key without 'п. ' or '(ч. N)' / '(табл. ч. N)'
+                    base_ck = re.sub(r"^(?:п\.|пункт)\s*", "", ck, flags=re.IGNORECASE).strip()
+                    base_ck = re.sub(r"\s*\((?:табл\.\s*)?ч\.\s*\d+\)\s*$", "", base_ck, flags=re.IGNORECASE).strip()
+                    if base_ck and base_ck != ck and "," not in base_ck and base_ck not in {"б/н", "Таблица", "Форма"}:
+                        clause_page_map[base_ck] = sorted(
+                            set(clause_page_map.get(base_ck, [])) | {int(x) for x in pages_list if x}
+                        )
+
                 for ch in batch:
                     ch.section_id = actual_sec_id
-                    text_pieces.append(ch.clean_text)
+                    ch_pages = sorted({int(p) for p in (ch.page_numbers or []) if p}) or [1]
                     batch_chunk_ids.append(ch.chunk_id)
-                    batch_pages.extend(ch.page_numbers or [])
+                    batch_pages.extend(ch_pages)
+                    chunk_pages.append(
+                        {
+                            "chunk_id": ch.chunk_id,
+                            "clause_no": ch.clause_no,
+                            "page_numbers": list(ch_pages),
+                        }
+                    )
+
+                    ch_cpm = (ch.metadata or {}).get("clause_page_map")
+                    if isinstance(ch_cpm, dict) and ch_cpm:
+                        for c_k, p_vals in ch_cpm.items():
+                            if p_vals:
+                                _register_clause_pages(str(c_k), [int(x) for x in p_vals if x])
+                    if ch.clause_no:
+                        _register_clause_pages(ch.clause_no, ch_pages)
+
+                    if not is_multipage:
+                        text_pieces.append(ch.clean_text)
+                        continue
+
+                    # Multi-page section: annotate exact page transitions subtly as '[Стр. N]'
+                    if len(ch_pages) > 1 and isinstance(ch_cpm, dict) and ch_cpm:
+                        annotated_lines: list[str] = []
+                        for ln in ch.clean_text.split("\n"):
+                            parsed_ln = parse_clause_number(ln.strip())
+                            if parsed_ln is not None:
+                                ln_cl = parsed_ln[0]
+                                ln_pages = ch_cpm.get(ln_cl)
+                                if ln_pages:
+                                    p0 = int(ln_pages[0])
+                                    if active_page != p0:
+                                        annotated_lines.append(f"[Стр. {p0}]")
+                                        active_page = int(ln_pages[-1])
+                            elif active_page is None:
+                                annotated_lines.append(f"[Стр. {ch_pages[0]}]")
+                                active_page = ch_pages[0]
+                            annotated_lines.append(ln)
+                        active_page = ch_pages[-1]
+                        text_pieces.append("\n".join(annotated_lines))
+                    else:
+                        if active_page != ch_pages[0]:
+                            text_pieces.append(f"[Стр. {ch_pages[0]}]\n{ch.clean_text}")
+                        else:
+                            text_pieces.append(ch.clean_text)
+                        active_page = ch_pages[-1]
 
                 clean_parent_text = "\n\n".join(text_pieces).strip()
                 if len(clean_parent_text) > MAX_PARENT_SECTION_CHARS:
@@ -1962,6 +2203,11 @@ class HierarchicalChunker:
                             "file_name": doc_meta.file_name,
                             "doc_number": doc_meta.doc_number,
                             "doc_date": doc_meta.doc_date,
+                            "edo_number": edo_number,
+                            "edo_date": edo_date,
+                            "is_edo_stamp": is_edo_stamp,
+                            "clause_page_map": clause_page_map,
+                            "chunk_pages": chunk_pages,
                         },
                     )
                 )
@@ -2063,6 +2309,10 @@ class HierarchicalChunker:
         doc_title = doc_meta.title or doc_meta.file_name or doc_meta.doc_id
         doc_num = doc_meta.doc_number or "б/н"
         doc_date = doc_meta.doc_date or "б/д"
+        edo_number = str((doc_meta.metadata or {}).get("edo_number") or getattr(doc_meta, "edo_number", "") or "").strip()
+        edo_date = str((doc_meta.metadata or {}).get("edo_date") or getattr(doc_meta, "edo_date", "") or "").strip()
+        is_edo_stamp = bool((doc_meta.metadata or {}).get("is_edo_stamp", getattr(doc_meta, "is_edo_stamp", False)))
+        edo_header_seg = f"Зарег. в ЭДО {edo_date or 'б/д'} № {edo_number} | " if edo_number else ""
         status_ru = STATUS_RU_MAP.get(doc_meta.status, doc_meta.status)
         years_str = (
             ", ".join(str(y) for y in doc_meta.applicable_years)
@@ -2093,6 +2343,7 @@ class HierarchicalChunker:
 
             ch.embed_text = (
                 f"[Документ: {doc_title} (№ {doc_num} от {doc_date}) | "
+                f"{edo_header_seg}"
                 f"Редакция/Статус: {status_ru} | Годы: {years_str} | "
                 f"Часть: {ch.unit_title} | Раздел {sec_num_label}: {sec_title_label} | "
                 f"Пункт: {clause_label} | Роли: {roles_str} | Темы: {topics_str}]\n"
@@ -2106,6 +2357,9 @@ class HierarchicalChunker:
                     "file_name": doc_meta.file_name,
                     "doc_number": doc_meta.doc_number,
                     "doc_date": doc_meta.doc_date,
+                    "edo_number": edo_number,
+                    "edo_date": edo_date,
+                    "is_edo_stamp": is_edo_stamp,
                     "doc_type": doc_meta.doc_type,
                     "title": doc_meta.title,
                     "status": doc_meta.status,
@@ -2118,6 +2372,8 @@ class HierarchicalChunker:
                     "quality_warning": doc_meta.quality_warning,
                 }
             )
+            if ch.table_id:
+                ch.metadata["table_id"] = ch.table_id
 
         return chunks
 
