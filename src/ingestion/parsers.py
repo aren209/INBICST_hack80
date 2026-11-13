@@ -1,11 +1,15 @@
-"""Unified Document Ingestion Parsers for PDF, DOCX, and XLSX (Module 1 -> ParsedBlock stream)."""
+"""Unified Document Ingestion Parsers for PDF, DOCX, DOC, XLSX, and XLS (Module 1 -> ParsedBlock stream)."""
 
 from __future__ import annotations
 
 import concurrent.futures
+import datetime as _dt
+import email
+from html.parser import HTMLParser
 import io
 import logging
 import re
+import struct
 import warnings
 import zipfile
 import xml.etree.ElementTree as ET
@@ -13,9 +17,11 @@ from pathlib import Path
 from typing import Any
 
 import docx
+import olefile
 import openpyxl
 import pdfplumber
 import pypdfium2 as pdfium
+import xlrd
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.table import Table as DocxTable
@@ -1937,6 +1943,1505 @@ def parse_xlsx(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# 4. XLS Parser (xlrd + python-calamine + HTML/XML disguised .xls fallback)
+# ---------------------------------------------------------------------------
+def _grid_to_excel_sheet_blocks(
+    sheet_name: str,
+    sheet_idx: int,
+    trimmed_grid: list[list[str]],
+    formula_count: int = 0,
+) -> list[ParsedBlock]:
+    """Convert a cleaned 2D worksheet cell grid into ParsedBlock records identically to `parse_xlsx`."""
+    out_blocks: list[ParsedBlock] = []
+    if not trimmed_grid:
+        return out_blocks
+
+    is_smeta_form = formula_count > 0 or "смет" in sheet_name.lower() or "форма" in sheet_name.lower()
+    if is_smeta_form:
+        form_blocks = _parse_xlsx_smeta_form_sheet(
+            sheet_title=sheet_name,
+            page_num=sheet_idx,
+            grid_cells=trimmed_grid,
+        )
+        for fb in form_blocks:
+            fb.metadata.setdefault("page_or_sheet", sheet_name)
+        return form_blocks
+
+    banners, headers, data_rows = _split_pre_header_banner_rows(trimmed_grid)
+    for banner_txt in banners:
+        out_blocks.append(
+            ParsedBlock(
+                text=banner_txt,
+                block_type=BlockType.HEADING.value,
+                zone=ZoneType.NORMATIVE.value,
+                page_num=sheet_idx,
+                page_numbers=[sheet_idx],
+                is_bold=True,
+                metadata={"sheet_name": sheet_name, "page_or_sheet": sheet_name},
+            )
+        )
+
+    if not headers and not data_rows:
+        return out_blocks
+
+    filled_rows, top_hier = _forward_fill_cfo_hierarchy(headers, data_rows)
+    md_str = _format_markdown_table(headers, filled_rows)
+    tbl_title = banners[-1] if banners else f"Лист: {sheet_name}"
+
+    out_blocks.append(
+        ParsedBlock(
+            text=md_str,
+            block_type=BlockType.TABLE.value,
+            zone=ZoneType.TABLE.value,
+            page_num=sheet_idx,
+            page_numbers=[sheet_idx],
+            is_ocr=False,
+            table_headers=headers,
+            table_rows=filled_rows,
+            parent_hierarchy=top_hier,
+            sheet_name=None,
+            metadata={
+                "sheet_name": sheet_name,
+                "page_or_sheet": sheet_name,
+                "table_title": tbl_title,
+            },
+        )
+    )
+    return out_blocks
+
+
+def _format_xlrd_cell(wb: xlrd.Book, cell: Any) -> str:
+    """Format an `xlrd.sheet.Cell` (dates, numbers, percentages, booleans, strings) cleanly."""
+    ctype = cell.ctype
+    val = cell.value
+    if ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK, xlrd.XL_CELL_ERROR) or val is None:
+        return ""
+    if ctype == xlrd.XL_CELL_BOOLEAN:
+        return "Да" if bool(val) else "Нет"
+    if ctype == xlrd.XL_CELL_DATE:
+        try:
+            y, m, d, hh, mm, ss = xlrd.xldate_as_tuple(float(val), wb.datemode)
+            if y > 0:
+                if hh or mm or ss:
+                    return f"{d:02d}.{m:02d}.{y:04d} {hh:02d}:{mm:02d}"
+                return f"{d:02d}.{m:02d}.{y:04d}"
+            return f"{hh:02d}:{mm:02d}:{ss:02d}" if ss else f"{hh:02d}:{mm:02d}"
+        except Exception:
+            return _format_excel_scalar(val)
+    if ctype == xlrd.XL_CELL_NUMBER:
+        fmt_str = ""
+        if getattr(wb, "formatting_info", False) and cell.xf_index is not None:
+            try:
+                if 0 <= cell.xf_index < len(wb.xf_list):
+                    xf = wb.xf_list[cell.xf_index]
+                    fmt_obj = wb.format_map.get(xf.format_key)
+                    if fmt_obj is not None and fmt_obj.format_str:
+                        fmt_str = str(fmt_obj.format_str)
+            except Exception:
+                fmt_str = ""
+        return _format_excel_scalar(val, number_format=fmt_str)
+    return _format_excel_scalar(val)
+
+
+def _format_calamine_value(val: Any) -> str:
+    """Format a Python value returned by `python_calamine`."""
+    if val is None:
+        return ""
+    if isinstance(val, _dt.datetime):
+        if val.hour or val.minute or val.second:
+            return val.strftime("%d.%m.%Y %H:%M")
+        return val.strftime("%d.%m.%Y")
+    if isinstance(val, _dt.date):
+        return val.strftime("%d.%m.%Y")
+    if isinstance(val, _dt.time):
+        return val.strftime("%H:%M")
+    return _format_excel_scalar(val)
+
+
+def parse_xls(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]]:
+    """
+    Parse legacy `.xls` workbooks (BIFF8/BIFF5 via `xlrd` + `python_calamine`, plus disguised
+    ZIP `.xlsx` or HTML/XML exports) into `ParsedBlock` table/form records with `sheet_name`,
+    merged cell expansion, date/number formatting, and `StructuredTableStore` compatibility.
+    """
+    path = Path(file_path)
+    blocks: list[ParsedBlock] = []
+    warnings_list: list[str] = []
+    errors_list: list[str] = []
+
+    try:
+        head_bytes = path.read_bytes()[:512]
+    except Exception as exc:
+        msg = f"Failed to read XLS {path.name}: {exc}"
+        logger.error(msg)
+        return [], {
+            "file_format": "xls",
+            "pages_total": 0,
+            "ocr_pages": 0,
+            "warnings": [],
+            "errors": [msg],
+        }
+
+    stripped_head = head_bytes.lstrip()
+    if head_bytes.startswith(b"PK\x03\x04"):
+        sub_blocks, sub_meta = parse_xlsx(path)
+        sub_meta["file_format"] = "xls"
+        return sub_blocks, sub_meta
+
+    if stripped_head[:10].lower().startswith((b"<html", b"<!doctype", b"<table", b"<?xml")):
+        raw_bytes = path.read_bytes()
+        html_blocks = _parse_html_or_xml_to_blocks(raw_bytes, default_sheet_mode=True)
+        if html_blocks:
+            sheet_cnt = max((b.page_num for b in html_blocks), default=1)
+            return html_blocks, {
+                "file_format": "xls",
+                "pages_total": max(1, sheet_cnt),
+                "ocr_pages": 0,
+                "warnings": warnings_list,
+                "errors": errors_list,
+            }
+
+    # Primary BIFF8 / BIFF5 path via xlrd
+    wb: xlrd.Book | None = None
+    try:
+        try:
+            wb = xlrd.open_workbook(str(path), formatting_info=True)
+        except Exception:
+            wb = xlrd.open_workbook(str(path), formatting_info=False)
+    except Exception as xlrd_exc:
+        logger.info("xlrd could not open %s (%s); trying python_calamine fallback.", path.name, xlrd_exc)
+        wb = None
+
+    if wb is not None:
+        sheet_names = list(wb.sheet_names())
+        visible_idx = 0
+        for sh in wb.sheets():
+            if getattr(sh, "visibility", 0) != 0:
+                continue
+            visible_idx += 1
+            sheet_name = sh.name
+            try:
+                nrows = sh.nrows or 0
+                ncols = min(sh.ncols or 0, 60)
+                if nrows == 0 or ncols == 0:
+                    continue
+
+                merged_lookup: dict[tuple[int, int], str] = {}
+                for rlo, rhi, clo, chi in getattr(sh, "merged_cells", ()):
+                    if rlo >= nrows or clo >= ncols:
+                        continue
+                    tl_str = _format_xlrd_cell(wb, sh.cell(rlo, clo))
+                    for r in range(rlo, min(rhi, nrows)):
+                        for c in range(clo, min(chi, ncols)):
+                            merged_lookup[(r, c)] = tl_str if c == clo else ""
+
+                raw_grid: list[list[str]] = []
+                highest_non_empty_col = 0
+                for r in range(nrows):
+                    row_vals: list[str] = []
+                    for c in range(ncols):
+                        if (r, c) in merged_lookup:
+                            formatted = merged_lookup[(r, c)]
+                        else:
+                            formatted = _format_xlrd_cell(wb, sh.cell(r, c))
+                        if formatted:
+                            highest_non_empty_col = max(highest_non_empty_col, c + 1)
+                        row_vals.append(formatted)
+                    if any(row_vals):
+                        raw_grid.append(row_vals)
+
+                if not raw_grid or highest_non_empty_col == 0:
+                    continue
+                trimmed_grid = [r[:highest_non_empty_col] for r in raw_grid if any(r[:highest_non_empty_col])]
+                blocks.extend(
+                    _grid_to_excel_sheet_blocks(
+                        sheet_name=sheet_name,
+                        sheet_idx=visible_idx,
+                        trimmed_grid=trimmed_grid,
+                    )
+                )
+            except Exception as sheet_exc:
+                w_msg = f"Ошибка разбора листа '{sheet_name}' в {path.name}: {sheet_exc}"
+                logger.warning(w_msg)
+                warnings_list.append(w_msg)
+                errors_list.append(w_msg)
+
+        try:
+            wb.release_resources()
+        except Exception:
+            pass
+
+        return blocks, {
+            "file_format": "xls",
+            "pages_total": max(1, visible_idx or len(sheet_names)),
+            "ocr_pages": 0,
+            "warnings": warnings_list,
+            "errors": errors_list,
+        }
+
+    # Secondary fallback via python_calamine
+    try:
+        from python_calamine import CalamineWorkbook
+
+        cwb = CalamineWorkbook.from_path(str(path))
+        c_sheets = list(cwb.sheet_names)
+        for sheet_idx, sheet_name in enumerate(c_sheets, start=1):
+            sh_obj = cwb.get_sheet_by_name(sheet_name)
+            py_rows = sh_obj.to_python(skip_empty_area=False)
+            raw_grid = []
+            highest_non_empty_col = 0
+            for raw_r in py_rows:
+                row_vals = []
+                for c_idx, val in enumerate(raw_r[:60]):
+                    formatted = _format_calamine_value(val)
+                    if formatted:
+                        highest_non_empty_col = max(highest_non_empty_col, c_idx + 1)
+                    row_vals.append(formatted)
+                if any(row_vals):
+                    raw_grid.append(row_vals)
+            if not raw_grid or highest_non_empty_col == 0:
+                continue
+            trimmed_grid = [r[:highest_non_empty_col] for r in raw_grid if any(r[:highest_non_empty_col])]
+            blocks.extend(
+                _grid_to_excel_sheet_blocks(
+                    sheet_name=sheet_name,
+                    sheet_idx=sheet_idx,
+                    trimmed_grid=trimmed_grid,
+                )
+            )
+        return blocks, {
+            "file_format": "xls",
+            "pages_total": max(1, len(c_sheets)),
+            "ocr_pages": 0,
+            "warnings": warnings_list,
+            "errors": errors_list,
+        }
+    except Exception as cal_exc:
+        msg = f"Failed to open XLS {path.name}: {cal_exc}"
+        logger.error(msg)
+        return [], {
+            "file_format": "xls",
+            "pages_total": 0,
+            "ocr_pages": 0,
+            "warnings": warnings_list,
+            "errors": [msg],
+        }
+
+
+# ---------------------------------------------------------------------------
+# 5. Pure-Python Multi-Format DOC Parser (OLE2 Word 97-2003, RTF, HTML/MHTML/XML, ZIP)
+# ---------------------------------------------------------------------------
+_DOC_CHARS_PER_PAGE: int = 3000
+
+_RTF_SKIP_DESTINATIONS: frozenset[str] = frozenset(
+    {
+        "fonttbl",
+        "colortbl",
+        "stylesheet",
+        "info",
+        "pict",
+        "object",
+        "objdata",
+        "header",
+        "footer",
+        "headerl",
+        "headerr",
+        "headerf",
+        "footerl",
+        "footerr",
+        "footerf",
+        "fldinst",
+        "xmlnstbl",
+        "listtable",
+        "listoverridetable",
+        "rsidtbl",
+        "generator",
+        "themedata",
+        "colorschememapping",
+        "latentstyles",
+        "datastore",
+        "pgdsctbl",
+        "bkmkstart",
+        "bkmkend",
+        "datafield",
+    }
+)
+
+_RTF_CODEPAGE_MAP: dict[int, str] = {
+    1251: "cp1251",
+    1252: "cp1252",
+    1250: "cp1250",
+    1257: "cp1257",
+    866: "cp866",
+    20866: "koi8-r",
+    10007: "mac_cyrillic",
+    65001: "utf-8",
+}
+
+_RTF_SYMBOL_WORDS: dict[str, str] = {
+    "emdash": "—",
+    "endash": "–",
+    "emspace": " ",
+    "enspace": " ",
+    "qmspace": " ",
+    "lquote": "‘",
+    "rquote": "’",
+    "ldblquote": "«",
+    "rdblquote": "»",
+    "bullet": "•",
+    "tab": "\t",
+}
+
+
+def _emit_doc_table_grid(grid: list[list[str]], page_num: int) -> list[ParsedBlock]:
+    """Convert a reconstructed 2D Word table grid into `ParsedBlock` records identically to `parse_docx`."""
+    cleaned_grid: list[list[str]] = []
+    max_cols = max((len(r) for r in grid), default=0)
+    if max_cols == 0:
+        return []
+    for r in grid:
+        norm_r = [
+            _normalize_inline_whitespace(r[i] if i < len(r) else "").replace("\n", " ")
+            for i in range(max_cols)
+        ]
+        if any(norm_r):
+            cleaned_grid.append(norm_r)
+    if not cleaned_grid:
+        return []
+
+    if len(cleaned_grid) == 1:
+        row0 = cleaned_grid[0]
+        non_empty = [c for c in row0 if c]
+        if not non_empty:
+            return []
+        joined_pipe = " | ".join(non_empty)
+        if _REQUISITE_CELL_RE.search(joined_pipe):
+            return [
+                ParsedBlock(
+                    text=joined_pipe,
+                    block_type=BlockType.TABLE.value,
+                    zone=ZoneType.NORMATIVE.value,
+                    page_num=page_num,
+                    page_numbers=[page_num],
+                    table_headers=row0,
+                    table_rows=[],
+                )
+            ]
+        if len(non_empty) <= 2:
+            return [
+                ParsedBlock(
+                    text=" ".join(non_empty),
+                    block_type=BlockType.PARAGRAPH.value,
+                    zone=ZoneType.NORMATIVE.value,
+                    page_num=page_num,
+                    page_numbers=[page_num],
+                )
+            ]
+
+    banners, headers, data_rows = _split_pre_header_banner_rows(cleaned_grid)
+    out: list[ParsedBlock] = []
+    for banner_txt in banners:
+        out.append(
+            ParsedBlock(
+                text=banner_txt,
+                block_type=BlockType.HEADING.value,
+                zone=ZoneType.NORMATIVE.value,
+                page_num=page_num,
+                page_numbers=[page_num],
+                is_bold=True,
+            )
+        )
+    if not headers and not data_rows:
+        return out
+
+    filled_rows, top_hier = _forward_fill_cfo_hierarchy(headers, data_rows)
+    md_str = _format_markdown_table(headers, filled_rows)
+    tbl_title = banners[-1] if banners else ""
+    out.append(
+        ParsedBlock(
+            text=md_str,
+            block_type=BlockType.TABLE.value,
+            zone=ZoneType.TABLE.value,
+            page_num=page_num,
+            page_numbers=[page_num],
+            is_ocr=False,
+            table_headers=headers,
+            table_rows=filled_rows,
+            parent_hierarchy=top_hier,
+            metadata={"table_title": tbl_title} if tbl_title else {},
+        )
+    )
+    return out
+
+
+def _parse_rtf_doc(raw_bytes: bytes) -> tuple[list[ParsedBlock], int]:
+    """
+    Pure-Python RTF parser supporting Russian `\\ansicpg1251`, `\\'xx` hex escapes,
+    `\\uN` signed 16-bit Unicode escapes (`\\ucN` skip count), `\\par`/`\\line`/`\\page`,
+    and `\\cell`/`\\row` table reconstruction.
+    """
+    blocks: list[ParsedBlock] = []
+    encoding = "cp1251"
+    uc_skip = 1
+    skip_dest = False
+    in_table = False
+
+    # Stack stores (encoding, uc_skip, skip_dest)
+    stack: list[tuple[str, int, bool]] = []
+    byte_buf = bytearray()
+    cur_chars: list[str] = []
+    row_cells: list[str] = []
+    table_grid: list[list[str]] = []
+
+    explicit_page = 1
+    running_chars = 0
+    has_explicit_pages = False
+
+    def _effective_page() -> int:
+        if has_explicit_pages:
+            return explicit_page
+        return max(1, 1 + running_chars // _DOC_CHARS_PER_PAGE)
+
+    def _flush_bytes() -> None:
+        if byte_buf:
+            cur_chars.append(byte_buf.decode(encoding, errors="replace"))
+            byte_buf.clear()
+
+    def _pop_current_text() -> str:
+        _flush_bytes()
+        raw_s = "".join(cur_chars)
+        cur_chars.clear()
+        if not raw_s:
+            return ""
+        try:
+            raw_s = raw_s.encode("utf-16", "surrogatepass").decode("utf-16", errors="replace")
+        except Exception:
+            pass
+        return _normalize_inline_whitespace(raw_s)
+
+    def _flush_table_grid() -> None:
+        if table_grid:
+            blocks.extend(_emit_doc_table_grid(table_grid, _effective_page()))
+            table_grid.clear()
+
+    def _flush_paragraph() -> None:
+        nonlocal running_chars
+        txt = _pop_current_text()
+        if not txt:
+            return
+        if not in_table and table_grid and not row_cells:
+            _flush_table_grid()
+        p_num = _effective_page()
+        blocks.extend(_text_to_parsed_blocks(txt, page_num=p_num, is_ocr=False, prev_blocks=blocks))
+        running_chars += len(txt) + 1
+
+    n = len(raw_bytes)
+    i = 0
+    skip_ansi_chars = 0
+
+    while i < n:
+        b = raw_bytes[i]
+
+        if b == 0x7B:  # '{'
+            _flush_bytes()
+            stack.append((encoding, uc_skip, skip_dest))
+            i += 1
+            # Check for ignorable destination `{\*`
+            if i + 1 < n and raw_bytes[i] == 0x5C and raw_bytes[i + 1] == 0x2A:
+                i += 2
+                # Peek destination control word name: keep `fldrslt`, skip others
+                m_dest = re.match(rb"\s*\\([a-zA-Z]+)", raw_bytes[i : i + 40])
+                dest_name = m_dest.group(1).decode("ascii", errors="ignore").lower() if m_dest else ""
+                if dest_name != "fldrslt":
+                    skip_dest = True
+            continue
+
+        if b == 0x7D:  # '}'
+            _flush_bytes()
+            if stack:
+                encoding, uc_skip, skip_dest = stack.pop()
+            i += 1
+            continue
+
+        if b in (0x0D, 0x0A):  # CR/LF in RTF source are ignored whitespace
+            i += 1
+            continue
+
+        if b == 0x5C:  # '\'
+            i += 1
+            if i >= n:
+                break
+            nxt = raw_bytes[i]
+
+            # Hex byte escape \'xx
+            if nxt == 0x27 and i + 2 < n:
+                hex_part = raw_bytes[i + 1 : i + 3]
+                try:
+                    val = int(hex_part.decode("ascii"), 16)
+                    i += 3
+                    if skip_ansi_chars > 0:
+                        skip_ansi_chars -= 1
+                    elif not skip_dest:
+                        byte_buf.append(val)
+                    continue
+                except ValueError:
+                    pass
+
+            # Single-character control symbol (\\, \{, \}, \~, \-, \_, \n, \r, \*)
+            if not (0x41 <= nxt <= 0x5A or 0x61 <= nxt <= 0x7A):
+                _flush_bytes()
+                i += 1
+                if skip_dest:
+                    continue
+                if skip_ansi_chars > 0 and nxt in (0x5C, 0x7B, 0x7D, 0x7E, 0x5F, 0x2D):
+                    skip_ansi_chars -= 1
+                    continue
+                if nxt in (0x5C, 0x7B, 0x7D):
+                    cur_chars.append(chr(nxt))
+                elif nxt == 0x7E:  # \~ non-breaking space
+                    cur_chars.append(" ")
+                elif nxt == 0x5F:  # \_ non-breaking hyphen
+                    cur_chars.append("-")
+                elif nxt in (0x0A, 0x0D):  # \<LF> or \<CR> acts as \par
+                    if row_cells or in_table:
+                        cur_chars.append("\n")
+                    else:
+                        _flush_paragraph()
+                continue
+
+            # Alphabetic control word \word[[-]num][space]
+            w_start = i
+            while i < n and (0x41 <= raw_bytes[i] <= 0x5A or 0x61 <= raw_bytes[i] <= 0x7A):
+                i += 1
+            word = raw_bytes[w_start:i].decode("ascii").lower()
+
+            num_sign = 1
+            has_num = False
+            num_val = 0
+            if i < n and raw_bytes[i] in (0x2D, 0x2B):
+                if raw_bytes[i] == 0x2D:
+                    num_sign = -1
+                i += 1
+            d_start = i
+            while i < n and 0x30 <= raw_bytes[i] <= 0x39:
+                i += 1
+            if i > d_start:
+                has_num = True
+                num_val = num_sign * int(raw_bytes[d_start:i].decode("ascii"))
+
+            # Optional single space delimiter after control word
+            if i < n and raw_bytes[i] == 0x20:
+                i += 1
+
+            if word in _RTF_SKIP_DESTINATIONS:
+                _flush_bytes()
+                skip_dest = True
+                continue
+
+            if word == "ansicpg" and has_num:
+                _flush_bytes()
+                encoding = _RTF_CODEPAGE_MAP.get(num_val, encoding)
+                continue
+
+            if word == "mac":
+                _flush_bytes()
+                encoding = "mac_cyrillic"
+                continue
+
+            if word == "pc" or word == "pca":
+                _flush_bytes()
+                encoding = "cp866"
+                continue
+
+            if skip_dest:
+                continue
+
+            if word == "uc" and has_num:
+                _flush_bytes()
+                uc_skip = max(0, num_val)
+                continue
+
+            if word == "u" and has_num:
+                _flush_bytes()
+                codepoint = num_val if num_val >= 0 else (num_val + 65536)
+                if 0 <= codepoint <= 0x10FFFF:
+                    cur_chars.append(chr(codepoint))
+                skip_ansi_chars = uc_skip
+                continue
+
+            _flush_bytes()
+            if word in _RTF_SYMBOL_WORDS:
+                cur_chars.append(_RTF_SYMBOL_WORDS[word])
+            elif word == "line":
+                cur_chars.append("\n")
+            elif word in ("intbl", "trowd"):
+                in_table = True
+            elif word == "pard":
+                in_table = False
+            elif word in ("cell", "nestcell"):
+                in_table = True
+                cell_txt = _pop_current_text()
+                row_cells.append(cell_txt)
+                running_chars += len(cell_txt) + 2
+            elif word in ("row", "nestrow"):
+                trailing = _pop_current_text()
+                if trailing and not row_cells:
+                    row_cells.append(trailing)
+                if row_cells:
+                    table_grid.append(list(row_cells))
+                    row_cells.clear()
+                in_table = False
+            elif word in ("page", "pagebb"):
+                if row_cells:
+                    table_grid.append(list(row_cells))
+                    row_cells.clear()
+                _flush_table_grid()
+                _flush_paragraph()
+                has_explicit_pages = True
+                explicit_page += 1
+            elif word in ("par", "sect"):
+                if in_table:
+                    cur_chars.append("\n")
+                else:
+                    _flush_table_grid()
+                    _flush_paragraph()
+            continue
+
+        # Literal character byte
+        i += 1
+        if skip_ansi_chars > 0:
+            skip_ansi_chars -= 1
+            continue
+        if not skip_dest:
+            byte_buf.append(b)
+
+    if row_cells:
+        trailing = _pop_current_text()
+        if trailing:
+            row_cells.append(trailing)
+        table_grid.append(list(row_cells))
+        row_cells.clear()
+    _flush_table_grid()
+    _flush_paragraph()
+
+    pages_total = max((b.page_num for b in blocks), default=1)
+    return blocks, max(1, pages_total)
+
+
+class _SimpleDocHTMLParser(HTMLParser):
+    """Lightweight HTML/MHTML extractor for paragraphs, headings, lists, and `<table>` grids."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.items: list[tuple[str, Any]] = []  # ("heading", (lvl, txt)) | ("para", txt) | ("table", grid) | ("page", None)
+        self._skip_depth = 0
+        self._in_table = 0
+        self._cur_grid: list[list[str]] = []
+        self._cur_row: list[str] | None = None
+        self._cur_cell: list[str] | None = None
+        self._cur_cell_colspan: int = 1
+        self._cur_para: list[str] = []
+        self._cur_heading_lvl: int | None = None
+
+    def _flush_para(self) -> None:
+        if not self._cur_para:
+            return
+        txt = _normalize_inline_whitespace("".join(self._cur_para))
+        self._cur_para.clear()
+        if txt:
+            if self._cur_heading_lvl is not None:
+                self.items.append(("heading", (self._cur_heading_lvl, txt)))
+            else:
+                self.items.append(("para", txt))
+        self._cur_heading_lvl = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        t = tag.lower()
+        if t in ("script", "style", "head", "xml"):
+            self._skip_depth += 1
+            return
+        if self._skip_depth > 0:
+            return
+
+        attr_map = {k.lower(): (v or "") for k, v in attrs}
+        style_val = attr_map.get("style", "").lower()
+        if "page-break-before:always" in style_val.replace(" ", "") or "page-break-after:always" in style_val.replace(" ", ""):
+            if self._in_table == 0:
+                self._flush_para()
+                self.items.append(("page", None))
+
+        if t == "table":
+            if self._in_table == 0:
+                self._flush_para()
+                self._cur_grid = []
+            self._in_table += 1
+        elif t == "tr" and self._in_table == 1:
+            self._cur_row = []
+        elif t in ("td", "th") and self._in_table == 1 and self._cur_row is not None:
+            self._cur_cell = []
+            try:
+                self._cur_cell_colspan = max(1, min(20, int(attr_map.get("colspan") or "1")))
+            except ValueError:
+                self._cur_cell_colspan = 1
+        elif t == "br":
+            if self._cur_cell is not None:
+                self._cur_cell.append("\n")
+            else:
+                self._cur_para.append("\n")
+        elif self._in_table == 0 and t in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._flush_para()
+            self._cur_heading_lvl = int(t[1])
+        elif self._in_table == 0 and t in ("p", "div", "li", "blockquote", "section", "article"):
+            self._flush_para()
+            if t == "li":
+                self._cur_para.append("- ")
+
+    def handle_endtag(self, tag: str) -> None:
+        t = tag.lower()
+        if t in ("script", "style", "head", "xml"):
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if self._skip_depth > 0:
+            return
+
+        if t in ("td", "th") and self._in_table == 1 and self._cur_row is not None and self._cur_cell is not None:
+            cell_txt = _normalize_inline_whitespace("".join(self._cur_cell)).replace("\n", " ")
+            self._cur_row.append(cell_txt)
+            for _ in range(self._cur_cell_colspan - 1):
+                self._cur_row.append("")
+            self._cur_cell = None
+            self._cur_cell_colspan = 1
+        elif t == "tr" and self._in_table == 1 and self._cur_row is not None:
+            if any(self._cur_row):
+                self._cur_grid.append(self._cur_row)
+            self._cur_row = None
+        elif t == "table" and self._in_table > 0:
+            self._in_table -= 1
+            if self._in_table == 0 and self._cur_grid:
+                self.items.append(("table", list(self._cur_grid)))
+                self._cur_grid = []
+        elif self._in_table == 0 and t in ("h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "li", "blockquote"):
+            self._flush_para()
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0:
+            return
+        if self._cur_cell is not None:
+            self._cur_cell.append(data)
+        elif self._in_table == 0:
+            self._cur_para.append(data)
+
+
+def _decode_markup_bytes(raw_bytes: bytes) -> str:
+    """Decode HTML/XML bytes detecting BOM, `<meta charset>`, XML encoding, UTF-8, or CP1251."""
+    if raw_bytes.startswith(b"\xff\xfe"):
+        return raw_bytes.decode("utf-16-le", errors="replace")
+    if raw_bytes.startswith(b"\xfe\xff"):
+        return raw_bytes.decode("utf-16-be", errors="replace")
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        return raw_bytes[3:].decode("utf-8", errors="replace")
+
+    head_ascii = raw_bytes[:1024].decode("ascii", errors="ignore")
+    m_enc = re.search(r'charset\s*=\s*["\']?([a-zA-Z0-9_-]+)', head_ascii, re.IGNORECASE)
+    if not m_enc:
+        m_enc = re.search(r'encoding\s*=\s*["\']([a-zA-Z0-9_-]+)["\']', head_ascii, re.IGNORECASE)
+    if m_enc:
+        enc_cand = m_enc.group(1).strip().lower()
+        if enc_cand in ("windows-1251", "cp1251"):
+            return raw_bytes.decode("cp1251", errors="replace")
+        try:
+            return raw_bytes.decode(enc_cand, errors="replace")
+        except LookupError:
+            pass
+
+    try:
+        return raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw_bytes.decode("cp1251", errors="replace")
+
+
+def _parse_wordml_or_spreadsheetml_xml(xml_text: str, default_sheet_mode: bool = False) -> list[ParsedBlock]:
+    """Parse Word 2003 XML (`w:wordDocument`), Flat OPC Word XML, or SpreadsheetML 2003 XML."""
+    root = ET.fromstring(xml_text)
+
+    def _local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+    # SpreadsheetML 2003 (`<Workbook><Worksheet ss:Name="..."><Table><Row><Cell><Data>`)
+    worksheets = [el for el in root.iter() if _local(el.tag) == "Worksheet"]
+    if worksheets:
+        blocks: list[ParsedBlock] = []
+        for s_idx, ws in enumerate(worksheets, start=1):
+            sh_name = f"Лист {s_idx}"
+            for k, v in ws.attrib.items():
+                if _local(k) == "Name" and v:
+                    sh_name = v
+                    break
+            grid: list[list[str]] = []
+            for row_el in ws.iter():
+                if _local(row_el.tag) != "Row":
+                    continue
+                row_vals: list[str] = []
+                col_cursor = 0
+                for cell_el in row_el:
+                    if _local(cell_el.tag) != "Cell":
+                        continue
+                    for k, v in cell_el.attrib.items():
+                        if _local(k) == "Index" and str(v).isdigit():
+                            target_idx = max(0, int(v) - 1)
+                            while col_cursor < target_idx:
+                                row_vals.append("")
+                                col_cursor += 1
+                    cell_text = _normalize_inline_whitespace("".join(cell_el.itertext())).replace("\n", " ")
+                    row_vals.append(cell_text)
+                    col_cursor += 1
+                    for k, v in cell_el.attrib.items():
+                        if _local(k) == "MergeAcross" and str(v).isdigit():
+                            for _ in range(int(v)):
+                                row_vals.append("")
+                                col_cursor += 1
+                if any(row_vals):
+                    grid.append(row_vals)
+            if grid:
+                blocks.extend(_grid_to_excel_sheet_blocks(sh_name, s_idx, grid))
+        return blocks
+
+    # WordprocessingML 2003 / Flat OPC (`w:body` -> `w:p` | `w:tbl` | `w:sectPr`)
+    bodies = [el for el in root.iter() if _local(el.tag) == "body"]
+    if not bodies:
+        return []
+
+    blocks = []
+    running_chars = 0
+    explicit_page = 1
+
+    def _walk_container(container: ET.Element) -> None:
+        nonlocal running_chars, explicit_page
+        for child in container:
+            cname = _local(child.tag)
+            if cname == "p":
+                texts: list[str] = []
+                has_page_br = False
+                for sub in child.iter():
+                    sname = _local(sub.tag)
+                    if sname == "t" and sub.text:
+                        texts.append(sub.text)
+                    elif sname == "tab":
+                        texts.append("\t")
+                    elif sname == "br":
+                        br_type = next((v for k, v in sub.attrib.items() if _local(k) == "type"), "")
+                        if br_type == "page":
+                            has_page_br = True
+                        else:
+                            texts.append("\n")
+                p_txt = _normalize_inline_whitespace("".join(texts))
+                p_num = max(explicit_page, 1 + running_chars // _DOC_CHARS_PER_PAGE)
+                if p_txt:
+                    blocks.extend(_text_to_parsed_blocks(p_txt, page_num=p_num, is_ocr=False, prev_blocks=blocks))
+                    running_chars += len(p_txt) + 1
+                if has_page_br:
+                    explicit_page += 1
+            elif cname == "tbl":
+                grid: list[list[str]] = []
+                for tr in child:
+                    if _local(tr.tag) != "tr":
+                        continue
+                    row_cells: list[str] = []
+                    for tc in tr:
+                        if _local(tc.tag) != "tc":
+                            continue
+                        cell_paras: list[str] = []
+                        for p in tc.iter():
+                            if _local(p.tag) == "p":
+                                pt = _normalize_inline_whitespace(
+                                    "".join(sub.text or "" for sub in p.iter() if _local(sub.tag) == "t")
+                                )
+                                if pt:
+                                    cell_paras.append(pt)
+                        row_cells.append(" ".join(cell_paras))
+                    if any(row_cells):
+                        grid.append(row_cells)
+                if grid:
+                    p_num = max(explicit_page, 1 + running_chars // _DOC_CHARS_PER_PAGE)
+                    if default_sheet_mode:
+                        blocks.extend(_grid_to_excel_sheet_blocks(f"Таблица {len(blocks) + 1}", len(blocks) + 1, grid))
+                    else:
+                        blocks.extend(_emit_doc_table_grid(grid, p_num))
+                    running_chars += sum(len(c) for r in grid for c in r)
+            elif cname in ("sub-section", "sdt", "sdtContent"):
+                _walk_container(child)
+
+    for body_el in bodies:
+        _walk_container(body_el)
+    return blocks
+
+
+def _parse_html_or_xml_to_blocks(raw_bytes: bytes, default_sheet_mode: bool = False) -> list[ParsedBlock]:
+    """Parse MHTML, Word/Excel XML, or HTML documents saved with `.doc` or `.xls` extension."""
+    stripped = raw_bytes.lstrip()
+    if stripped[:60].lower().startswith(b"mime-version:") or b"multipart/related" in raw_bytes[:1024].lower():
+        try:
+            msg = email.message_from_bytes(raw_bytes)
+            for part in msg.walk():
+                if part.get_content_type() == "text/html":
+                    payload = part.get_payload(decode=True)
+                    if isinstance(payload, bytes) and payload:
+                        raw_bytes = payload
+                        break
+        except Exception as mhtml_exc:
+            logger.debug("MHTML unwrap skipped: %s", mhtml_exc)
+
+    decoded = _decode_markup_bytes(raw_bytes)
+    stripped_txt = decoded.lstrip()
+    if stripped_txt.startswith("<?xml") or stripped_txt.startswith("<w:") or stripped_txt.startswith("<Workbook"):
+        try:
+            xml_blocks = _parse_wordml_or_spreadsheetml_xml(decoded, default_sheet_mode=default_sheet_mode)
+            if xml_blocks:
+                return xml_blocks
+        except Exception as xml_exc:
+            logger.debug("XML parse fallback to HTMLParser: %s", xml_exc)
+
+    parser = _SimpleDocHTMLParser()
+    parser.feed(decoded)
+    parser._flush_para()
+
+    blocks: list[ParsedBlock] = []
+    explicit_page = 1
+    running_chars = 0
+    sheet_idx = 0
+
+    for kind, payload in parser.items:
+        if kind == "page":
+            explicit_page += 1
+            continue
+        p_num = max(explicit_page, 1 + running_chars // _DOC_CHARS_PER_PAGE)
+        if kind == "heading":
+            lvl, txt = payload
+            blocks.append(
+                ParsedBlock(
+                    text=txt,
+                    block_type=BlockType.HEADING.value,
+                    zone=ZoneType.NORMATIVE.value,
+                    page_num=p_num,
+                    page_numbers=[p_num],
+                    is_bold=True,
+                    heading_level=lvl,
+                )
+            )
+            running_chars += len(txt) + 1
+        elif kind == "para":
+            blocks.extend(_text_to_parsed_blocks(payload, page_num=p_num, is_ocr=False, prev_blocks=blocks))
+            running_chars += len(payload) + 1
+        elif kind == "table":
+            if default_sheet_mode:
+                sheet_idx += 1
+                blocks.extend(_grid_to_excel_sheet_blocks(f"Лист {sheet_idx}", sheet_idx, payload))
+            else:
+                blocks.extend(_emit_doc_table_grid(payload, p_num))
+            running_chars += sum(len(c) for r in payload for c in r)
+
+    return blocks
+
+
+def _decode_word_compressed_piece(raw_piece: bytes) -> str:
+    """
+    Decode an 8-bit compressed Clx piece (`fCompressed=1`).
+    In MS-DOC, compressed pieces are CP1252 for Western/ASCII runs; if high bytes `0xC0..0xFF`
+    or `0xA8/0xB8/0xB9` appear (used by Russian third-party `.doc` generators), decode as `cp1251`.
+    """
+    has_cyrillic_high = any((0xC0 <= b <= 0xFF) or b in (0xA8, 0xB8, 0xB9) for b in raw_piece)
+    enc = "cp1251" if has_cyrillic_high else "cp1252"
+    return raw_piece.decode(enc, errors="replace")
+
+
+def _strip_word_field_codes(text: str) -> str:
+    """
+    Strip binary Word field instructions `\\x13 instr \\x14 visible \\x15` keeping only `visible`
+    (or removing `\\x13 ... \\x15` when no `\\x14` display value exists, e.g. TOC/BOOKMARK/SEQ codes).
+    Handles nested fields cleanly.
+    """
+    if "\x13" not in text and "\x15" not in text:
+        return text
+
+    out_stack: list[tuple[list[str], list[str], bool]] = []
+    root_chars: list[str] = []
+
+    for ch in text:
+        if ch == "\x13":  # Field begin
+            out_stack.append(([], [], False))
+        elif ch == "\x14":  # Field separator (switch from instruction to visible result)
+            if out_stack:
+                instr_buf, vis_buf, _ = out_stack[-1]
+                out_stack[-1] = (instr_buf, vis_buf, True)
+        elif ch == "\x15":  # Field end
+            if out_stack:
+                _instr_buf, vis_buf, seen_sep = out_stack.pop()
+                kept = "".join(vis_buf) if seen_sep else ""
+                if out_stack:
+                    _, parent_vis, parent_sep = out_stack[-1]
+                    if parent_sep:
+                        parent_vis.append(kept)
+                else:
+                    root_chars.append(kept)
+        else:
+            if out_stack:
+                instr_buf, vis_buf, seen_sep = out_stack[-1]
+                if seen_sep:
+                    vis_buf.append(ch)
+                else:
+                    instr_buf.append(ch)
+            else:
+                root_chars.append(ch)
+
+    # Flush any unclosed field gracefully
+    for _instr_buf, vis_buf, seen_sep in out_stack:
+        if seen_sep:
+            root_chars.extend(vis_buf)
+    return "".join(root_chars)
+
+
+def _clean_word_stream_chars(text: str) -> str:
+    """Clean binary Word control markers while preserving `\\r`, `\\x07` (table cell/row), and `\\x0c` (page break)."""
+    s = _strip_word_field_codes(text)
+    s = s.replace("\r\n", "\r").replace("\n", "\r")
+    s = s.replace("\x0b", "\n")  # Vertical tab = soft line break inside paragraph
+    s = s.replace("\x1e", "-")   # Non-breaking hyphen
+    s = s.replace("\x1f", "")    # Optional soft hyphen
+    s = s.replace("\xa0", " ")
+    # Remove inline picture/drawn-object/footnote/annotation anchors
+    s = re.sub(r"[\x00-\x06\x08\x0e-\x12\x16-\x1d]", "", s)
+    return s
+
+
+def _word_binary_text_to_blocks(raw_text: str) -> tuple[list[ParsedBlock], int]:
+    """
+    Reconstruct structured `ParsedBlock` paragraphs, headings, page numbers, and `\\x07`-delimited
+    Word tables from the decoded `WordDocument` character stream.
+    """
+    cleaned = _clean_word_stream_chars(raw_text)
+    blocks: list[ParsedBlock] = []
+    explicit_page = 1
+    has_explicit_page = "\x0c" in cleaned
+    running_chars = 0
+
+    def _cur_page() -> int:
+        if has_explicit_page:
+            return explicit_page
+        return max(1, 1 + running_chars // _DOC_CHARS_PER_PAGE)
+
+    def _emit_prose_chunk(prose: str) -> None:
+        nonlocal explicit_page, running_chars
+        if not prose:
+            return
+        # Handle explicit \x0c page/section breaks inside prose
+        page_parts = prose.split("\x0c")
+        for p_idx, part in enumerate(page_parts):
+            if p_idx > 0:
+                explicit_page += 1
+            lines = [
+                _normalize_inline_whitespace(p)
+                for p in part.split("\r")
+            ]
+            non_empty_lines = [ln for ln in lines if ln]
+            if non_empty_lines:
+                joined = "\n".join(non_empty_lines)
+                p_num = _cur_page()
+                blocks.extend(_text_to_parsed_blocks(joined, page_num=p_num, is_ocr=False, prev_blocks=blocks))
+                running_chars += len(joined) + 1
+
+    if "\x07" not in cleaned:
+        _emit_prose_chunk(cleaned)
+        pages_total = max((b.page_num for b in blocks), default=1)
+        return blocks, max(1, pages_total)
+
+    segments = cleaned.split("\x07")
+    head_segments = segments[:-1]  # Each segment in head_segments was terminated by \x07
+    tail_prose = segments[-1]      # Trailing text after the very last \x07
+
+    table_rows: list[list[str]] = []
+    current_row: list[str] = []
+    expected_cols: int = 0
+
+    def _flush_table() -> None:
+        nonlocal expected_cols
+        if current_row:
+            if any(current_row):
+                table_rows.append(list(current_row))
+            current_row.clear()
+        if table_rows:
+            blocks.extend(_emit_doc_table_grid(table_rows, _cur_page()))
+            table_rows.clear()
+        expected_cols = 0
+
+    for seg in head_segments:
+        # Word 6/95 or multi-table transitions: if we are between rows (`not current_row`),
+        # check whether `seg` contains preceding prose paragraphs separated by `\r` or `\x0c`.
+        if not current_row and ("\r" in seg or "\x0c" in seg):
+            # Note: `\r\x07` (seg == "\r") is a classic Word 6/95 row-end marker!
+            if seg == "\r" and table_rows:
+                continue
+            r_parts = seg.split("\r")
+            preceding_prose = "\r".join(r_parts[:-1])
+            first_cell_raw = r_parts[-1]
+            if preceding_prose.strip() or "\x0c" in preceding_prose:
+                _flush_table()
+                _emit_prose_chunk(preceding_prose)
+            seg = first_cell_raw
+
+        # Normalize cell text (convert internal `\r` inside a multi-paragraph cell to space/newline)
+        cell_clean = _normalize_inline_whitespace(seg.replace("\x0c", "").replace("\r", "\n")).replace("\n", " ")
+
+        if cell_clean == "":
+            # An empty segment between two `\x07` marks is EITHER the row-terminating TTP `\x07`
+            # OR an empty cell inside the current row!
+            if not current_row:
+                # Consecutive row terminator or leading empty cell
+                if expected_cols > 1:
+                    current_row.append("")
+                continue
+            if expected_cols > 0 and len(current_row) < expected_cols:
+                current_row.append("")
+            else:
+                table_rows.append(list(current_row))
+                expected_cols = max(expected_cols, len(current_row))
+                current_row.clear()
+        else:
+            current_row.append(cell_clean)
+            running_chars += len(cell_clean) + 2
+
+    _flush_table()
+    if tail_prose:
+        _emit_prose_chunk(tail_prose)
+
+    pages_total = max((b.page_num for b in blocks), default=1)
+    return blocks, max(1, pages_total)
+
+
+def _extract_ole2_pieces_from_fib(word_stream: bytes, ole: olefile.OleFileIO) -> tuple[str, str] | None:
+    """
+    Parse MS-DOC FIB (`FibBase` + `FibRgW97` + `FibRgLw97` + `FibRgFcLcb`) and `Clx` piece table
+    from `1Table` / `0Table` to reconstruct `(main_story_text, header_story_text)` in exact CP order.
+    """
+    if len(word_stream) < 68:
+        return None
+
+    flags = struct.unpack_from("<H", word_stream, 0x0A)[0]
+    tbl_stream_name = "1Table" if (flags & 0x0200) else "0Table"
+    if not ole.exists(tbl_stream_name):
+        alt_name = "0Table" if tbl_stream_name == "1Table" else "1Table"
+        if ole.exists(alt_name):
+            tbl_stream_name = alt_name
+        else:
+            return None
+
+    # Walk variable-length FIB arrays dynamically (`csw` -> `cslw` -> `cbRgFcLcb`)
+    csw = struct.unpack_from("<H", word_stream, 32)[0]
+    pos_cslw = 34 + csw * 2
+    if pos_cslw + 2 > len(word_stream):
+        return None
+    cslw = struct.unpack_from("<H", word_stream, pos_cslw)[0]
+    pos_rglw = pos_cslw + 2
+    if pos_rglw + cslw * 4 + 2 > len(word_stream) or cslw < 6:
+        return None
+
+    ccp_text = struct.unpack_from("<i", word_stream, pos_rglw + 3 * 4)[0]
+    ccp_ftn = struct.unpack_from("<i", word_stream, pos_rglw + 4 * 4)[0]
+    ccp_hdd = struct.unpack_from("<i", word_stream, pos_rglw + 5 * 4)[0]
+
+    pos_cb_fclcb = pos_rglw + cslw * 4
+    cb_fclcb = struct.unpack_from("<H", word_stream, pos_cb_fclcb)[0]
+    pos_fclcb = pos_cb_fclcb + 2
+    if cb_fclcb <= 33 or pos_fclcb + 34 * 8 > len(word_stream):
+        return None
+
+    fc_clx, lcb_clx = struct.unpack_from("<II", word_stream, pos_fclcb + 33 * 8)
+    if lcb_clx == 0:
+        return None
+
+    tbl_data = ole.openstream(tbl_stream_name).read()
+    if fc_clx + lcb_clx > len(tbl_data):
+        return None
+    clx = tbl_data[fc_clx : fc_clx + lcb_clx]
+
+    pos = 0
+    while pos < len(clx) and clx[pos] == 0x01:  # Skip Prc property records
+        if pos + 3 > len(clx):
+            return None
+        cb_grpprl = struct.unpack_from("<H", clx, pos + 1)[0]
+        pos += 3 + cb_grpprl
+
+    if pos + 5 > len(clx) or clx[pos] != 0x02:  # Expect Pcdt (0x02)
+        return None
+
+    lcb_plc = struct.unpack_from("<I", clx, pos + 1)[0]
+    plc_data = clx[pos + 5 : pos + 5 + lcb_plc]
+    if len(plc_data) < 16 or (len(plc_data) - 4) % 12 != 0:
+        return None
+
+    n_pieces = (len(plc_data) - 4) // 12
+    a_cp = [struct.unpack_from("<I", plc_data, i * 4)[0] for i in range(n_pieces + 1)]
+    pcd_base = (n_pieces + 1) * 4
+
+    pieces_str: list[str] = []
+    for i in range(n_pieces):
+        cp_start, cp_end = a_cp[i], a_cp[i + 1]
+        if cp_end <= cp_start:
+            continue
+        char_count = cp_end - cp_start
+        fc_raw = struct.unpack_from("<I", plc_data, pcd_base + i * 8 + 2)[0]
+        is_compressed = bool(fc_raw & 0x40000000)
+        if is_compressed:
+            byte_offset = (fc_raw & ~0x40000000) // 2
+            raw_piece = word_stream[byte_offset : byte_offset + char_count]
+            pieces_str.append(_decode_word_compressed_piece(raw_piece))
+        else:
+            byte_offset = fc_raw
+            raw_piece = word_stream[byte_offset : byte_offset + char_count * 2]
+            pieces_str.append(raw_piece.decode("utf-16-le", errors="replace"))
+
+    full_chars = "".join(pieces_str)
+    if not full_chars:
+        return None
+
+    if ccp_text > 0:
+        main_text = full_chars[:ccp_text]
+        hdd_start = max(0, ccp_text + max(0, ccp_ftn))
+        hdd_end = hdd_start + max(0, ccp_hdd)
+        hdd_text = full_chars[hdd_start:hdd_end] if ccp_hdd > 0 and hdd_start < len(full_chars) else ""
+    else:
+        main_text = full_chars
+        hdd_text = ""
+
+    return main_text, hdd_text
+
+
+def _extract_ole2_fallback_text(word_stream: bytes) -> str:
+    """
+    Clean stream-scanning fallback when `Clx` is absent (e.g. Word 6.0 non-complex fast-save or
+    stripped FIB): slices `fcMin..fcMac` if valid, otherwise extracts printable UTF-16LE / CP1251 runs.
+    """
+    if len(word_stream) >= 0x20:
+        flags = struct.unpack_from("<H", word_stream, 0x0A)[0]
+        fc_min, fc_mac = struct.unpack_from("<II", word_stream, 0x18)
+        is_complex = bool(flags & 0x0004)
+        if not is_complex and 0 < fc_min < fc_mac <= len(word_stream):
+            span = word_stream[fc_min:fc_mac]
+            # Check if UTF-16LE (Word 97 non-complex) vs 8-bit CP1251 (Word 6/95)
+            zero_odd = sum(1 for idx in range(1, min(len(span), 400), 2) if span[idx] in (0x00, 0x04))
+            if len(span) >= 4 and zero_odd >= min(len(span), 400) // 4:
+                return span.decode("utf-16-le", errors="replace")
+            return _decode_word_compressed_piece(span)
+
+    payload = word_stream[512:] if len(word_stream) > 512 else word_stream
+    # Scan for UTF-16LE runs (ASCII + Cyrillic U+0400..U+045F + punctuation) and CP1251 runs
+    chunks: list[str] = []
+    for m in re.finditer(rb"(?:[\x07\x09\x0a\x0d\x20-\x7e]\x00|[\x00-\x5f]\x04){6,}", payload):
+        s = m.group(0).decode("utf-16-le", errors="ignore").strip()
+        if s:
+            chunks.append(s)
+    if not chunks:
+        for m in re.finditer(rb"[\x07\x09\x0a\x0d\x20-\x7e\xa8\xb8\xb9\xc0-\xff]{8,}", payload):
+            s = m.group(0).decode("cp1251", errors="ignore").strip()
+            if s:
+                chunks.append(s)
+    return "\r".join(chunks)
+
+
+def _parse_ole2_word_doc(raw_bytes: bytes, file_name: str) -> tuple[list[ParsedBlock], int, list[str]]:
+    """Parse genuine OLE2 Compound Binary Word 97–2003 (`.doc`) file via `olefile`."""
+    warnings_list: list[str] = []
+    with olefile.OleFileIO(io.BytesIO(raw_bytes)) as ole:
+        if not ole.exists("WordDocument"):
+            raise ValueError(f"OLE2 container '{file_name}' has no 'WordDocument' stream.")
+        word_stream = ole.openstream("WordDocument").read()
+        fib_res = _extract_ole2_pieces_from_fib(word_stream, ole)
+        if fib_res is not None:
+            main_text, hdd_text = fib_res
+        else:
+            w_msg = f"Нестандартная таблица кусков Clx в {file_name}; применен потоковый разбор WordDocument."
+            warnings_list.append(w_msg)
+            main_text = _extract_ole2_fallback_text(word_stream)
+            hdd_text = ""
+
+    blocks, pages_total = _word_binary_text_to_blocks(main_text)
+
+    # Check header/footer story for order requisite frames or registration/ЭДО stamps (like parse_docx)
+    if hdd_text.strip():
+        hdd_blocks, _ = _word_binary_text_to_blocks(hdd_text)
+        body_alnum = re.sub(
+            r"[^а-яa-z0-9]+",
+            "",
+            "\n".join(b.text for b in blocks if b.text).lower().replace("ё", "е"),
+        )
+        prefix_stamps: list[ParsedBlock] = []
+        suffix_stamps: list[ParsedBlock] = []
+        for hb in hdd_blocks:
+            htxt = (hb.text or "").strip()
+            if not htxt:
+                continue
+            has_reg_stamp = bool(_REGISTRATION_STAMP_LINE_RE.search(htxt) or _STAMP_OCR_MARKER_RE.search(htxt))
+            has_ord_hdr = bool(_DOCX_ORDER_HEADER_RE.search(htxt) or _REQUISITE_CELL_RE.search(htxt))
+            if not (has_reg_stamp or has_ord_hdr):
+                continue
+            h_alnum = re.sub(r"[^а-яa-z0-9]+", "", htxt.lower().replace("ё", "е"))
+            if len(h_alnum) < 6 or h_alnum in body_alnum:
+                continue
+            body_alnum += h_alnum
+            stamp_blk = ParsedBlock(
+                text=htxt,
+                block_type=BlockType.STAMP.value,
+                zone=ZoneType.NORMATIVE.value,
+                page_num=pages_total if has_reg_stamp else 1,
+                page_numbers=[pages_total if has_reg_stamp else 1],
+            )
+            if has_reg_stamp:
+                suffix_stamps.append(stamp_blk)
+            else:
+                prefix_stamps.append(stamp_blk)
+        if prefix_stamps or suffix_stamps:
+            blocks = prefix_stamps + blocks + suffix_stamps
+
+    return blocks, max(1, pages_total), warnings_list
+
+
+def parse_doc(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]]:
+    """
+    Pure-Python multi-format `.doc` parser inspecting header magic bytes first:
+    a) ZIP (`PK\\x03\\x04`) -> delegates to `parse_docx`
+    b) RTF (`{\\rtf`) -> pure-Python Russian RTF + table parser
+    c) HTML / MHTML / WordML XML (`<html`, `<!DOCTYPE`, `<?xml`, `MIME-Version:`) -> HTML/XML + table extractor
+    d) Genuine OLE2 Compound Binary Word 97–2003 (`\\xd0\\xcf\\x11\\xe0`) via `olefile` (FIB + Clx piece table + `\\x07` tables)
+    """
+    path = Path(file_path)
+    warnings_list: list[str] = []
+    errors_list: list[str] = []
+
+    try:
+        raw_bytes = path.read_bytes()
+    except Exception as exc:
+        msg = f"Failed to read DOC {path.name}: {exc}"
+        logger.error(msg)
+        return [], {
+            "file_format": "doc",
+            "pages_total": 0,
+            "ocr_pages": 0,
+            "warnings": [],
+            "errors": [msg],
+        }
+
+    if not raw_bytes:
+        msg = f"Empty DOC file: {path.name}"
+        return [], {
+            "file_format": "doc",
+            "pages_total": 0,
+            "ocr_pages": 0,
+            "warnings": [msg],
+            "errors": [msg],
+        }
+
+    stripped_head = raw_bytes[:512].lstrip()
+
+    # (a) Disguised OOXML .docx (ZIP header PK\x03\x04)
+    if raw_bytes.startswith(b"PK\x03\x04"):
+        blocks, sub_meta = parse_docx(path)
+        sub_meta["file_format"] = "doc"
+        return blocks, sub_meta
+
+    # (b) Rich Text Format ({\rtf)
+    if stripped_head.startswith(b"{\\rtf"):
+        try:
+            blocks, pages_total = _parse_rtf_doc(raw_bytes)
+            return blocks, {
+                "file_format": "doc",
+                "pages_total": pages_total,
+                "ocr_pages": 0,
+                "warnings": warnings_list,
+                "errors": errors_list,
+            }
+        except Exception as rtf_exc:
+            msg = f"Failed to parse RTF DOC {path.name}: {rtf_exc}"
+            logger.error(msg)
+            return [], {
+                "file_format": "doc",
+                "pages_total": 0,
+                "ocr_pages": 0,
+                "warnings": warnings_list,
+                "errors": [msg],
+            }
+
+    # (c) HTML / MHTML / WordprocessingML XML
+    low_head = stripped_head[:64].lower()
+    if low_head.startswith(
+        (b"<html", b"<!doctype", b"<?xml", b"mime-version:", b"<w:worddocument", b"<body", b"<table", b"<div", b"<p")
+    ):
+        try:
+            blocks = _parse_html_or_xml_to_blocks(raw_bytes, default_sheet_mode=False)
+            pages_total = max((b.page_num for b in blocks), default=1)
+            return blocks, {
+                "file_format": "doc",
+                "pages_total": max(1, pages_total),
+                "ocr_pages": 0,
+                "warnings": warnings_list,
+                "errors": errors_list,
+            }
+        except Exception as html_exc:
+            msg = f"Failed to parse HTML/XML DOC {path.name}: {html_exc}"
+            logger.error(msg)
+            return [], {
+                "file_format": "doc",
+                "pages_total": 0,
+                "ocr_pages": 0,
+                "warnings": warnings_list,
+                "errors": [msg],
+            }
+
+    # (d) Genuine OLE2 Compound Binary Word 97–2003 (\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1)
+    if raw_bytes.startswith(b"\xd0\xcf\x11\xe0"):
+        try:
+            blocks, pages_total, ole_warnings = _parse_ole2_word_doc(raw_bytes, path.name)
+            warnings_list.extend(ole_warnings)
+            return blocks, {
+                "file_format": "doc",
+                "pages_total": pages_total,
+                "ocr_pages": 0,
+                "warnings": warnings_list,
+                "errors": errors_list,
+            }
+        except Exception as ole_exc:
+            msg = f"Failed to parse OLE2 DOC {path.name}: {ole_exc}"
+            logger.error(msg)
+            return [], {
+                "file_format": "doc",
+                "pages_total": 0,
+                "ocr_pages": 0,
+                "warnings": warnings_list,
+                "errors": [msg],
+            }
+
+    # Plain-text fallback if a plain UTF-8 / CP1251 file was saved with `.doc` extension
+    decoded_txt = _decode_markup_bytes(raw_bytes)
+    norm_txt = _normalize_inline_whitespace(decoded_txt)
+    if norm_txt:
+        blocks, pages_total = _word_binary_text_to_blocks(norm_txt.replace("\n", "\r"))
+        return blocks, {
+            "file_format": "doc",
+            "pages_total": pages_total,
+            "ocr_pages": 0,
+            "warnings": warnings_list,
+            "errors": errors_list,
+        }
+
+    msg = f"Не удалось распознать структуру файла DOC: {path.name}"
+    return [], {
+        "file_format": "doc",
+        "pages_total": 0,
+        "ocr_pages": 0,
+        "warnings": [msg],
+        "errors": [msg],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Unified Entrypoint & DocumentParser Class
 # ---------------------------------------------------------------------------
 def parse_document(
@@ -1946,7 +3451,7 @@ def parse_document(
 ) -> tuple[list[ParsedBlock], dict[str, Any]]:
     """
     Unified fault-tolerant entrypoint for Module 1 Document Ingestion:
-    Dispatches `.pdf`, `.docx`, and `.xlsx` files to their specialized parsers and returns
+    Dispatches `.pdf`, `.docx`, `.doc`, `.xlsx`, and `.xls` files to their specialized parsers and returns
     `(list[ParsedBlock], parser_meta_dict)`. If `doc_id` is supplied, pre-assigns deterministic
     `table_id` (`<doc_id>::tbl_01`...) onto eligible structured table blocks.
     """
@@ -1967,8 +3472,12 @@ def parse_document(
         blocks, meta = parse_pdf(path, ocr_backend=ocr_backend)
     elif ext == ".docx":
         blocks, meta = parse_docx(path)
+    elif ext == ".doc":
+        blocks, meta = parse_doc(path)
     elif ext in {".xlsx", ".xlsm"}:
         blocks, meta = parse_xlsx(path)
+    elif ext == ".xls":
+        blocks, meta = parse_xls(path)
     else:
         msg = f"Неподдерживаемый формат файла: {ext} ({path.name})"
         logger.warning(msg)

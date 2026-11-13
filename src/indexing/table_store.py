@@ -1129,7 +1129,7 @@ class StructuredTableStore:
             if by_unit:
                 return by_unit
 
-        if len(doc_tables) == 1 and doc_tables[0].file_format == "xlsx":
+        if len(doc_tables) == 1 and doc_tables[0].file_format in {"xlsx", "xls", "xlsm"}:
             return doc_tables
 
         return []

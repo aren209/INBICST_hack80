@@ -1,16 +1,16 @@
 {
   "run_id": "sync_471d2766",
   "started_at": "2026-11-13T00:27:34Z",
-  "finished_at": "2026-11-13T00:28:53Z",
+  "finished_at": "2026-11-13T16:12:46Z",
   "total_files": 20,
-  "indexed_files": 20,
+  "indexed_files": 22,
   "skipped_files": 0,
   "failed_files": 0,
   "total_parent_sections": 137,
   "total_chunks": 1324,
   "tables_count": 14,
   "total_ocr_pages": 22,
-  "total_duration_sec": 78.495,
+  "total_duration_sec": 80.463,
   "files": [
     {
       "file_name": "Анкета_для_поселения_сотрудников.xlsx",
@@ -382,10 +382,10 @@
       "chunks_created": 15,
       "tables_count": 0,
       "deduplicated_chunks": 0,
-      "duration_sec": 1.22,
+      "duration_sec": 1.598,
       "warnings": [],
       "error_message": null,
-      "timestamp": "2026-11-13T00:28:52Z"
+      "timestamp": "2026-11-13T06:43:52Z"
     },
     {
       "file_name": "документы_для_регистрации_граждан_РФ_по_месту_пребывания.docx",

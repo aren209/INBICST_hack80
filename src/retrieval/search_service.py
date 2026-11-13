@@ -1650,7 +1650,9 @@ class SearchService:
             "и",
             "pdf",
             "docx",
+            "doc",
             "xlsx",
+            "xls",
         }
         clean_fname = re.sub(r"\.[a-zA-Z0-9]{2,5}$", "", (file_name or "")).replace("_", " ")
         raw_toks = tokenize_bm25(f"{title} {clean_fname}")
@@ -2086,7 +2088,7 @@ class SearchService:
 
             query_wants_excel = any(
                 kw in query_norm
-                for kw in ("таблиц", "excel", "xlsx", "анкет", "шаблон", "смет", "цфо", "финансодержател")
+                for kw in ("таблиц", "excel", "xlsx", "xls", "анкет", "шаблон", "смет", "цфо", "финансодержател")
             )
             seed_docs = [
                 d_id
@@ -3490,6 +3492,206 @@ class SearchService:
             latency_ms=latency_ms,
         )
 
+    def retrieve_candidate_pool(
+        self,
+        queries: list[str],
+        top_k: int = 18,
+        status_filter: list[str] | str | None = None,
+        year_filter: int | None = None,
+        doc_id_filter: str | None = None,
+        unit_id_filter: str | None = None,
+        include_parent: bool = True,
+        exclude_chunk_ids: set[str] | None = None,
+    ) -> tuple[list[SearchHit], list[TablePassport]]:
+        """
+        Multi-query hybrid RRF candidate retrieval for Stage 2 of QueryPipeline:
+        - Single batched dense embedding call across all `queries` + glossary-expanded sparse BM25;
+        - Content-hash deduplication + multi-query RRF fusion;
+        - Per-query slot reservation (2..3 slots per query) so every sub-aspect & form/annex is represented;
+        - Single-table cap + sibling-edition diversity probe + TablePassport annotation.
+        """
+        clean_queries = [q.strip() for q in queries if q and q.strip()]
+        if not clean_queries:
+            return [], []
+
+        excluded = exclude_chunk_ids or set()
+        dense_vecs = self.embedder.dense.embed_texts(clean_queries)
+        shared_tokens_set: set[str] = set()
+        for q_str in clean_queries[:2]:
+            shared_tokens_set.update(tokenize_bm25(q_str))
+
+        per_q_limit = max(12, min(20, top_k))
+        all_candidates: list[SearchHit] = []
+        per_query_hashes: dict[int, list[str]] = {}
+        ranks_by_hash: dict[str, list[tuple[int, int]]] = {}
+
+        for q_idx, (q_text, q_dense) in enumerate(zip(clean_queries, dense_vecs)):
+            q_expanded = self._expand_query_for_retrieval(q_text)
+            q_sparse, q_exp_toks = self.embedder.sparse.encode_with_tokens(q_expanded)
+            q_tokens_set = set(tokenize_bm25(q_text)) | set(q_exp_toks) | shared_tokens_set
+            q_norm = q_text.lower().replace("ё", "е")
+
+            pts = self.qdrant.hybrid_search(
+                query_dense=q_dense,
+                query_sparse=q_sparse,
+                top_k=per_q_limit,
+                prefetch_limit=max(per_q_limit * 2, 40),
+                status_filter=status_filter,
+                year_filter=year_filter,
+                doc_id_filter=doc_id_filter,
+                unit_id_filter=unit_id_filter,
+                exclude_zones=NON_ANSWER_ZONES,
+            )
+
+            local_hits: list[SearchHit] = []
+            for r_pos, pt in enumerate(pts, start=1):
+                payload_cid = str((pt.get("payload") or {}).get("chunk_id") or "")
+                if payload_cid and payload_cid in excluded:
+                    continue
+                hit = self._raw_point_to_hit(
+                    pt,
+                    query_norm=q_norm,
+                    query_tokens_set=q_tokens_set,
+                    include_parent=include_parent,
+                )
+                if not hit.chunk_id or hit.chunk_id in excluded:
+                    continue
+                if q_idx >= 2:
+                    hit.score = round(min(1.0, hit.score * 0.98), 4)
+                hit.metadata["matched_subqueries"] = [q_idx]
+                chash = str(hit.metadata.get("content_hash") or hit.chunk_id)
+                ranks_by_hash.setdefault(chash, []).append((q_idx, r_pos))
+                local_hits.append(hit)
+                all_candidates.append(hit)
+
+            local_hits.sort(key=lambda h: (h.score, h.rrf_score, h.dense_score), reverse=True)
+            ordered_hashes: list[str] = []
+            for lh in local_hits:
+                chash = str(lh.metadata.get("content_hash") or lh.chunk_id)
+                if chash not in ordered_hashes:
+                    ordered_hashes.append(chash)
+            per_query_hashes[q_idx] = ordered_hashes
+
+        deduped = [
+            h for h in self._deduplicate_hits_by_content_hash(all_candidates)
+            if h.chunk_id and h.chunk_id not in excluded
+        ]
+        if not deduped:
+            return [], []
+
+        k_rrf = 20.0
+        for h in deduped:
+            chash = str((h.metadata or {}).get("content_hash") or h.chunk_id)
+            fused_rrf = 0.0
+            q_seen: set[int] = set()
+            for q_idx, r_pos in ranks_by_hash.get(chash, []):
+                w = 1.0 if q_idx == 0 else (1.05 if q_idx == 1 else 0.90)
+                fused_rrf += w / (k_rrf + r_pos)
+                q_seen.add(q_idx)
+            if len(q_seen) >= 2:
+                h.score = round(min(1.0, h.score + 0.025 * (len(q_seen) - 1)), 4)
+            h.rrf_score = round(max(h.rrf_score, fused_rrf), 4)
+
+        deduped.sort(key=lambda h: (h.score, h.rrf_score, h.dense_score), reverse=True)
+
+        # Balanced multi-query pool selection guaranteeing top distinct chunks per query
+        by_hash = {
+            str((h.metadata or {}).get("content_hash") or h.chunk_id): h
+            for h in deduped
+        }
+        max_per_table = 3
+        selected: list[SearchHit] = []
+        selected_ids: set[str] = set()
+        table_counts: dict[str, int] = {}
+
+        def _add_cand(cand: SearchHit, enforce_table_cap: bool = True) -> bool:
+            if cand.chunk_id in selected_ids:
+                return False
+            tb_key = self._effective_table_bucket_key(cand)
+            if enforce_table_cap and tb_key and table_counts.get(tb_key, 0) >= max_per_table:
+                return False
+            selected.append(cand)
+            selected_ids.add(cand.chunk_id)
+            if tb_key:
+                table_counts[tb_key] = table_counts.get(tb_key, 0) + 1
+            return True
+
+        _add_cand(deduped[0], enforce_table_cap=False)
+
+        slots_per_q = 3 if (top_k >= 16 and len(clean_queries) <= 5) else 2
+        for pass_num in range(slots_per_q):
+            for q_idx in sorted(per_query_hashes.keys()):
+                if len(selected) >= top_k:
+                    break
+                covered = sum(
+                    1 for s in selected if q_idx in ((s.metadata or {}).get("matched_subqueries") or [])
+                )
+                if covered > pass_num:
+                    continue
+                for chash in per_query_hashes[q_idx]:
+                    cand = by_hash.get(chash)
+                    if cand is not None and _add_cand(cand, enforce_table_cap=True):
+                        break
+
+        for cand in deduped:
+            if len(selected) >= top_k:
+                break
+            _add_cand(cand, enforce_table_cap=True)
+
+        if len(selected) < min(4, top_k):
+            for cand in deduped:
+                if len(selected) >= min(4, top_k):
+                    break
+                _add_cand(cand, enforce_table_cap=False)
+
+        # Sibling-topic diversity check so parallel/updated editions both reach Stage 3 Reranker
+        if doc_id_filter is None and unit_id_filter is None and len(selected) >= 2:
+            present_docs = {h.doc_id for h in selected if h.doc_id}
+            seed_docs: list[str] = []
+            for h in selected[:6]:
+                if h.doc_id and h.doc_id not in seed_docs and not self._effective_table_bucket_key(h):
+                    seed_docs.append(h.doc_id)
+            ref_idx = 1 if len(clean_queries) > 1 else 0
+            ref_dense = dense_vecs[ref_idx]
+            ref_sparse, ref_toks = self.embedder.sparse.encode_with_tokens(
+                self._expand_query_for_retrieval(clean_queries[ref_idx])
+            )
+            ref_norm = clean_queries[ref_idx].lower().replace("ё", "е")
+            for s_doc_id in seed_docs[:2]:
+                for sib in self._find_sibling_topic_docs(s_doc_id):
+                    if sib.doc_id in present_docs:
+                        continue
+                    sib_hit = next(
+                        (h for h in deduped if h.doc_id == sib.doc_id and h.chunk_id not in excluded),
+                        None,
+                    )
+                    if sib_hit is None:
+                        raw_sib = self.qdrant.hybrid_search(
+                            query_dense=ref_dense,
+                            query_sparse=ref_sparse,
+                            top_k=2,
+                            doc_id_filter=sib.doc_id,
+                            exclude_zones=NON_ANSWER_ZONES,
+                        )
+                        for r_pt in raw_sib:
+                            cand_sib = self._raw_point_to_hit(
+                                r_pt,
+                                query_norm=ref_norm,
+                                query_tokens_set=shared_tokens_set | set(ref_toks),
+                                include_parent=include_parent,
+                            )
+                            if cand_sib.chunk_id not in excluded:
+                                sib_hit = cand_sib
+                                break
+                    if sib_hit is not None:
+                        selected = self._insert_co_surfaced_hit(selected, sib_hit, top_k=top_k, insert_front=False)
+                        present_docs.add(sib.doc_id)
+
+        selected.sort(key=lambda h: (h.score, h.rrf_score, h.dense_score), reverse=True)
+        selected = selected[:top_k]
+        linked_tables = self._apply_adaptive_table_routing(hits=selected, amendment_chunks=[], is_oos=False)
+        return selected, linked_tables
+
     def build_chatbot_context(
         self,
         request: ChatbotContextRequest | dict[str, Any] | str,
@@ -3497,11 +3699,9 @@ class SearchService:
     ) -> ChatbotContextResponse:
         """
         Build a complete, zero-leakage, single-call RAG context package for a raw user question:
-        1) Multi-aspect syntactic query decomposition + Hybrid RRF + Sub-query slot guarantee + Edition graph
-        2) Structural Graph & Neighbor Expansion (gap bridging, segmented-section ±1 windowing,
-           appendix cross-reference follower, and dominant-regulation BM25 secondary sweep)
-        3) Automatic deterministic `StructuredTableStore` hydration (`table_context`)
-        4) Richly cited `formatted_context` (`[Документ | Зарег. в ЭДО | Раздел | Пункт | Стр.]` + `clause_page_map`)
+        - When `use_reranker=True` (default) and Polza LLM is configured, executes the 4-stage AI Query Rewriter ->
+          Hybrid Candidate Retrieval -> AI Reranker (+ Conditional Follow-up) -> Verified Context pipeline.
+        - Otherwise falls back deterministically to syntactic decomposition + structural graph expansion.
         """
         t0 = time.perf_counter()
         if isinstance(request, str):
@@ -3523,6 +3723,87 @@ class SearchService:
                 latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
             )
 
+        from src.config import settings as _app_settings
+
+        if req.use_reranker and bool(_app_settings.llm_api_key):
+            from src.retrieval.query_pipeline import get_query_pipeline
+
+            qp = get_query_pipeline(search_service=self)
+            run_res = qp.run(query=raw_query, top_k=req.top_k)
+            v_resp = run_res.search_response
+            if not run_res.trace.used_fallback:
+                if v_resp.query_intent == "meta_assistant":
+                    meta_msg = (
+                        "Я нахожу ответы по загруженным в базу документам и таблицам, привожу дословные "
+                        "проверенные цитаты с указанием документа, пункта и страницы, а также помогаю "
+                        "фильтровать и считать данные по таблицам Excel и Word. Новые файлы (PDF, DOCX, DOC, XLSX, XLS) "
+                        "можно добавить во вкладке «База знаний»."
+                    )
+                    return ChatbotContextResponse(
+                        query=raw_query,
+                        sub_queries=[],
+                        is_out_of_scope=False,
+                        confidence_score=1.0,
+                        hits=[],
+                        formatted_context=meta_msg,
+                        retrieved_chunk_ids=[],
+                        latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                        pipeline_trace=run_res.trace,
+                    )
+                if v_resp.is_out_of_scope or not v_resp.hits:
+                    oos_msg = (
+                        "В загруженной базе документов нет сведений по этому вопросу. "
+                        "Я могу отвечать только по тем документам и таблицам, которые добавлены в базу знаний — "
+                        "при необходимости нужный файл можно загрузить во вкладке «База знаний»."
+                    )
+                    return ChatbotContextResponse(
+                        query=raw_query,
+                        sub_queries=v_resp.sub_queries,
+                        is_out_of_scope=True,
+                        confidence_score=v_resp.confidence_score,
+                        hits=[],
+                        formatted_context=oos_msg,
+                        retrieved_chunk_ids=[],
+                        latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                        pipeline_trace=run_res.trace,
+                    )
+
+                linked_tables = v_resp.linked_tables if req.include_tables else []
+                table_context = v_resp.table_context if req.include_tables else []
+                retrieved_ids: list[str] = []
+                for h in list(v_resp.hits) + list(v_resp.amendment_chunks):
+                    if h.chunk_id and h.chunk_id not in retrieved_ids:
+                        retrieved_ids.append(h.chunk_id)
+
+                formatted_context = self._render_formatted_chatbot_context(
+                    query=raw_query,
+                    sub_queries=v_resp.sub_queries,
+                    hits=v_resp.hits,
+                    parent_sections=v_resp.parent_sections,
+                    amendment_chunks=v_resp.amendment_chunks,
+                    version_alerts=v_resp.version_alerts,
+                    quality_alerts=v_resp.quality_alerts,
+                    linked_tables=linked_tables,
+                    table_context=table_context,
+                )
+                return ChatbotContextResponse(
+                    query=raw_query,
+                    sub_queries=v_resp.sub_queries,
+                    is_out_of_scope=False,
+                    confidence_score=v_resp.confidence_score,
+                    hits=v_resp.hits,
+                    parent_sections=v_resp.parent_sections,
+                    amendment_chunks=v_resp.amendment_chunks,
+                    version_alerts=v_resp.version_alerts,
+                    quality_alerts=v_resp.quality_alerts,
+                    linked_tables=linked_tables,
+                    table_context=table_context,
+                    formatted_context=formatted_context,
+                    retrieved_chunk_ids=retrieved_ids,
+                    latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                    pipeline_trace=run_res.trace,
+                )
+
         base_resp = self.search(
             SearchQuery(
                 query=raw_query,
@@ -3535,17 +3816,18 @@ class SearchService:
 
         if base_resp.is_out_of_scope:
             oos_msg = (
-                f"Запрос выходит за рамки корпуса нормативных документов "
-                f"(is_out_of_scope=True, confidence={base_resp.confidence_score:.2f})."
+                "В загруженной базе документов нет сведений по этому вопросу. "
+                "Я могу отвечать только по тем документам и таблицам, которые добавлены в базу знаний — "
+                "при необходимости нужный файл можно загрузить во вкладке «База знаний»."
             )
             return ChatbotContextResponse(
                 query=raw_query,
                 sub_queries=base_resp.sub_queries,
                 is_out_of_scope=True,
                 confidence_score=base_resp.confidence_score,
-                hits=base_resp.hits,
+                hits=[],
                 formatted_context=oos_msg,
-                retrieved_chunk_ids=[h.chunk_id for h in base_resp.hits if h.chunk_id],
+                retrieved_chunk_ids=[],
                 latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
             )
 

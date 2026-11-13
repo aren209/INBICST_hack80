@@ -647,6 +647,8 @@ class TestTableAwareRAGAgentLoop:
         assert response.used_table_tools is False
         assert len(response.tool_calls) == 0
         assert response.model_used == "out_of_scope_guard"
-        assert "выходит за рамки корпуса нормативных документов МФТИ" in response.answer
+        assert "в загруженной базе документов нет сведений" in response.answer.lower()
+        assert "база знаний" in response.answer.lower()
+        assert "confidence" not in response.answer.lower()
         # Zero calls to LLM chat completion
         assert mock_llm_client.chat.completions.create.call_count == 0

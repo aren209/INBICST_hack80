@@ -422,15 +422,89 @@ class SearchHit(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RewrittenQueryPlan(BaseModel):
+    """Stage 1 output: AI-rewritten normative search queries with original-query recall preservation."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    raw_query: str = ""
+    query_intent: str = "document_lookup"  # "document_lookup" | "meta_assistant"
+    rewritten_primary: str = ""
+    sub_queries: list[str] = Field(default_factory=list)
+    search_queries: list[str] = Field(default_factory=list)
+    reasoning: str = ""
+    used_fallback: bool = False
+    latency_ms: float = 0.0
+
+
+class ChunkRerankVerdict(BaseModel):
+    """Per-chunk AI relevance score and verdict produced in Stage 3."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    chunk_id: str
+    doc_id: str = ""
+    score: float = 0.0
+    verdict: str = "irrelevant"  # "essential" (>=0.68), "supporting" (0.45..0.67), "irrelevant" (<0.45)
+    reason: str = ""
+    round_idx: int = 1
+
+
+class RerankVerificationResult(BaseModel):
+    """Stage 3 AI Reranker & Aspect Completeness Verifier output for a candidate batch."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    verdicts: list[ChunkRerankVerdict] = Field(default_factory=list)
+    all_irrelevant_out_of_scope: bool = False
+    needs_followup: bool = False
+    missing_aspects: list[str] = Field(default_factory=list)
+    followup_queries: list[str] = Field(default_factory=list)
+    used_fallback: bool = False
+    latency_ms: float = 0.0
+
+
+class QueryPipelineTrace(BaseModel):
+    """End-to-end observability trace for the 4-stage AI Retrieval Pipeline."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    enabled: bool = True
+    raw_query: str = ""
+    query_intent: str = "document_lookup"
+    rewritten_primary: str = ""
+    sub_queries: list[str] = Field(default_factory=list)
+    search_queries_executed: list[str] = Field(default_factory=list)
+    initial_candidates_count: int = 0
+    followup_rounds: int = 0
+    followup_queries_executed: list[str] = Field(default_factory=list)
+    followup_candidates_added: int = 0
+    kept_chunks_count: int = 0
+    dropped_chunks_count: int = 0
+    kept_doc_ids: list[str] = Field(default_factory=list)
+    pruned_doc_ids: list[str] = Field(default_factory=list)
+    all_irrelevant_out_of_scope: bool = False
+    borderline_safety_net_used: bool = False
+    used_fallback: bool = False
+    rewrite_latency_ms: float = 0.0
+    retrieval_latency_ms: float = 0.0
+    rerank_latency_ms: float = 0.0
+    followup_latency_ms: float = 0.0
+    total_latency_ms: float = 0.0
+    verdicts: list[ChunkRerankVerdict] = Field(default_factory=list)
+
+
 class SearchResponse(BaseModel):
     """Full response returned by Hybrid Search Service and POST /api/search."""
 
     model_config = ConfigDict(use_enum_values=True, extra="allow")
 
     query: str = ""
+    query_intent: str = "document_lookup"
     expanded_query: str = ""
     sub_queries: list[str] = Field(default_factory=list)
     hits: list[SearchHit] = Field(default_factory=list)
+    parent_sections: list[ParentSectionRecord] = Field(default_factory=list)
     amendment_chunks: list[SearchHit] = Field(default_factory=list)
     linked_tables: list[TablePassport] = Field(default_factory=list)
     table_context: list[TableQueryResponse] = Field(default_factory=list)
@@ -442,6 +516,7 @@ class SearchResponse(BaseModel):
     lexical_overlap: float = 0.0
     total_found: int = 0
     latency_ms: float = 0.0
+    pipeline_trace: QueryPipelineTrace | None = None
 
 
 class ChatbotContextRequest(BaseModel):
@@ -452,6 +527,7 @@ class ChatbotContextRequest(BaseModel):
     query: str
     top_k: int = Field(default=12, ge=1, le=50)
     include_tables: bool = True
+    use_reranker: bool = True
 
 
 class ChatbotContextResponse(BaseModel):
@@ -473,6 +549,7 @@ class ChatbotContextResponse(BaseModel):
     formatted_context: str = ""
     retrieved_chunk_ids: list[str] = Field(default_factory=list)
     latency_ms: float = 0.0
+    pipeline_trace: QueryPipelineTrace | None = None
 
 
 class ToolCallTrace(BaseModel):
@@ -501,6 +578,8 @@ class AgentAskRequest(BaseModel):
     enable_table_tools: bool = True
     max_tool_rounds: int = Field(default=4, ge=0, le=10)
     model: str | None = None
+    use_reranker: bool = True
+    enable_query_pipeline: bool | None = None
 
 
 class AgentAskResponse(BaseModel):
@@ -516,6 +595,65 @@ class AgentAskResponse(BaseModel):
     search_response: SearchResponse | None = None
     linked_tables: list[TablePassport] = Field(default_factory=list)
     latency_ms: float = 0.0
+    # Verbatim quotes parsed from `answer` ({text, source_title, doc_number, clause, page, page_num, doc_id, verified,
+    # matched_doc_id, clause_text, clause_highlights, source_label, ...}); source fields come from the matched chunk metadata
+    quotes: list[dict[str, Any]] = Field(default_factory=list)
+    pipeline_trace: QueryPipelineTrace | None = None
+
+
+class DocumentViewerHighlight(BaseModel):
+    """Normalized [0..1] bounding box highlight on a rendered PDF page."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class DocumentViewerBlock(BaseModel):
+    """Structured content block for Word/Excel pages in the side-by-side Document Viewer."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    type: str = "paragraph"
+    text: str = ""
+    clause_no: str = ""
+    headers: list[str] = Field(default_factory=list)
+    rows: list[list[str]] = Field(default_factory=list)
+
+
+class DocumentViewerPage(BaseModel):
+    """Single page or sheet representation in GET /api/documents/{doc_id}/view."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    page_number: int
+    label: str
+    image_url: str | None = None
+    width: float | None = None
+    height: float | None = None
+    highlights: list[DocumentViewerHighlight] = Field(default_factory=list)
+    blocks: list[DocumentViewerBlock] = Field(default_factory=list)
+
+
+class DocumentViewerResponse(BaseModel):
+    """Response contract for GET /api/documents/{doc_id}/view."""
+
+    model_config = ConfigDict(use_enum_values=True, extra="allow")
+
+    doc_id: str
+    file_name: str = ""
+    title: str = ""
+    doc_number: str = ""
+    doc_date: str = ""
+    format: str = ""
+    total_pages: int = 1
+    target_page: int = 1
+    matched_quote_on_page: bool = False
+    download_url: str = ""
+    pages: list[DocumentViewerPage] = Field(default_factory=list)
 
 
 class IndexingFileStatus(BaseModel):

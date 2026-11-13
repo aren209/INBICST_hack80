@@ -23,6 +23,7 @@ from src.config import (
     REGISTRY_OVERRIDES_PATH,
     SECTIONS_STORE_PATH,
     STATUS_RU_MAP,
+    SUPPORTED_EXTENSIONS,
     TABLES_DB_PATH,
     UPLOADS_DIR,
     settings,
@@ -50,8 +51,6 @@ from src.schemas import (
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[dict[str, Any]], None]
-
-SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx", ".xlsx"})
 
 
 def _utc_now_iso() -> str:
@@ -977,7 +976,7 @@ class IndexingPipeline:
             upserted_tables = self.table_store.upsert_document_tables(doc_meta, blocks, chunks=chunks)
             doc_meta.tables_count = len(upserted_tables)
             for ch in chunks:
-                if not ch.table_id and len(upserted_tables) == 1 and doc_meta.file_format == "xlsx":
+                if not ch.table_id and len(upserted_tables) == 1 and doc_meta.file_format in {"xlsx", "xls", "xlsm"}:
                     if ch.zone not in {ZoneType.APPROVAL.value, ZoneType.META.value}:
                         ch.table_id = upserted_tables[0].table_id
                 if ch.table_id:
@@ -1828,7 +1827,7 @@ class IndexingPipeline:
                                 continue
                             sc_hash = sc.content_hash or compute_content_hash(sc.clean_text)
                             matched_tid = tid_by_hash.get(sc_hash, "")
-                            if not matched_tid and len(passports) == 1 and doc_meta.file_format == "xlsx":
+                            if not matched_tid and len(passports) == 1 and doc_meta.file_format in {"xlsx", "xls", "xlsm"}:
                                 if sc.zone not in {ZoneType.APPROVAL.value, ZoneType.META.value}:
                                     matched_tid = passports[0].table_id
                             if matched_tid:
@@ -1912,14 +1911,28 @@ class IndexingPipeline:
         """Return comprehensive health status for GET /api/health."""
         qdrant_health = self.qdrant.check_health()
         polza_health = self.embedder.check_health()
+        llm_health = {
+            "provider": settings.llm_provider,
+            "configured": bool(settings.llm_api_key),
+            "base_url": settings.llm_base_url,
+            "model": settings.llm_model,
+        }
         structured_tables_count = (
             self.table_store.count_tables() if self._has_active_table_store() else 0
         )
-        overall_ok = bool(qdrant_health.get("connected")) and bool(polza_health.get("configured"))
+        overall_ok = (
+            bool(qdrant_health.get("connected"))
+            and bool(polza_health.get("configured"))
+            and bool(settings.llm_api_key)
+        )
         return {
             "status": "ok" if overall_ok else "degraded",
             "qdrant": qdrant_health,
             "polza_api": polza_health,
+            "llm": llm_health,
+            "llm_provider": settings.llm_provider,
+            "llm_model": settings.llm_model,
+            "supported_extensions": sorted(SUPPORTED_EXTENSIONS),
             "registry_docs_count": len(self.registry),
             "sections_count": len(self.sections_store),
             "structured_tables_count": structured_tables_count,

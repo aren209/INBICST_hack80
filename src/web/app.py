@@ -19,19 +19,27 @@ from datetime import datetime, timezone
 import inspect
 import json
 import logging
+import re
+import threading
 from pathlib import Path
 from typing import Any, Optional
+import urllib.parse
 import uuid
+import warnings
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from src.config import DOCS_DIR, UPLOADS_DIR, settings
+import pymupdf as fitz
+
+from src.config import CLAUSE_NUMBER_RE, DOCS_DIR, OCR_CACHE_DIR, SUPPORTED_EXTENSIONS, UPLOADS_DIR, settings
 from src.indexing.pipeline import IndexingPipeline, get_pipeline
 from src.indexing.table_store import get_table_store
+from src.ingestion.parsers import parse_document
+from src.retrieval.quote_verifier import clean_clause
 from src.retrieval.search_service import get_search_service
 from src.schemas import (
     AgentAskRequest,
@@ -41,6 +49,10 @@ from src.schemas import (
     ChunkRecord,
     DocumentMeta,
     DocumentStatus,
+    DocumentViewerBlock,
+    DocumentViewerHighlight,
+    DocumentViewerPage,
+    DocumentViewerResponse,
     IndexingFileStatus,
     IndexingReport,
     ParentSectionRecord,
@@ -311,11 +323,21 @@ async def get_health():
             health_info["structured_tables_count"] = 0
 
     health_info["tables_count"] = int(health_info.get("structured_tables_count") or 0)
+    health_info.setdefault(
+        "llm",
+        {
+            "provider": settings.llm_provider,
+            "configured": bool(settings.llm_api_key),
+            "base_url": settings.llm_base_url,
+            "model": settings.llm_model,
+        },
+    )
+    health_info["llm_provider"] = settings.llm_provider
+    health_info["llm_model"] = settings.llm_model
+    health_info.setdefault("supported_extensions", sorted(SUPPORTED_EXTENSIONS))
     if isinstance(health_info.get("polza_api"), dict):
-        health_info["polza_api"].setdefault(
-            "llm_model",
-            getattr(settings, "POLZA_LLM_MODEL", "openai/gpt-4o-mini"),
-        )
+        health_info["polza_api"]["llm_model"] = settings.llm_model
+        health_info["polza_api"]["llm_provider"] = settings.llm_provider
     health_info["timestamp"] = datetime.now(timezone.utc).isoformat()
     health_info["docs_dir"] = str(DOCS_DIR)
     health_info["uploads_dir"] = str(UPLOADS_DIR)
@@ -346,6 +368,13 @@ async def upload_documents(
         if not upload.filename:
             continue
         safe_filename = Path(upload.filename).name
+        ext = Path(safe_filename).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            allowed_str = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Неподдерживаемый формат файла '{safe_filename}'. Допустимые форматы: {allowed_str}",
+            )
         dest_path = UPLOADS_DIR / safe_filename
         content = await upload.read()
         dest_path.write_bytes(content)
@@ -666,6 +695,952 @@ async def get_document_chunks(doc_id: str):
         "sections": [s.model_dump() if hasattr(s, "model_dump") else s for s in sections],
         "chunks": [c.model_dump() if hasattr(c, "model_dump") else c for c in chunks],
     }
+
+
+# -----------------------------------------------------------------------------
+# Side-by-Side Document Viewer Endpoints (/file, /pages/{n}.png, /view)
+# -----------------------------------------------------------------------------
+
+_VIEWER_MAX_EXCEL_ROWS: int = 250
+
+_DOCUMENT_MIME_TYPES: dict[str, str] = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ".xls": "application/vnd.ms-excel",
+}
+
+
+def _resolve_document_file(
+    pipeline: IndexingPipeline,
+    doc_id: str,
+    require_disk_file: bool = True,
+) -> tuple[DocumentMeta, Optional[Path]]:
+    """Locate `DocumentMeta` and its physical file on disk across `file_path`, `DOCS_DIR`, and `UPLOADS_DIR`."""
+    doc_meta = pipeline.get_document(doc_id)
+    if doc_meta is None:
+        raise HTTPException(status_code=404, detail=f"Документ '{doc_id}' не найден в реестре")
+
+    candidates: list[Path] = []
+    if doc_meta.file_path:
+        candidates.append(Path(doc_meta.file_path))
+    if doc_meta.file_name:
+        candidates.append(DOCS_DIR / doc_meta.file_name)
+        candidates.append(UPLOADS_DIR / doc_meta.file_name)
+
+    target_path: Optional[Path] = None
+    for cand in candidates:
+        if cand.exists() and cand.is_file():
+            target_path = cand.resolve()
+            break
+
+    if require_disk_file and target_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Исходный файл для документа '{doc_id}' ({doc_meta.file_name}) не найден на диске",
+        )
+    return doc_meta, target_path
+
+
+def _norm_viewer_text(text: str) -> str:
+    """Normalize Russian text (`ё -> е`, lowercase, single spaces) for tolerant viewer quote matching."""
+    if not text:
+        return ""
+    s = text.lower().replace("ё", "е").replace("\u00a0", " ")
+    s = re.sub(r"[«»\"'„“”`]+", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _tokenize_viewer_words(text: str) -> list[str]:
+    """Extract normalized alphanumeric words (`ё -> е`, lowercase) for word-sequence alignment."""
+    if not text:
+        return []
+    return re.findall(r"[0-9a-zа-я]+", text.lower().replace("ё", "е"))
+
+
+def _split_quote_segments(quote: str) -> list[str]:
+    """Split a quote containing `…` or `...` ellipsis into clean contiguous segments."""
+    raw = (quote or "").strip().strip("«»\"'„“” ")
+    if not raw:
+        return []
+    parts = [p.strip() for p in re.split(r"(?:…|\.{3,})", raw) if p and p.strip()]
+    return [p for p in parts if len(p) >= 6] or ([raw] if len(raw) >= 3 else [])
+
+
+def _priority_page_order(total_pages: int, requested_page: Optional[int]) -> list[int]:
+    """Order pages starting with `requested_page`, then immediate neighbors `±1, ±2`, then remaining pages."""
+    if total_pages <= 0:
+        return [1]
+    all_pages = list(range(1, total_pages + 1))
+    if requested_page is None or not (1 <= requested_page <= total_pages):
+        return all_pages
+    ordered: list[int] = [requested_page]
+    for delta in (1, 2, 3):
+        for cand in (requested_page - delta, requested_page + delta):
+            if 1 <= cand <= total_pages and cand not in ordered:
+                ordered.append(cand)
+    for p in all_pages:
+        if p not in ordered:
+            ordered.append(p)
+    return ordered
+
+
+def _merge_line_rects_normalized(
+    raw_rects: list[tuple[float, float, float, float]],
+    page_w: float,
+    page_h: float,
+) -> list[DocumentViewerHighlight]:
+    """Merge horizontal word/anchor bboxes on the same line into crisp normalized `[0..1]` bands."""
+    if not raw_rects or page_w <= 0 or page_h <= 0:
+        return []
+
+    sorted_rects = sorted(raw_rects, key=lambda r: (round(r[1], 1), r[0]))
+    merged: list[list[float]] = []
+    for x0, y0, x1, y1 in sorted_rects:
+        if x1 <= x0 or y1 <= y0:
+            continue
+        if merged:
+            prev = merged[-1]
+            prev_mid_y = 0.5 * (prev[1] + prev[3])
+            cur_mid_y = 0.5 * (y0 + y1)
+            max_h = max(prev[3] - prev[1], y1 - y0, 1.0)
+            # Same visual text line if vertical centers align within 55% of line height
+            if abs(cur_mid_y - prev_mid_y) <= 0.55 * max_h and x0 <= prev[2] + 28.0:
+                prev[0] = min(prev[0], x0)
+                prev[1] = min(prev[1], y0)
+                prev[2] = max(prev[2], x1)
+                prev[3] = max(prev[3], y1)
+                continue
+        merged.append([x0, y0, x1, y1])
+
+    out: list[DocumentViewerHighlight] = []
+    for x0, y0, x1, y1 in merged[:40]:
+        nx = max(0.0, min(1.0, x0 / page_w))
+        ny = max(0.0, min(1.0, y0 / page_h))
+        nw = max(0.005, min(1.0 - nx, (x1 - x0) / page_w))
+        nh = max(0.005, min(1.0 - ny, (y1 - y0) / page_h))
+        out.append(
+            DocumentViewerHighlight(
+                x=round(nx, 5),
+                y=round(ny, 5),
+                w=round(nw, 5),
+                h=round(nh, 5),
+            )
+        )
+    return out
+
+
+def _find_pdf_quote_highlights_on_page(
+    fitz_page: Any,
+    quote_segments: list[str],
+) -> list[DocumentViewerHighlight]:
+    """
+    Locate normalized `[0..1]` highlight rectangles for `quote_segments` on `fitz_page`:
+    1) Exact word-sequence alignment over `fitz_page.get_text("words")` (handling hyphenated line wraps!).
+    2) Multi-anchor fallback via `fitz_page.search_for(...)` (4-7 word anchors from start/middle/end).
+    """
+    rect = fitz_page.rect
+    page_w = float(rect.width or 0.0)
+    page_h = float(rect.height or 0.0)
+    if page_w <= 0 or page_h <= 0 or not quote_segments:
+        return []
+
+    raw_words = fitz_page.get_text("words") or []
+    if raw_words:
+        # Build flat normalized word tokens; join hyphenated line-wrap pairs into virtual combined tokens
+        tokens: list[tuple[str, list[tuple[float, float, float, float]]]] = []
+        i = 0
+        n_w = len(raw_words)
+        while i < n_w:
+            w_item = raw_words[i]
+            x0, y0, x1, y1, w_str = float(w_item[0]), float(w_item[1]), float(w_item[2]), float(w_item[3]), str(w_item[4])
+            blk_no = int(w_item[5]) if len(w_item) > 5 else 0
+            ln_no = int(w_item[6]) if len(w_item) > 6 else 0
+
+            # Detect hyphenated wrap at end of line (e.g., "служеб-" + next line "ную")
+            if (
+                w_str.endswith(("-", "\xad"))
+                and len(w_str) >= 3
+                and i + 1 < n_w
+                and (int(raw_words[i + 1][6]) != ln_no or int(raw_words[i + 1][5]) != blk_no)
+            ):
+                nxt = raw_words[i + 1]
+                nxt_str = str(nxt[4])
+                nx0, ny0, nx1, ny1 = float(nxt[0]), float(nxt[1]), float(nxt[2]), float(nxt[3])
+                joined_toks = _tokenize_viewer_words(w_str[:-1] + nxt_str)
+                if len(joined_toks) == 1:
+                    tokens.append((joined_toks[0], [(x0, y0, x1, y1), (nx0, ny0, nx1, ny1)]))
+                    i += 2
+                    continue
+
+            sub_toks = _tokenize_viewer_words(w_str)
+            for st in sub_toks:
+                tokens.append((st, [(x0, y0, x1, y1)]))
+            i += 1
+
+        if tokens:
+            page_tok_strs = [t[0] for t in tokens]
+            matched_boxes: list[tuple[float, float, float, float]] = []
+
+            def _find_subseq(needle: list[str]) -> list[int]:
+                k = len(needle)
+                if k == 0 or k > len(page_tok_strs):
+                    return []
+                first_w = needle[0]
+                limit = len(page_tok_strs) - k + 1
+                for start_idx in range(limit):
+                    if page_tok_strs[start_idx] == first_w and page_tok_strs[start_idx : start_idx + k] == needle:
+                        return list(range(start_idx, start_idx + k))
+                return []
+
+            for seg in quote_segments:
+                seg_toks = _tokenize_viewer_words(seg)
+                if not seg_toks:
+                    continue
+                hit_indices = _find_subseq(seg_toks)
+                if not hit_indices and len(seg_toks) >= 6:
+                    # Try 5-word start, middle, and end anchors so minor middle punctuation/OCR diffs still highlight
+                    win = min(6, max(4, len(seg_toks) // 2))
+                    head_idx = _find_subseq(seg_toks[:win])
+                    tail_idx = _find_subseq(seg_toks[-win:])
+                    if head_idx and tail_idx and tail_idx[-1] >= head_idx[0] and (tail_idx[-1] - head_idx[0]) <= len(seg_toks) + 12:
+                        hit_indices = list(range(head_idx[0], tail_idx[-1] + 1))
+                    else:
+                        mid_start = len(seg_toks) // 2 - win // 2
+                        mid_idx = _find_subseq(seg_toks[mid_start : mid_start + win])
+                        hit_indices = head_idx + mid_idx + tail_idx
+
+                for idx in hit_indices:
+                    matched_boxes.extend(tokens[idx][1])
+
+            if matched_boxes:
+                return _merge_line_rects_normalized(matched_boxes, page_w, page_h)
+
+    # Stage 2 fallback: PyMuPDF `page.search_for(...)` on 4-7 word anchors
+    anchor_candidates: list[str] = []
+    for seg in quote_segments:
+        words = [w for w in re.split(r"\s+", seg.strip()) if w]
+        if not words:
+            continue
+        if len(words) <= 8:
+            anchor_candidates.append(" ".join(words))
+        else:
+            anchor_candidates.append(" ".join(words[:6]))
+            mid = len(words) // 2
+            anchor_candidates.append(" ".join(words[max(0, mid - 3) : mid + 3]))
+            anchor_candidates.append(" ".join(words[-6:]))
+
+    found_rects: list[tuple[float, float, float, float]] = []
+    for anchor in anchor_candidates:
+        clean_anchor = anchor.strip(" ,.;:«»\"'()[]")
+        if len(clean_anchor) < 8:
+            continue
+        try:
+            rects = fitz_page.search_for(clean_anchor) or []
+        except Exception:
+            rects = []
+        for r in rects[:8]:
+            found_rects.append((float(r.x0), float(r.y0), float(r.x1), float(r.y1)))
+
+    return _merge_line_rects_normalized(found_rects, page_w, page_h)
+
+
+def _find_pdf_clause_highlights_on_page(
+    fitz_page: Any,
+    clause_str: str,
+) -> list[DocumentViewerHighlight]:
+    """Locate normalized `[0..1]` highlight box for a clause number (e.g. `2.3`) when no quote was matched."""
+    cl = clean_clause(clause_str)
+    if not cl:
+        return []
+    rect = fitz_page.rect
+    page_w, page_h = float(rect.width or 0.0), float(rect.height or 0.0)
+    if page_w <= 0 or page_h <= 0:
+        return []
+    for probe in (f"{cl}. ", f"п. {cl}", cl):
+        try:
+            rects = fitz_page.search_for(probe) or []
+        except Exception:
+            rects = []
+        if rects:
+            r0 = rects[0]
+            return _merge_line_rects_normalized([(float(r0.x0), float(r0.y0), float(r0.x1), float(r0.y1))], page_w, page_h)
+    return []
+
+
+_SCANNED_OCR_CACHE_BY_FILE: Optional[dict[str, dict[int, str]]] = None
+
+
+def _get_cached_ocr_pages_for_file(file_name: str) -> dict[int, str]:
+    """Load per-page OCR text from `data/ocr_cache/*.json` keyed by `file_name -> {page_num: text}`."""
+    global _SCANNED_OCR_CACHE_BY_FILE
+    if _SCANNED_OCR_CACHE_BY_FILE is None:
+        index: dict[str, dict[int, str]] = {}
+        if OCR_CACHE_DIR.exists():
+            for jf in OCR_CACHE_DIR.glob("*.json"):
+                try:
+                    payload = json.loads(jf.read_text(encoding="utf-8"))
+                    fname = str(payload.get("file_name") or "").strip()
+                    p_num = int(payload.get("page_num") or 0)
+                    txt = str(payload.get("text") or "")
+                    if fname and p_num >= 1 and txt:
+                        index.setdefault(fname, {})[p_num] = txt
+                except Exception:
+                    continue
+        _SCANNED_OCR_CACHE_BY_FILE = index
+    return _SCANNED_OCR_CACHE_BY_FILE.get(file_name, {})
+
+
+def _first_valid_page_from_cpm(val: Any, total_pages: int) -> Optional[int]:
+    """Extract 1-based page int from `clause_page_map` entry (`int`, `str`, or `list[int]`)."""
+    cand: Any = val[0] if isinstance(val, (list, tuple)) and val else val
+    if isinstance(cand, int) and 1 <= cand <= total_pages:
+        return cand
+    if isinstance(cand, str) and cand.strip().isdigit():
+        p = int(cand.strip())
+        if 1 <= p <= total_pages:
+            return p
+    return None
+
+
+def _resolve_scanned_pdf_page_from_store(
+    pipeline: IndexingPipeline,
+    doc_id: str,
+    file_name: str,
+    total_pages: int,
+    requested_page: Optional[int],
+    quote_segments: list[str],
+    clause_str: str,
+) -> tuple[Optional[int], bool, list[DocumentViewerHighlight]]:
+    """
+    Resolve exact `target_page` AND proportional line-band highlight on OCR-scanned PDFs
+    using `data/ocr_cache` per-page OCR text and `sections_store` `clause_page_map`.
+    """
+    cl = clean_clause(clause_str)
+    norm_segs = [_norm_viewer_text(s) for s in quote_segments if len(_norm_viewer_text(s)) >= 8]
+
+    # 1. Check per-page OCR text in `data/ocr_cache` (gives exact page AND vertical line position!)
+    ocr_pages = _get_cached_ocr_pages_for_file(file_name)
+    if ocr_pages and (norm_segs or cl):
+        for cand_p in _priority_page_order(total_pages, requested_page):
+            p_txt = ocr_pages.get(cand_p, "")
+            if not p_txt:
+                continue
+            lines = [ln.strip() for ln in p_txt.splitlines() if ln.strip()]
+            if not lines:
+                continue
+            page_norm = _norm_viewer_text(p_txt)
+            matched_q = bool(norm_segs and any(ns[:36] in page_norm for ns in norm_segs))
+            matched_cl = bool(
+                not matched_q
+                and cl
+                and any(ln.startswith((f"{cl}.", f"{cl} ")) or f" {cl}." in ln for ln in lines)
+            )
+            if matched_q or matched_cl:
+                hit_line_indices: list[int] = []
+                q_words = {t for seg in quote_segments for t in _tokenize_viewer_words(seg) if len(t) >= 4}
+                for l_idx, ln in enumerate(lines):
+                    ln_norm = _norm_viewer_text(ln)
+                    if matched_q:
+                        if any(ns[:24] in ln_norm for ns in norm_segs) or (
+                            len(q_words) >= 2 and sum(1 for w in q_words if w in ln_norm) >= 2
+                        ):
+                            hit_line_indices.append(l_idx)
+                    elif cl and (ln.startswith((f"{cl}.", f"{cl} ")) or f" {cl}." in ln):
+                        hit_line_indices.append(l_idx)
+                        break
+
+                tot_l = max(len(lines), 1)
+                if hit_line_indices:
+                    first_l = min(hit_line_indices)
+                    last_l = min(max(hit_line_indices), first_l + 6)
+                    y_top = max(0.06, min(0.88, 0.08 + 0.80 * (first_l / tot_l)))
+                    y_bot = max(y_top + 0.032, min(0.94, 0.08 + 0.80 * ((last_l + 1.2) / tot_l)))
+                else:
+                    y_top, y_bot = 0.14, 0.20
+
+                hl = [
+                    DocumentViewerHighlight(
+                        x=0.08,
+                        y=round(y_top, 4),
+                        w=0.84,
+                        h=round(y_bot - y_top, 4),
+                    )
+                ]
+                return cand_p, matched_q, hl
+
+    # 2. Fallback to `sections_store` + `clause_page_map` (handles list[int] values!)
+    sections = [
+        sec for sec in pipeline.sections_store.values()
+        if getattr(sec, "doc_id", "") == doc_id
+    ]
+    for sec in sections:
+        cpm = (sec.metadata or {}).get("clause_page_map") or {}
+        sec_norm = _norm_viewer_text(sec.clean_text or "")
+        if norm_segs and any(ns in sec_norm for ns in norm_segs):
+            if cl:
+                p_cpm = _first_valid_page_from_cpm(cpm.get(cl), total_pages)
+                if p_cpm is not None:
+                    return p_cpm, True, [DocumentViewerHighlight(x=0.08, y=0.15, w=0.84, h=0.06)]
+            for line in (sec.clean_text or "").split("\n"):
+                ln_norm = _norm_viewer_text(line)
+                if any(ns[:28] in ln_norm for ns in norm_segs):
+                    m_cl = CLAUSE_NUMBER_RE.match(line.strip())
+                    if m_cl:
+                        p_cpm = _first_valid_page_from_cpm(cpm.get(m_cl.group(1)), total_pages)
+                        if p_cpm is not None:
+                            return p_cpm, True, [DocumentViewerHighlight(x=0.08, y=0.15, w=0.84, h=0.06)]
+            if sec.page_numbers:
+                p = int(sec.page_numbers[0])
+                if 1 <= p <= total_pages:
+                    return p, True, [DocumentViewerHighlight(x=0.08, y=0.15, w=0.84, h=0.06)]
+
+    if cl:
+        for sec in sections:
+            cpm = (sec.metadata or {}).get("clause_page_map") or {}
+            p_cpm = _first_valid_page_from_cpm(cpm.get(cl), total_pages)
+            if p_cpm is not None:
+                return p_cpm, False, [DocumentViewerHighlight(x=0.08, y=0.15, w=0.84, h=0.05)]
+
+    return None, False, []
+
+
+def _slice_rows_around_quote(
+    rows: list[list[str]],
+    quote_segments: list[str],
+    max_rows: int = _VIEWER_MAX_EXCEL_ROWS,
+) -> tuple[list[list[str]], bool]:
+    """
+    Cap huge Excel/Word table previews at `max_rows`, centering the window around the first row
+    matching `quote_segments` so quoted cells are ALWAYS present in the viewer response!
+    """
+    norm_segs = [_norm_viewer_text(s) for s in quote_segments if _norm_viewer_text(s)]
+    quote_toks = [t for seg in quote_segments for t in _tokenize_viewer_words(seg) if len(t) >= 4]
+    matched_idx: Optional[int] = None
+
+    if norm_segs or quote_toks:
+        best_overlap = 0
+        for r_idx, row in enumerate(rows):
+            row_norm = _norm_viewer_text(" ".join(str(c or "") for c in row))
+            if not row_norm:
+                continue
+            if any(ns in row_norm for ns in norm_segs if len(ns) >= 6):
+                matched_idx = r_idx
+                break
+            if quote_toks:
+                ov = sum(1 for qt in set(quote_toks) if qt in row_norm)
+                if ov >= max(2, int(len(set(quote_toks)) * 0.6)) and ov > best_overlap:
+                    best_overlap = ov
+                    matched_idx = r_idx
+
+    if len(rows) <= max_rows:
+        return [list(r) for r in rows], (matched_idx is not None)
+
+    if matched_idx is not None:
+        half = max_rows // 2
+        start = max(0, min(matched_idx - half, len(rows) - max_rows))
+        return [list(r) for r in rows[start : start + max_rows]], True
+
+    return [list(r) for r in rows[:max_rows]], False
+
+
+def _extract_block_clause_no(text: str) -> str:
+    """Extract leading normative clause number (`2.3`, `1.1.4`) from a block's text if present."""
+    if not text:
+        return ""
+    first_line = text.lstrip().split("\n", 1)[0]
+    m = CLAUSE_NUMBER_RE.match(first_line)
+    if not m:
+        return ""
+    cand = m.group(1).strip(".")
+    # Guard against bare years like "2026."
+    if cand.isdigit() and int(cand) > 99:
+        return ""
+    return cand
+
+
+def _block_matches_quote_or_clause(
+    blk: DocumentViewerBlock,
+    quote_segments: list[str],
+    clause_str: str,
+) -> tuple[bool, bool]:
+    """Return `(matched_quote, matched_clause)` for a `DocumentViewerBlock`."""
+    hay_parts = [blk.text or ""]
+    if blk.headers:
+        hay_parts.append(" ".join(blk.headers))
+    for r in blk.rows:
+        hay_parts.append(" ".join(r))
+    hay_norm = _norm_viewer_text(" ".join(hay_parts))
+
+    matched_q = False
+    if quote_segments and hay_norm:
+        norm_segs = [_norm_viewer_text(s) for s in quote_segments if _norm_viewer_text(s)]
+        if any(ns in hay_norm for ns in norm_segs if len(ns) >= 8):
+            matched_q = True
+        else:
+            q_toks = {t for seg in quote_segments for t in _tokenize_viewer_words(seg) if len(t) >= 4}
+            if len(q_toks) >= 2:
+                hit_cnt = sum(1 for t in q_toks if t in hay_norm)
+                if hit_cnt >= max(2, int(len(q_toks) * 0.75)):
+                    matched_q = True
+
+    cl = clean_clause(clause_str)
+    matched_cl = False
+    if cl:
+        if blk.clause_no and clean_clause(blk.clause_no) == cl:
+            matched_cl = True
+        elif hay_norm.startswith(f"{cl.lower()} ") or f" {cl.lower()}. " in f" {hay_norm} ":
+            matched_cl = True
+
+    return matched_q, matched_cl
+
+
+def _build_document_view_sync(
+    pipeline: IndexingPipeline,
+    doc_id: str,
+    page: Optional[int],
+    quote: Optional[str],
+    clause: Optional[str],
+) -> DocumentViewerResponse:
+    """Synchronous builder for `GET /api/documents/{doc_id}/view` across PDF, DOCX, DOC, XLSX, and XLS."""
+    doc_meta, target_path = _resolve_document_file(pipeline, doc_id, require_disk_file=False)
+    ext = (
+        target_path.suffix.lower().lstrip(".")
+        if target_path is not None and target_path.suffix
+        else (doc_meta.file_format or "").lower().lstrip(".")
+    )
+    fmt = "xlsx" if ext == "xlsm" else ext
+    encoded_doc_id = urllib.parse.quote(doc_id, safe="")
+    download_url = f"/api/documents/{encoded_doc_id}/file"
+    quote_segments = _split_quote_segments(quote or "")
+    cl_clean = clean_clause(clause or "")
+
+    # 1. PDF Document Viewer (exact rendered PNG dimensions + normalized [0..1] quote highlight overlays)
+    if fmt == "pdf":
+        if target_path is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"PDF-файл для документа '{doc_id}' не найден на диске",
+            )
+        pdf_doc = fitz.open(str(target_path))
+        try:
+            total_pages = max(1, len(pdf_doc))
+            pages_out: list[DocumentViewerPage] = []
+            for p_num in range(1, total_pages + 1):
+                p_rect = pdf_doc[p_num - 1].rect
+                pages_out.append(
+                    DocumentViewerPage(
+                        page_number=p_num,
+                        label=f"Стр. {p_num}",
+                        image_url=f"/api/documents/{encoded_doc_id}/pages/{p_num}.png",
+                        width=round(float(p_rect.width), 1),
+                        height=round(float(p_rect.height), 1),
+                        highlights=[],
+                        blocks=[],
+                    )
+                )
+
+            target_page = max(1, min(total_pages, int(page))) if page is not None else 1
+            matched_quote_on_page = False
+            search_order = _priority_page_order(total_pages, page)
+
+            if quote_segments:
+                for cand_p in search_order:
+                    hl = _find_pdf_quote_highlights_on_page(pdf_doc[cand_p - 1], quote_segments)
+                    if hl:
+                        pages_out[cand_p - 1].highlights = hl
+                        target_page = cand_p
+                        matched_quote_on_page = True
+                        break
+
+            if not matched_quote_on_page and cl_clean:
+                for cand_p in search_order:
+                    cl_hl = _find_pdf_clause_highlights_on_page(pdf_doc[cand_p - 1], cl_clean)
+                    if cl_hl:
+                        pages_out[cand_p - 1].highlights = cl_hl
+                        target_page = cand_p
+                        break
+
+            # Scanned OCR PDF fallback (when native PDF page has 0 selectable glyphs)
+            if not matched_quote_on_page and (quote_segments or cl_clean):
+                store_p, store_matched_q, store_hl = _resolve_scanned_pdf_page_from_store(
+                    pipeline=pipeline,
+                    doc_id=doc_id,
+                    file_name=doc_meta.file_name,
+                    total_pages=total_pages,
+                    requested_page=page,
+                    quote_segments=quote_segments,
+                    clause_str=cl_clean,
+                )
+                if store_p is not None:
+                    target_page = store_p
+                    if store_hl and not pages_out[store_p - 1].highlights:
+                        pages_out[store_p - 1].highlights = store_hl
+                    if store_matched_q:
+                        matched_quote_on_page = True
+
+            return DocumentViewerResponse(
+                doc_id=doc_id,
+                file_name=doc_meta.file_name,
+                title=doc_meta.title or doc_meta.file_name,
+                doc_number=doc_meta.doc_number,
+                doc_date=doc_meta.doc_date,
+                format="pdf",
+                total_pages=total_pages,
+                target_page=target_page,
+                matched_quote_on_page=matched_quote_on_page,
+                download_url=download_url,
+                pages=pages_out,
+            )
+        finally:
+            pdf_doc.close()
+
+    # 2. Excel Workbooks (.xlsx / .xls): one viewer page per worksheet
+    if fmt in {"xlsx", "xls"}:
+        pages_out = []
+        quote_matched_sheet: Optional[int] = None
+
+        # Fast path via StructuredTableStore when sheets are already indexed in SQLite
+        passports = _list_structured_tables(pipeline, doc_id)
+        if passports and all(getattr(tp, "sheet_name", "") for tp in passports):
+            for s_idx, tp in enumerate(passports, start=1):
+                headers = [c.name for c in tp.columns]
+                all_row_dicts: list[dict[str, Any]] = []
+                offset = 0
+                while offset < max(tp.row_count, 1) and offset < 5000:
+                    q_res = _query_structured_table(
+                        pipeline,
+                        TableQueryRequest(table_id=tp.table_id, operation="get_rows", limit=500, offset=offset),
+                    )
+                    if not q_res.rows:
+                        break
+                    all_row_dicts.extend(q_res.rows)
+                    if len(q_res.rows) < 500:
+                        break
+                    offset += len(q_res.rows)
+
+                matrix_rows = [
+                    [str(rd.get(col_h, "") or "") for col_h in headers]
+                    for rd in all_row_dicts
+                ]
+                sliced_rows, row_hit = _slice_rows_around_quote(matrix_rows, quote_segments)
+                if row_hit and quote_matched_sheet is None:
+                    quote_matched_sheet = s_idx
+
+                sheet_blocks: list[DocumentViewerBlock] = []
+                if tp.table_title and tp.table_title != tp.sheet_name:
+                    sheet_blocks.append(
+                        DocumentViewerBlock(type="heading", text=tp.table_title, clause_no="", headers=[], rows=[])
+                    )
+                sheet_blocks.append(
+                    DocumentViewerBlock(
+                        type="table",
+                        text=tp.table_title or tp.sheet_name,
+                        clause_no="",
+                        headers=headers,
+                        rows=sliced_rows,
+                    )
+                )
+                pages_out.append(
+                    DocumentViewerPage(
+                        page_number=s_idx,
+                        label=tp.sheet_name or f"Лист {s_idx}",
+                        image_url=None,
+                        width=None,
+                        height=None,
+                        highlights=[],
+                        blocks=sheet_blocks,
+                    )
+                )
+
+        # Direct workbook parser path when StructuredTableStore has no sheets (or multi-block form sheet)
+        if not pages_out and target_path is not None:
+            parsed_blocks, _ = parse_document(target_path)
+            grouped: dict[int, list[Any]] = {}
+            sheet_labels: dict[int, str] = {}
+            for b in parsed_blocks:
+                p_no = max(1, int(b.page_num or 1))
+                grouped.setdefault(p_no, []).append(b)
+                sh_lbl = b.sheet_name or str((b.metadata or {}).get("sheet_name") or "")
+                if sh_lbl and p_no not in sheet_labels:
+                    sheet_labels[p_no] = sh_lbl
+
+            for s_idx, p_no in enumerate(sorted(grouped) or [1], start=1):
+                s_blocks: list[DocumentViewerBlock] = []
+                for b in grouped.get(p_no, []):
+                    meta = b.metadata or {}
+                    s_hdrs = list(meta.get("structured_headers") or b.table_headers or [])
+                    s_rows = list(meta.get("structured_rows") or b.table_rows or [])
+                    if s_hdrs or s_rows:
+                        capped_rows, row_hit = _slice_rows_around_quote(s_rows, quote_segments)
+                        if row_hit and quote_matched_sheet is None:
+                            quote_matched_sheet = s_idx
+                        s_blocks.append(
+                            DocumentViewerBlock(
+                                type="table",
+                                text=str(meta.get("table_title") or b.text[:240]),
+                                clause_no="",
+                                headers=s_hdrs,
+                                rows=capped_rows,
+                            )
+                        )
+                    elif b.text:
+                        b_type = "heading" if b.block_type == "heading" else "paragraph"
+                        vb = DocumentViewerBlock(type=b_type, text=b.text, clause_no="", headers=[], rows=[])
+                        mq, _ = _block_matches_quote_or_clause(vb, quote_segments, cl_clean)
+                        if mq and quote_matched_sheet is None:
+                            quote_matched_sheet = s_idx
+                        s_blocks.append(vb)
+                pages_out.append(
+                    DocumentViewerPage(
+                        page_number=s_idx,
+                        label=sheet_labels.get(p_no, f"Лист {s_idx}"),
+                        image_url=None,
+                        width=None,
+                        height=None,
+                        highlights=[],
+                        blocks=s_blocks,
+                    )
+                )
+
+        if not pages_out:
+            pages_out.append(
+                DocumentViewerPage(page_number=1, label="Лист 1", image_url=None, highlights=[], blocks=[])
+            )
+
+        total_pages = len(pages_out)
+        if quote_matched_sheet is not None:
+            target_page = quote_matched_sheet
+            matched_quote_on_page = True
+        else:
+            target_page = max(1, min(total_pages, int(page))) if page is not None else 1
+            matched_quote_on_page = False
+
+        return DocumentViewerResponse(
+            doc_id=doc_id,
+            file_name=doc_meta.file_name,
+            title=doc_meta.title or doc_meta.file_name,
+            doc_number=doc_meta.doc_number,
+            doc_date=doc_meta.doc_date,
+            format=fmt,
+            total_pages=total_pages,
+            target_page=target_page,
+            matched_quote_on_page=matched_quote_on_page,
+            download_url=download_url,
+            pages=pages_out,
+        )
+
+    # 3. Word Documents (.docx / .doc): structured archival pages grouped by `page_number` 1..N
+    pages_blocks_map: dict[int, list[DocumentViewerBlock]] = {}
+    if target_path is not None:
+        parsed_blocks, _ = parse_document(target_path)
+        for b in parsed_blocks:
+            p_no = max(1, int(b.page_num or 1))
+            bucket = pages_blocks_map.setdefault(p_no, [])
+            if b.block_type == "table" and (b.table_headers or b.table_rows):
+                capped_rows, _ = _slice_rows_around_quote(list(b.table_rows or []), quote_segments)
+                bucket.append(
+                    DocumentViewerBlock(
+                        type="table",
+                        text=b.text,
+                        clause_no="",
+                        headers=list(b.table_headers or []),
+                        rows=capped_rows,
+                    )
+                )
+            elif (b.text or "").strip():
+                b_type = "heading" if (b.block_type == "heading" or b.heading_level) else "paragraph"
+                bucket.append(
+                    DocumentViewerBlock(
+                        type=b_type,
+                        text=b.text.strip(),
+                        clause_no=_extract_block_clause_no(b.text),
+                        headers=[],
+                        rows=[],
+                    )
+                )
+
+    # Fallback to `sections_store` if physical file was moved/unavailable
+    if not pages_blocks_map:
+        doc_secs = [
+            sec for sec in pipeline.sections_store.values()
+            if getattr(sec, "doc_id", "") == doc_id
+        ]
+        for idx_s, sec in enumerate(doc_secs, start=1):
+            p_no = int(sec.page_numbers[0]) if sec.page_numbers else idx_s
+            bucket = pages_blocks_map.setdefault(max(1, p_no), [])
+            if sec.section_title:
+                bucket.append(
+                    DocumentViewerBlock(
+                        type="heading",
+                        text=sec.section_title,
+                        clause_no=sec.section_num or "",
+                        headers=[],
+                        rows=[],
+                    )
+                )
+            for para in (sec.clean_text or "").split("\n\n"):
+                pt = para.strip()
+                if pt:
+                    bucket.append(
+                        DocumentViewerBlock(
+                            type="paragraph",
+                            text=pt,
+                            clause_no=_extract_block_clause_no(pt),
+                            headers=[],
+                            rows=[],
+                        )
+                    )
+
+    max_page_num = max(pages_blocks_map.keys(), default=1)
+    pages_out = []
+    for p_no in range(1, max_page_num + 1):
+        pages_out.append(
+            DocumentViewerPage(
+                page_number=p_no,
+                label=f"Стр. {p_no}",
+                image_url=None,
+                width=None,
+                height=None,
+                highlights=[],
+                blocks=pages_blocks_map.get(p_no, []),
+            )
+        )
+
+    total_pages = max(1, len(pages_out))
+    search_order = _priority_page_order(total_pages, page)
+    target_page = max(1, min(total_pages, int(page))) if page is not None else 1
+    matched_quote_on_page = False
+    clause_matched_page: Optional[int] = None
+
+    if quote_segments or cl_clean:
+        for cand_p in search_order:
+            p_obj = pages_out[cand_p - 1]
+            # Check individual blocks first, then whole-page text (in case quote spans two adjacent clauses/blocks)
+            for blk in p_obj.blocks:
+                mq, mcl = _block_matches_quote_or_clause(blk, quote_segments, cl_clean)
+                if mq:
+                    target_page = cand_p
+                    matched_quote_on_page = True
+                    break
+                if mcl and clause_matched_page is None:
+                    clause_matched_page = cand_p
+            if matched_quote_on_page:
+                break
+            if quote_segments:
+                whole_page_norm = _norm_viewer_text(
+                    " ".join(
+                        f"{b.text} {' '.join(b.headers)} {' '.join(' '.join(r) for r in b.rows)}"
+                        for b in p_obj.blocks
+                    )
+                )
+                norm_segs = [_norm_viewer_text(s) for s in quote_segments if len(_norm_viewer_text(s)) >= 8]
+                if norm_segs and any(ns in whole_page_norm for ns in norm_segs):
+                    target_page = cand_p
+                    matched_quote_on_page = True
+                    break
+
+    if not matched_quote_on_page and clause_matched_page is not None:
+        target_page = clause_matched_page
+
+    return DocumentViewerResponse(
+        doc_id=doc_id,
+        file_name=doc_meta.file_name,
+        title=doc_meta.title or doc_meta.file_name,
+        doc_number=doc_meta.doc_number,
+        doc_date=doc_meta.doc_date,
+        format=fmt or "docx",
+        total_pages=total_pages,
+        target_page=target_page,
+        matched_quote_on_page=matched_quote_on_page,
+        download_url=download_url,
+        pages=pages_out,
+    )
+
+
+@app.get("/api/documents/{doc_id}/file", summary="Stream original document file inline for viewer/download")
+async def get_document_file(doc_id: str):
+    pipeline = get_pipeline()
+    doc_meta, target_path = _resolve_document_file(pipeline, doc_id, require_disk_file=True)
+    assert target_path is not None
+    display_name = doc_meta.file_name or target_path.name
+    ext = target_path.suffix.lower()
+    mime_type = _DOCUMENT_MIME_TYPES.get(ext, "application/octet-stream")
+    encoded_fname = urllib.parse.quote(display_name)
+    return FileResponse(
+        path=target_path,
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{encoded_fname}",
+        },
+    )
+
+
+@app.get(
+    "/api/documents/{doc_id}/pages/{page_number}.png",
+    summary="Render 1-based PDF page to PNG image via PyMuPDF",
+)
+async def get_document_page_png(
+    doc_id: str,
+    page_number: int,
+    dpi: int = Query(default=150, description="Render DPI (clamped 96..240)"),
+):
+    if page_number < 1:
+        raise HTTPException(status_code=404, detail=f"Некорректный номер страницы: {page_number}")
+
+    clamped_dpi = max(96, min(240, int(dpi)))
+    pipeline = get_pipeline()
+    doc_meta, target_path = _resolve_document_file(pipeline, doc_id, require_disk_file=True)
+    assert target_path is not None
+
+    if target_path.suffix.lower() != ".pdf" and (doc_meta.file_format or "").lower() != "pdf":
+        raise HTTPException(
+            status_code=404,
+            detail=f"Документ '{doc_id}' не является PDF-файлом (формат: {doc_meta.file_format})",
+        )
+
+    def _render_png() -> bytes:
+        pdf_doc = fitz.open(str(target_path))
+        try:
+            if page_number > len(pdf_doc):
+                raise IndexError(f"Страница {page_number} выходит за пределы документа ({len(pdf_doc)} стр.)")
+            fitz_page = pdf_doc[page_number - 1]
+            pix = fitz_page.get_pixmap(dpi=clamped_dpi, alpha=False)
+            return pix.tobytes("png")
+        finally:
+            pdf_doc.close()
+
+    try:
+        png_bytes = await asyncio.to_thread(_render_png)
+    except IndexError as idx_exc:
+        raise HTTPException(status_code=404, detail=str(idx_exc))
+    except Exception as exc:
+        logger.exception("Failed rendering PDF page %d for '%s': %s", page_number, doc_id, exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка рендеринга страницы PDF: {exc}")
+
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@app.get(
+    "/api/documents/{doc_id}/view",
+    response_model=DocumentViewerResponse,
+    summary="Get structured side-by-side Document Viewer payload with exact target_page & quote highlights",
+)
+async def get_document_view(
+    doc_id: str,
+    page: Optional[int] = Query(default=None, description="Approximate 1-based page/sheet hint"),
+    quote: Optional[str] = Query(default=None, description="Verbatim quote text to locate & highlight"),
+    clause: Optional[str] = Query(default=None, description="Normative clause number hint (e.g. 2.3)"),
+) -> DocumentViewerResponse:
+    pipeline = get_pipeline()
+    return await asyncio.to_thread(_build_document_view_sync, pipeline, doc_id, page, quote, clause)
 
 
 @app.patch("/api/documents/{doc_id}/metadata", summary="Edit document relations, status, years, note and update Qdrant payload")
@@ -1081,6 +2056,74 @@ async def execute_agent_ask(req: AgentAskRequest) -> AgentAskResponse:
     except Exception as exc:
         logger.exception("RAG Agent ask failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Ошибка генерации ответа ИИ-агентом: {exc}")
+
+
+def _sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.post(
+    "/api/ask/stream",
+    summary="Streamed (SSE) 4-stage RAG answer: status → sources (verified) → token… → quotes → done | error",
+)
+async def execute_agent_ask_stream(req: AgentAskRequest, request: Request):
+    """
+    Server-Sent Events over POST. The agent's sync generator runs in a worker thread and pushes
+    events into an asyncio queue; when the client disconnects (or presses «Стоп»), a stop flag is
+    set, the generator closes the upstream LLM stream and the worker exits.
+    """
+    agent = _resolve_rag_agent()
+    if not hasattr(agent, "ask_stream"):
+        raise HTTPException(status_code=404, detail="Потоковый режим недоступен")
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
+    stop_event = threading.Event()
+
+    def _push(item: tuple[str, Any] | None) -> None:
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, item)
+        except RuntimeError:  # loop closed
+            pass
+
+    def _worker() -> None:
+        gen = agent.ask_stream(req, should_stop=stop_event.is_set)
+        try:
+            for item in gen:
+                if stop_event.is_set():
+                    break
+                _push(item)
+        except Exception as exc:  # pragma: no cover - surfaced to client as SSE error
+            logger.exception("RAG Agent stream failed: %s", exc)
+            _push(("error", {"message": f"Ошибка генерации ответа: {exc}"}))
+        finally:
+            gen.close()
+            if stop_event.is_set():
+                logger.warning("RAG stream aborted by client (disconnect / «Стоп») — upstream LLM stream closed")
+            _push(None)
+
+    async def _event_source():
+        loop.run_in_executor(None, _worker)  # exits on its own once it observes stop_event
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                if item is None:
+                    break
+                yield _sse(item[0], item[1])
+        finally:
+            stop_event.set()
+
+    return StreamingResponse(
+        _event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 # -----------------------------------------------------------------------------

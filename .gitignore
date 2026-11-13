@@ -24,3 +24,9 @@ data/index/
 
 # Local benchmark evaluation dumps
 qwe/
+
+# Temporary UI screenshots & static backups
+docs/ui_screenshots/
+src/web/static/legacy/
+src/web/static/v4_backup/
+

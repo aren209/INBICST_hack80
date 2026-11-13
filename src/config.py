@@ -22,7 +22,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Polza AI API (OpenAI-compatible)
+    # DeepSeek Official API (Primary LLM for RAG Agent & Query Pipeline)
+    DEEPSEEK_API_KEY: str = Field(default="")
+    DEEPSEEK_BASE_URL: str = Field(default="https://api.deepseek.com")
+    DEEPSEEK_MODEL: str = Field(default="deepseek-chat")
+
+    # Polza AI API (OpenAI-compatible — Embeddings, OCR VLM, and fallback LLM)
     POLZA_API_KEY: str = Field(default="")
     POLZA_BASE_URL: str = Field(default="https://polza.ai/api/v1")
     POLZA_EMBEDDING_MODEL: str = Field(default="baai/bge-m3")
@@ -67,8 +72,27 @@ class Settings(BaseSettings):
         p = Path(self.CONFIG_DIR_NAME)
         return p if p.is_absolute() else BASE_DIR / p
 
+    @property
+    def llm_provider(self) -> str:
+        return "deepseek" if self.DEEPSEEK_API_KEY.strip() else "polza"
+
+    @property
+    def llm_api_key(self) -> str:
+        ds_key = self.DEEPSEEK_API_KEY.strip()
+        return ds_key if ds_key else self.POLZA_API_KEY
+
+    @property
+    def llm_base_url(self) -> str:
+        return self.DEEPSEEK_BASE_URL if self.DEEPSEEK_API_KEY.strip() else self.POLZA_BASE_URL
+
+    @property
+    def llm_model(self) -> str:
+        return self.DEEPSEEK_MODEL if self.DEEPSEEK_API_KEY.strip() else self.POLZA_LLM_MODEL
+
 
 settings = Settings()
+
+SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xls"})
 
 # ---------------------------------------------------------------------------
 #Filesystem Paths

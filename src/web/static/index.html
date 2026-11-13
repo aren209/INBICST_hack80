@@ -2,822 +2,321 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>МФТИ Нормативный RAG V3 — Загрузчик, Реестр, Таблицы SQLite и Гибридный Поиск</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Нормативная база МФТИ — Справочник документов</title>
+  <meta name="description" content="Справочная система по приказам, положениям и регламентам МФТИ с проверкой цитат по первоисточникам" />
+  <meta name="color-scheme" content="light dark" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Literata:ital,opsz,wght@0,7..72,400..600;1,7..72,400..500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/styles.css" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    })();
+  </script>
 </head>
-<body class="min-h-screen flex flex-col bg-slate-50 text-slate-900">
-
-  <!-- Top Navigation & System Health Header -->
-  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
-      <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-        <!-- Brand -->
-        <div class="flex items-center gap-3">
-          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white font-bold text-lg shadow-sm">
-            ФТ
-          </div>
-          <div>
-            <div class="flex items-center gap-2 flex-wrap">
-              <h1 class="text-lg font-bold tracking-tight text-slate-900">МФТИ Нормативный RAG <span class="text-blue-600">V3</span></h1>
-              <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-blue-50 text-blue-700 border border-blue-200">Parent-Child + 12% Overlap</span>
-              <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">3-Tier Adaptive Tables + Tool Calling</span>
-            </div>
-            <p class="text-xs text-slate-500">Навигатор по внутренним регламентам, приказам, сметам Excel и финансовой структуре ЦФО</p>
-          </div>
-        </div>
-
-        <!-- System Health Indicators -->
-        <div class="flex flex-wrap items-center gap-2 text-xs">
-          <div id="health-qdrant-pill" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700" title="Статус векторной БД Qdrant">
-            <span id="health-qdrant-dot" class="w-2 h-2 rounded-full bg-slate-400"></span>
-            <span class="font-medium">Qdrant:</span>
-            <span id="health-qdrant-text" class="font-mono-code">проверка...</span>
-          </div>
-
-          <div id="health-polza-pill" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700" title="Статус Polza AI (baai/bge-m3 + LLM Tool Calling)">
-            <span id="health-polza-dot" class="w-2 h-2 rounded-full bg-slate-400"></span>
-            <span class="font-medium">Polza AI:</span>
-            <span id="health-polza-text" class="font-mono-code">...</span>
-          </div>
-
-          <div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700">
-            <span class="font-medium">Документов:</span>
-            <span id="health-docs-count" class="font-bold text-slate-900 font-mono-code">0</span>
-          </div>
-
-          <div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700">
-            <span class="font-medium">Parent-разделов:</span>
-            <span id="health-sections-count" class="font-bold text-slate-900 font-mono-code">0</span>
-          </div>
-
-          <button id="btn-header-open-tables" type="button" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 transition cursor-pointer" title="Открыть конструктор запросов к структурированным таблицам SQLite (Excel и большие таблицы Word/PDF)">
-            <span>📊 Таблиц SQLite:</span>
-            <span id="health-tables-count" class="font-bold text-emerald-900 font-mono-code">0</span>
+<body>
+  <div class="app" id="appShell">
+    <!-- ============ Masthead ============ -->
+    <header class="masthead">
+      <div class="masthead-inner">
+        <div class="masthead-left">
+          <button
+            class="icon-btn sidebar-toggle"
+            id="historyToggleBtn"
+            type="button"
+            aria-label="Скрыть историю запросов"
+            aria-controls="historyRail"
+            aria-expanded="true"
+            title="История запросов"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+              <line x1="9.2" y1="4.5" x2="9.2" y2="19.5" />
+              <line x1="5.8" y1="8.5" x2="7.4" y2="8.5" />
+              <line x1="5.8" y1="11.5" x2="7.4" y2="11.5" />
+            </svg>
           </button>
 
-          <a href="/docs" target="_blank" rel="noopener" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-medium transition">
-            <span>OpenAPI /docs</span>
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+          <button class="nav-btn back-btn" id="backBtn" type="button" aria-label="Вернуться к справочнику" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+            <span class="hide-sm">К справочнику</span>
+          </button>
+
+          <a class="brand" href="#/" aria-label="Нормативная база МФТИ — на главную">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32">
+                <path class="mark-back" d="M9 6.5h12.5a1.5 1.5 0 0 1 1.5 1.5v16.5H10.5A1.5 1.5 0 0 1 9 23V6.5Z" />
+                <path class="mark-front" d="M7 8.5h13a1.5 1.5 0 0 1 1.5 1.5v15.5H8.5A1.5 1.5 0 0 1 7 24V8.5Z" />
+                <line class="mark-stroke" x1="11" y1="8.5" x2="11" y2="25.5" />
+                <line class="mark-stroke" x1="14" y1="13" x2="18.5" y2="13" />
+                <line class="mark-stroke" x1="14" y1="16.75" x2="18.5" y2="16.75" />
+                <line class="mark-stroke" x1="14" y1="20.5" x2="16.75" y2="20.5" />
+                <circle class="mark-dot" cx="24.25" cy="8.25" r="2.25" />
+              </svg>
+            </span>
+            <span class="brand-copy">
+              <span class="brand-name">Нормативная база МФТИ</span>
+              <span class="brand-status" id="healthPill">
+                <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+                <span class="status-text" id="healthLabel">Проверка реестра…</span>
+              </span>
+            </span>
           </a>
         </div>
+
+        <div class="masthead-right">
+          <button class="nav-btn ghost" id="newChatBtn" type="button" aria-label="Начать новый запрос">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            <span class="hide-sm">Новый запрос</span>
+          </button>
+
+          <button class="nav-btn" id="kbBtn" type="button" aria-label="Открыть базу знаний">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 6.5A1.5 1.5 0 0 1 5.5 5h13A1.5 1.5 0 0 1 20 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5v-11Z" />
+              <path d="M8 5v14M11.5 9.5h5M11.5 13h3.5" />
+            </svg>
+            <span class="hide-sm">База знаний</span>
+          </button>
+
+          <button class="icon-btn" id="themeBtn" type="button" aria-label="Переключить тему оформления" title="Сменить тему оформления">
+            <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" />
+              <path d="M12 2.5v2.2M12 19.3v2.2M5.3 5.3l1.5 1.5M17.2 17.2l1.5 1.5M2.5 12h2.2M19.3 12h2.2M5.3 18.7l1.5-1.5M17.2 6.8l1.5-1.5" />
+            </svg>
+            <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20.5 13.2A8.5 8.5 0 1 1 10.8 3.5a6.6 6.6 0 0 0 9.7 9.7Z" />
+            </svg>
+          </button>
+        </div>
       </div>
+    </header>
 
-      <!-- 3 Main SPA Tabs -->
-      <nav class="flex flex-wrap gap-1.5 mt-3 pt-2 border-t border-slate-100" aria-label="Разделы системы">
-        <button id="tab-btn-upload" data-tab="upload" class="tab-nav-btn inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white shadow-sm transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-          <span>Загрузка и синхронизация</span>
-        </button>
+    <!-- ============ Workspace Split Shell ============ -->
+    <div class="workspace" id="workspace">
+      <div class="history-backdrop" id="historyBackdrop" hidden></div>
 
-        <button id="tab-btn-registry" data-tab="registry" class="tab-nav-btn inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-          <span>Реестр документов и инспектор чанков</span>
-        </button>
+      <!-- ============ Left Query History Sidebar ============ -->
+      <aside class="history-rail" id="historyRail" aria-label="История запросов">
+        <div class="history-head">
+          <h2 class="history-title">История запросов</h2>
+          <div class="history-head-actions">
+            <button
+              class="history-clear-btn"
+              id="historyClearBtn"
+              type="button"
+              aria-label="Очистить историю запросов"
+              hidden
+            >
+              Очистить
+            </button>
+            <button
+              class="icon-btn history-close-btn"
+              id="historyCloseBtn"
+              type="button"
+              aria-label="Закрыть панель истории"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          </div>
+        </div>
 
-        <button id="tab-btn-search" data-tab="search" class="tab-nav-btn inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          <span>Тест гибридного поиска (RAG Playground)</span>
-        </button>
-      </nav>
-    </div>
-  </header>
+        <div class="history-scroll">
+          <p class="history-empty" id="historyEmpty">Здесь будут сохраняться ваши запросы</p>
+          <ul class="history-list" id="historyList"></ul>
+        </div>
+      </aside>
 
-  <!-- Main Workspace -->
-  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <!-- ============ Center Views Container ============ -->
+      <main class="views">
+        <!-- Main Reference Desk View (#/) -->
+        <section class="view view-chat is-active is-empty" id="viewChat" aria-label="Справочник документов">
+          <div class="chat-scroll" id="chatScroll">
+            <div class="desk-column">
+              <div class="desk-intro" id="emptyState">
+                <h1 class="desk-title">Справочник по приказам, положениям и регламентам МФТИ</h1>
+                <p class="desk-lead">Сформулируйте вопрос своими словами — система подготовит справку с дословными выдержками и точными ссылками на пункты действующих актов.</p>
+              </div>
 
-    <!-- =================================================================== -->
-    <!-- ВКЛАДКА 1: ЗАГРУЗКА И СИНХРОНИЗАЦИЯ                                  -->
-    <!-- =================================================================== -->
-    <section id="panel-upload" class="space-y-6">
-      <!-- Folder Sync Prominent Banner Card -->
-      <div class="bg-gradient-to-r from-blue-50 via-indigo-50 to-slate-50 rounded-2xl border border-blue-200 p-5 shadow-sm">
-        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div class="space-y-1">
-            <div class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-700">
-              <span>Пакетная инкрементальная синхронизация</span>
+              <ol class="messages" id="messages" aria-live="polite"></ol>
             </div>
-            <h2 class="text-lg font-bold text-slate-900">Синхронизация рабочей папки <code class="px-1.5 py-0.5 rounded bg-white border border-blue-200 text-blue-700 font-mono-code text-base">доки/</code></h2>
-            <p class="text-sm text-slate-600 max-w-3xl">
-              Сканирует директорию <code class="font-mono-code text-xs">доки/</code> по контрольным суммам <strong>SHA-256</strong>, автоматически распознает новые и изменившиеся файлы (<code class="font-mono-code text-xs">.pdf</code>, <code class="font-mono-code text-xs">.docx</code>, <code class="font-mono-code text-xs">.xlsx</code>), строит граф редакций приказов, сохраняет большие и Excel-таблицы в <strong>SQLite (<code class="font-mono-code text-xs">tables_store.db</code>)</strong> и выполняет кросс-файловую дедупликацию приложений.
-            </p>
           </div>
 
-          <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
-            <div class="flex flex-col gap-1.5 bg-white/90 px-3 py-2 rounded-xl border border-slate-200 text-xs">
-              <div class="flex items-center gap-2">
-                <label for="sync-ocr-backend" class="font-medium text-slate-600">Режим OCR:</label>
-                <select id="sync-ocr-backend" class="bg-slate-50 border border-slate-300 rounded-md px-2 py-1 text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  <option value="hybrid_vlm">hybrid_vlm (Qwen3-VL + RapidOCR)</option>
-                  <option value="local_rapidocr">local_rapidocr (Офлайн CPU)</option>
-                </select>
+          <div class="composer-wrap">
+            <div class="composer-column">
+              <form class="composer" id="composer" autocomplete="off">
+                <label for="input" class="sr-only">Текст запроса по нормативной базе</label>
+                <textarea
+                  id="input"
+                  rows="2"
+                  placeholder="Введите вопрос по нормативным документам МФТИ…"
+                  maxlength="4000"
+                ></textarea>
+                <div class="composer-bar">
+                  <span class="composer-hint" id="composerHint">Enter — найти, Shift + Enter — перенос строки</span>
+                  <button class="send-btn" id="sendBtn" type="submit" aria-label="Отправить запрос" disabled>
+                    <svg class="i-send" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6" /><path d="M15.3 15.3L19.8 19.8" /></svg>
+                    <svg class="i-stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="1.8" /></svg>
+                    <span class="send-label" id="sendLabel">Найти</span>
+                  </button>
+                </div>
+              </form>
+              <p class="desk-disclaimer">Справки формируются автоматически по загруженным актам — при принятии решений сверяйтесь с текстом документа.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Knowledge Base Register View (#/kb) -->
+        <section class="view view-kb" id="viewKb" aria-label="База знаний" hidden>
+          <div class="kb-inner">
+            <header class="kb-head">
+              <h1 class="kb-title">Реестр нормативных документов</h1>
+              <p class="kb-sub" id="kbStats">Загрузка сведений о фонде…</p>
+            </header>
+
+            <label class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Загрузить документы: перетащите файлы или нажмите для выбора">
+              <input type="file" id="fileInput" multiple accept=".pdf,.docx,.doc,.xlsx,.xls" hidden />
+              <span class="dz-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 15V4M7.5 8.5L12 4l4.5 4.5" />
+                  <path d="M4 15.5v2A1.5 1.5 0 0 0 5.5 19h13a1.5 1.5 0 0 0 1.5-1.5v-2" />
+                </svg>
+              </span>
+              <span class="dz-body">
+                <span class="dz-title">Добавить документы в индекс</span>
+                <span class="dz-sub">Перетащите файлы в эту область или <span class="dz-link">выберите на устройстве</span> (PDF, DOCX, DOC, XLSX, XLS)</span>
+              </span>
+            </label>
+
+            <ul class="uploads" id="uploads" aria-live="polite"></ul>
+
+            <div class="doc-toolbar">
+              <h2 class="section-title">Индексированные акты</h2>
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="11" cy="11" r="6.5" />
+                  <path d="M19.5 19.5L15.8 15.8" />
+                </svg>
+                <input type="search" id="docSearch" placeholder="Фильтр по названию или номеру акта" aria-label="Поиск документов в реестре" />
               </div>
-              <label class="inline-flex items-center gap-2 cursor-pointer select-none text-slate-700">
-                <input type="checkbox" id="sync-force-reindex" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
-                <span>Принудительно переиндексировать все (force)</span>
+            </div>
+
+            <div class="ledger-frame">
+              <div class="ledger-head" aria-hidden="true">
+                <span>Формат</span>
+                <span>Наименование документа</span>
+                <span>Реквизиты</span>
+                <span>Объём</span>
+                <span>Статус</span>
+                <span>Действия</span>
+              </div>
+              <ul class="doc-list" id="docList"></ul>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <!-- ============ Right Side-by-Side Document Viewer Drawer ============ -->
+      <aside class="doc-viewer" id="docViewer" aria-label="Просмотр документа" hidden>
+        <header class="dv-head">
+          <div class="dv-title-row">
+            <span class="doc-fmt pdf" id="dvFormatBadge">PDF</span>
+            <div class="dv-heading">
+              <h2 class="dv-title" id="dvTitle">Документ</h2>
+              <div class="dv-meta" id="dvMeta" hidden></div>
+            </div>
+            <button
+              class="icon-btn dv-close-btn"
+              id="dvCloseBtn"
+              type="button"
+              aria-label="Закрыть просмотр документа"
+              title="Закрыть (Esc)"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          </div>
+
+          <div class="dv-toolbar">
+            <div class="dv-nav-group" role="group" aria-label="Навигация по страницам">
+              <button class="dv-ctrl-btn" id="dvPrevBtn" type="button" aria-label="Предыдущая страница" title="Предыдущая страница">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+              </button>
+              <label class="dv-page-box" for="dvPageInput">
+                <span class="dv-page-prefix" id="dvPagePrefix">Стр.</span>
+                <input
+                  class="dv-page-input"
+                  id="dvPageInput"
+                  type="number"
+                  min="1"
+                  max="1"
+                  value="1"
+                  inputmode="numeric"
+                  aria-label="Номер страницы"
+                />
+                <span class="dv-page-sep">/</span>
+                <span class="dv-page-total" id="dvPageTotal">1</span>
               </label>
+              <button class="dv-ctrl-btn" id="dvNextBtn" type="button" aria-label="Следующая страница" title="Следующая страница">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+              </button>
             </div>
 
-            <button id="btn-sync-folder" type="button" class="inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold text-sm shadow-md hover:shadow-lg transition cursor-pointer">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-              <span>Синхронизировать папку доки/</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Two-column Upload + Live 6-stage Progress -->
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <!-- Left: Drag & Drop Multi-file Uploader + Metadata -->
-        <div class="lg:col-span-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col justify-between space-y-5">
-          <div class="space-y-4">
-            <div>
-              <h3 class="text-base font-bold text-slate-900">Загрузка новых документов в базу знаний</h3>
-              <p class="text-xs text-slate-500 mt-0.5">Перетащите один или несколько файлов (.pdf, .docx, .xlsx) и при необходимости укажите связи с действующими приказами</p>
+            <div class="dv-zoom-group" role="group" aria-label="Масштаб документа">
+              <button class="dv-ctrl-btn" id="dvZoomOut" type="button" aria-label="Уменьшить масштаб" title="Уменьшить масштаб">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" /></svg>
+              </button>
+              <button class="dv-zoom-val" id="dvZoomReset" type="button" aria-label="Сбросить масштаб до 100%" title="Сбросить масштаб">
+                100%
+              </button>
+              <button class="dv-ctrl-btn" id="dvZoomIn" type="button" aria-label="Увеличить масштаб" title="Увеличить масштаб">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12" /></svg>
+              </button>
             </div>
 
-            <!-- Dropzone -->
-            <div id="upload-dropzone" class="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-6 text-center bg-slate-50/70 transition cursor-pointer">
-              <input id="upload-file-input" type="file" multiple accept=".pdf,.docx,.xlsx" class="hidden" />
-              <div class="w-12 h-12 rounded-full bg-blue-100 text-blue-600 mx-auto flex items-center justify-center mb-3">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
-              </div>
-              <p class="text-sm font-semibold text-slate-800">Перетащите файлы сюда или <span class="text-blue-600 underline">выберите на компьютере</span></p>
-              <p class="text-xs text-slate-500 mt-1">Поддерживаются цифровые и сканированные PDF, приказы Word DOCX и таблицы/сметы Excel XLSX</p>
-            </div>
-
-            <!-- Selected Files List -->
-            <div id="upload-files-container" class="hidden space-y-1.5">
-              <div class="flex items-center justify-between text-xs font-semibold text-slate-600">
-                <span>Выбранные файлы (<span id="upload-files-count">0</span>):</span>
-                <button id="btn-clear-files" type="button" class="text-red-600 hover:underline">Очистить список</button>
-              </div>
-              <ul id="upload-files-list" class="max-h-36 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-lg bg-slate-50 text-xs"></ul>
-            </div>
-
-            <!-- Metadata Form Grid -->
-            <div class="pt-2 border-t border-slate-100">
-              <h4 class="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Опциональные метаданные и связи редакций</h4>
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <div>
-                  <label for="upload-status" class="block font-medium text-slate-700 mb-1">Статус документа</label>
-                  <select id="upload-status" class="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="active">active — Действующий</option>
-                    <option value="superseded">superseded — Отменен / Утратил силу</option>
-                    <option value="superseded_template_reference">superseded_template_reference — Шаблон формул/КВР</option>
-                    <option value="draft">draft — Проект документа</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label for="upload-ocr-backend" class="block font-medium text-slate-700 mb-1">Движок OCR для сканов</label>
-                  <select id="upload-ocr-backend" class="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="hybrid_vlm">hybrid_vlm (Qwen3-VL + RapidOCR)</option>
-                    <option value="local_rapidocr">local_rapidocr (Локальный RapidOCR v3)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label for="upload-supersedes" class="block font-medium text-slate-700 mb-1">Отменяет приказ № (supersedes)</label>
-                  <input id="upload-supersedes" type="text" placeholder="напр.: 1469-1, 1465-1" class="w-full rounded-lg border border-slate-300 px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-
-                <div>
-                  <label for="upload-amends" class="block font-medium text-slate-700 mb-1">Изменяет приказ № (amends)</label>
-                  <input id="upload-amends" type="text" placeholder="напр.: 3065-1" class="w-full rounded-lg border border-slate-300 px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-
-                <div class="sm:col-span-2">
-                  <label for="upload-years" class="block font-medium text-slate-700 mb-1">Годы действия (applicable_years)</label>
-                  <input id="upload-years" type="text" placeholder="напр.: 2026-2028 или 2025, 2026" class="w-full rounded-lg border border-slate-300 px-2.5 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-
-                <div class="sm:col-span-2">
-                  <label for="upload-version-note" class="block font-medium text-slate-700 mb-1">Комментарий к редакции (version_note)</label>
-                  <textarea id="upload-version-note" rows="2" placeholder="напр.: Вводит новую форму сметы Приложение 1а в 1С:ДО..." class="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
-                </div>
-
-                <div class="sm:col-span-2 pt-1">
-                  <label class="inline-flex items-center gap-2 cursor-pointer select-none text-slate-700 font-medium">
-                    <input id="upload-force-reindex" type="checkbox" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
-                    <span>Принудительно переиндексировать при совпадении SHA-256</span>
-                  </label>
-                </div>
-              </div>
-            </div>
+            <a
+              class="dv-orig-btn"
+              id="dvDownloadLink"
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Открыть оригинал документа в новой вкладке"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14 4h6v6M20 4l-8.5 8.5" />
+                <path d="M11 6H6.5A2.5 2.5 0 0 0 4 8.5v9A2.5 2.5 0 0 0 6.5 20h9a2.5 2.5 0 0 0 2.5-2.5V13" />
+              </svg>
+              <span>Оригинал</span>
+            </a>
           </div>
 
-          <div class="pt-3 border-t border-slate-100">
-            <button id="btn-upload-submit" type="button" class="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-slate-900 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition cursor-pointer">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-              <span>Загрузить и запустить индексацию</span>
-            </button>
-          </div>
-        </div>
+          <div class="dv-sheets" id="dvSheets" role="tablist" aria-label="Листы книги" hidden></div>
+        </header>
 
-        <!-- Right: Live 6-stage Progress Bar + Counters + Event Log -->
-        <div class="lg:col-span-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col space-y-4">
-          <div class="flex items-center justify-between">
-            <div>
-              <h3 class="text-base font-bold text-slate-900">Конвейер индексации схемы V3 (6 стадий)</h3>
-              <p id="prog-status-subtitle" class="text-xs text-slate-500 mt-0.5">Ожидание запуска загрузки или синхронизации папки</p>
-            </div>
-            <span id="prog-task-badge" class="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">Ожидание</span>
-          </div>
-
-          <!-- 6-stage Visual Pipeline Stepper -->
-          <div id="pipeline-stages-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
-            <div data-stage-idx="1" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
-              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">1</span>
-              <span class="font-medium text-slate-700 leading-tight">Предразбор</span>
-            </div>
-            <div data-stage-idx="2" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
-              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">2</span>
-              <span class="font-medium text-slate-700 leading-tight">OCR сканов</span>
-            </div>
-            <div data-stage-idx="3" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
-              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">3</span>
-              <span class="font-medium text-slate-700 leading-tight">Иерарх. чанкинг V3</span>
-            </div>
-            <div data-stage-idx="4" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
-              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">4</span>
-              <span class="font-medium text-slate-700 leading-tight">12% overlap + SQLite</span>
-            </div>
-            <div data-stage-idx="5" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
-              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">5</span>
-              <span class="font-medium text-slate-700 leading-tight">bge-m3 + BM25</span>
-            </div>
-            <div data-stage-idx="6" class="stage-step-card p-2.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center gap-2 transition">
-              <span class="stage-dot w-6 h-6 rounded-full bg-slate-200 text-slate-700 font-bold flex items-center justify-center shrink-0 text-[11px]">6</span>
-              <span class="font-medium text-slate-700 leading-tight">Запись в Qdrant</span>
-            </div>
-          </div>
-
-          <!-- Progress Percentage Bar -->
-          <div class="space-y-1.5">
-            <div class="flex items-center justify-between text-xs">
-              <span id="prog-current-file" class="font-medium text-slate-700 truncate max-w-[78%]">Файл: —</span>
-              <span id="prog-percent-label" class="font-bold font-mono-code text-blue-700">0%</span>
-            </div>
-            <div class="w-full h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
-              <div id="prog-bar-fill" class="h-full bg-blue-600 rounded-full transition-all duration-300" style="width: 0%"></div>
-            </div>
-          </div>
-
-          <!-- Live Counters -->
-          <div class="grid grid-cols-3 gap-2.5 text-center">
-            <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
-              <div class="text-[11px] text-slate-500 font-medium">Parent-разделов</div>
-              <div id="prog-parent-count" class="text-lg font-bold text-slate-900 font-mono-code">0</div>
-            </div>
-            <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
-              <div class="text-[11px] text-slate-500 font-medium">Child-чанков</div>
-              <div id="prog-chunk-count" class="text-lg font-bold text-blue-700 font-mono-code">0</div>
-            </div>
-            <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
-              <div class="text-[11px] text-slate-500 font-medium">OCR-страниц</div>
-              <div id="prog-ocr-count" class="text-lg font-bold text-indigo-700 font-mono-code">0</div>
-            </div>
-          </div>
-
-          <!-- Live Event Log -->
-          <div class="flex-1 flex flex-col min-h-[210px]">
-            <div class="flex items-center justify-between text-xs mb-1.5">
-              <span class="font-semibold text-slate-600">Живой журнал событий индексации (SSE):</span>
-              <button id="btn-clear-log" type="button" class="text-slate-500 hover:text-slate-800">Очистить лог</button>
-            </div>
-            <div id="prog-event-log" class="terminal-log flex-1 bg-slate-900 text-slate-200 font-mono-code text-[11px] rounded-xl p-3 overflow-y-auto max-h-60 space-y-1 border border-slate-800">
-              <div class="text-slate-400">[Система] Конвейер готов к приему документов или синхронизации папки доки/...</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- =================================================================== -->
-    <!-- ВКЛАДКА 2: РЕЕСТР ДОКУМЕНТОВ И ИНСПЕКТОР ЧАНКОВ                     -->
-    <!-- =================================================================== -->
-    <section id="panel-registry" class="hidden space-y-5">
-      <!-- Indexing Report Summary Strip -->
-      <div id="registry-report-strip" class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-wrap items-center justify-between gap-4 text-xs">
-        <div class="flex flex-wrap items-center gap-4">
-          <div>
-            <span class="text-slate-500">Всего в реестре:</span>
-            <span id="reg-stat-total" class="ml-1 font-bold text-slate-900 text-sm font-mono-code">0</span>
-          </div>
-          <div class="h-4 w-px bg-slate-200"></div>
-          <div>
-            <span class="text-slate-500">Таблиц в SQLite:</span>
-            <span id="reg-stat-tables" class="ml-1 font-bold text-emerald-700 text-sm font-mono-code">0</span>
-          </div>
-          <div class="h-4 w-px bg-slate-200"></div>
-          <div>
-            <span class="text-slate-500">Последний прогон:</span>
-            <span id="reg-stat-last-run" class="ml-1 font-medium text-slate-800">—</span>
-          </div>
-          <div class="h-4 w-px bg-slate-200"></div>
-          <div>
-            <span class="text-slate-500">Проиндексировано / Пропущено / Ошибок:</span>
-            <span id="reg-stat-counts" class="ml-1 font-mono-code font-semibold text-slate-800">0 / 0 / 0</span>
-          </div>
-        </div>
-
-        <div class="flex flex-wrap items-center gap-2">
-          <button id="btn-registry-open-tables" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold transition cursor-pointer">
-            <span>📊 Конструктор SQLite-таблиц</span>
-          </button>
-          <button id="btn-registry-sync-shortcut" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-semibold transition cursor-pointer">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-            <span>Синхронизировать доки/</span>
-          </button>
-          <button id="btn-refresh-registry" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition cursor-pointer">
-            <span>Обновить таблицу</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Filter Bar -->
-      <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-col sm:flex-row items-stretch sm:items-center gap-3 text-sm">
-        <div class="relative flex-1">
-          <svg class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          <input id="reg-filter-search" type="text" placeholder="Фильтр по названию, имени файла, номеру приказа (напр. 794-1, 3065-1, 3614-1, КЗ)..." class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-
-        <select id="reg-filter-status" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
-          <option value="">Все статусы</option>
-          <option value="active">Действующие (active)</option>
-          <option value="superseded_template_reference">Шаблоны формул (superseded_template_reference)</option>
-          <option value="superseded">Отмененные (superseded)</option>
-          <option value="draft">Проекты (draft)</option>
-          <option value="error">С ошибкой (error)</option>
-        </select>
-
-        <select id="reg-filter-format" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
-          <option value="">Все форматы</option>
-          <option value="pdf">PDF</option>
-          <option value="docx">DOCX</option>
-          <option value="xlsx">XLSX</option>
-        </select>
-      </div>
-
-      <!-- Documents Table -->
-      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-slate-200 text-left text-xs">
-            <thead class="bg-slate-50 text-slate-600 uppercase text-[11px] tracking-wider font-semibold">
-              <tr>
-                <th class="px-4 py-3">Документ и файл</th>
-                <th class="px-3 py-3">№ и дата акта</th>
-                <th class="px-3 py-3 text-center">Формат</th>
-                <th class="px-3 py-3 text-center">Стр. / OCR</th>
-                <th class="px-3 py-3 text-center">Parent / Child / Таблицы</th>
-                <th class="px-3 py-3">Статус</th>
-                <th class="px-3 py-3">Граф редакций и дубли</th>
-                <th class="px-4 py-3 text-right">Действия</th>
-              </tr>
-            </thead>
-            <tbody id="registry-table-body" class="divide-y divide-slate-100 bg-white">
-              <tr>
-                <td colspan="8" class="px-4 py-10 text-center text-slate-400">Загрузка реестра документов...</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- =================================================================== -->
-    <!-- ВКЛАДКА 3: ТЕСТ ГИБРИДНОГО ПОИСКА (RAG PLAYGROUND + TOOL CALLING)   -->
-    <!-- =================================================================== -->
-    <section id="panel-search" class="hidden space-y-5">
-      <!-- Query Box, Mode Toggle & Preset Chips -->
-      <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
-        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-          <div>
-            <h2 class="text-base font-bold text-slate-900">
-              Песочница гибридного поиска RRF и автономного ИИ-агента с Tool Calling по таблицам
-            </h2>
-            <p class="text-xs text-slate-500 mt-0.5">
-              3-уровневая архитектура таблиц: 8-строчные чанки в Qdrant для поиска → встроенный <code class="font-mono-code">ParentSection</code> для компактных таблиц Word/PDF → детерминированный <strong>SQLite + Tool Calling</strong> для Excel и больших таблиц (≥ 25 строк).
-            </p>
-          </div>
-
-          <!-- Prominent Playground Execution Mode Toggle -->
-          <div class="inline-flex flex-wrap rounded-xl bg-slate-100 p-1 border border-slate-200 text-xs font-semibold shrink-0" role="group" aria-label="Режим работы песочницы">
-            <button id="btn-mode-search" type="button" data-playground-mode="search" class="px-3 py-2 rounded-lg bg-white text-slate-900 shadow-sm transition cursor-pointer">
-              🔍 Гибридный поиск (RRF)
-            </button>
-            <button id="btn-mode-ask" type="button" data-playground-mode="ask" class="px-3.5 py-2 rounded-lg text-indigo-700 hover:bg-indigo-50 transition cursor-pointer flex items-center gap-1.5">
-              <span>🤖 ИИ-ответ с авто-дозапросом таблиц (Tool Calling)</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Search & AI Tool-Calling Input Row -->
-        <form id="search-form" class="flex flex-col lg:flex-row gap-2.5">
-          <div class="relative flex-1">
-            <input id="search-query-input" type="text" required placeholder="Введите вопрос по регламентам, сметам или финансовой структуре ЦФО МФТИ..." class="w-full pl-4 pr-10 py-3 rounded-xl border border-slate-300 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600" />
-            <button id="btn-clear-query" type="button" title="Очистить запрос" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-            </button>
-          </div>
-          <div class="flex flex-col sm:flex-row gap-2 shrink-0">
-            <button id="btn-run-search" type="submit" class="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition cursor-pointer">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-              <span>Найти нормы</span>
-            </button>
-            <button id="btn-run-ask" type="button" class="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-emerald-600 hover:from-indigo-700 hover:to-emerald-700 text-white font-semibold text-sm shadow-md transition cursor-pointer">
-              <span>🤖 ИИ-ответ с авто-дозапросом таблиц (Tool Calling)</span>
-            </button>
-          </div>
-        </form>
-
-        <!-- Dedicated Showcase Presets: Adaptive 3-Tier Tables & Autonomous Tool Calling -->
-        <div class="rounded-xl bg-gradient-to-r from-indigo-50/70 via-emerald-50/60 to-slate-50 border border-indigo-200/80 p-3 space-y-2">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="text-[11px] font-bold uppercase tracking-wider text-indigo-900 flex items-center gap-1.5">
-              <span>⚡ Демо-сценарии 3-Tier Table Architecture (XL SQLite Tool Query vs Компактная PDF Inline):</span>
-            </div>
-            <button id="btn-playground-open-explorer" type="button" class="text-[11px] font-semibold text-emerald-800 hover:underline cursor-pointer">
-              📊 Открыть конструктор запросов ко всем таблицам →
-            </button>
-          </div>
-          <div id="table-presets-container" class="flex flex-wrap gap-2"></div>
-        </div>
-
-        <!-- Standard 10 MIPT Retrieval Benchmark Preset Chips -->
-        <div class="space-y-1.5">
-          <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Контрольные сценарии корпуса МФТИ (нажмите для запуска в выбранном режиме):</div>
-          <div id="search-presets-container" class="flex flex-wrap gap-1.5"></div>
-        </div>
-
-        <!-- Search & Agent Controls Bar -->
-        <div class="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-4 text-xs">
-          <div class="flex items-center gap-1.5">
-            <label for="search-top-k" class="font-medium text-slate-600">Top-K слотов:</label>
-            <select id="search-top-k" class="rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 font-mono-code font-semibold text-slate-800">
-              <option value="3">3</option>
-              <option value="5" selected>5</option>
-              <option value="8">8</option>
-              <option value="10">10</option>
-              <option value="15">15</option>
-            </select>
-          </div>
-
-          <div class="flex items-center gap-1.5">
-            <label for="search-status-filter" class="font-medium text-slate-600">Статус:</label>
-            <select id="search-status-filter" class="rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-slate-800">
-              <option value="">Авто (с учетом редакций)</option>
-              <option value="active">Только active</option>
-              <option value="active,superseded_template_reference">active + шаблоны формул</option>
-              <option value="superseded">Только superseded</option>
-              <option value="draft">Только draft</option>
-            </select>
-          </div>
-
-          <div class="flex items-center gap-1.5">
-            <label for="search-year-filter" class="font-medium text-slate-600">Год действия:</label>
-            <input id="search-year-filter" type="number" min="2015" max="2035" placeholder="Любой" class="w-24 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 font-mono-code text-slate-800" />
-          </div>
-
-          <label class="inline-flex items-center gap-1.5 cursor-pointer select-none font-medium text-slate-700">
-            <input id="search-include-parent" type="checkbox" checked class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
-            <span>Показывать Parent-раздел целиком</span>
-          </label>
-
-          <label class="inline-flex items-center gap-1.5 cursor-pointer select-none font-medium text-slate-700">
-            <input id="search-include-amendments" type="checkbox" checked class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
-            <span>Подтягивать изменяющие акты (amends)</span>
-          </label>
-
-          <label class="inline-flex items-center gap-1.5 cursor-pointer select-none font-semibold text-indigo-800 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200">
-            <input id="ask-enable-table-tools" type="checkbox" checked class="rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500" />
-            <span>Разрешить агенту SQLite Tool Calling</span>
-          </label>
-        </div>
-      </div>
-
-      <!-- Search & AI Answer Output Container -->
-      <div id="search-results-wrapper" class="hidden space-y-4">
-        <!-- AI Answer + ToolCallTrace Card (POST /api/ask) -->
-        <div id="agent-answer-container" class="hidden space-y-3"></div>
-
-        <!-- Scope / Confidence Banner -->
-        <div id="search-scope-banner" class="rounded-2xl p-4 border shadow-sm"></div>
-
-        <!-- Version & Quality Alerts -->
-        <div id="search-alerts-container" class="space-y-2"></div>
-
-        <!-- Linked Structured Tables (TablePassport Cards) -->
-        <div id="search-linked-tables-section" class="hidden space-y-2.5">
-          <div class="flex items-center justify-between gap-2 flex-wrap">
-            <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-900">
-              <span class="w-2.5 h-2.5 rounded-full bg-emerald-600"></span>
-              <span>Связанные структурированные таблицы в SQLite (TablePassport · Tool Query)</span>
-            </div>
-            <span class="text-[11px] text-slate-500">Полные листы Excel и большие таблицы (≥ 25 строк) доступны для фильтрации, агрегации и проверки формул</span>
-          </div>
-          <div id="search-linked-tables-list" class="grid grid-cols-1 lg:grid-cols-2 gap-3"></div>
-        </div>
-
-        <!-- Co-retrieved Amendment Chunks -->
-        <div id="search-amendments-section" class="hidden space-y-2.5">
-          <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-purple-800">
-            <span class="w-2.5 h-2.5 rounded-full bg-purple-600"></span>
-            <span>Актуальные поправки из изменяющих приказов/распоряжений (amends)</span>
-          </div>
-          <div id="search-amendments-list" class="space-y-3"></div>
-        </div>
-
-        <!-- Primary Ranked Hits -->
-        <div class="space-y-3" id="search-hits-list"></div>
-      </div>
-    </section>
-
-  </main>
-
-  <!-- ===================================================================== -->
-  <!-- МОДАЛЬНОЕ ОКНО 1: ИНСПЕКТОР ДОКУМЕНТА И ЧАНКОВ (Parent -> Child)      -->
-  <!-- ===================================================================== -->
-  <div id="inspector-modal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-center justify-center p-2 sm:p-4">
-    <div class="bg-white w-full max-w-7xl h-[92vh] rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
-      <!-- Modal Header -->
-      <div class="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2 flex-wrap">
-            <h3 id="insp-doc-title" class="text-base font-bold text-slate-900 truncate">Инспектор документа</h3>
-            <span id="insp-doc-status-badge" class="px-2 py-0.5 text-[11px] rounded-full font-semibold"></span>
-          </div>
-          <p id="insp-doc-subtitle" class="text-xs text-slate-500 truncate mt-0.5"></p>
-        </div>
-
-        <div class="flex items-center gap-2 shrink-0 flex-wrap">
-          <!-- Text Representation Switcher -->
-          <div class="inline-flex rounded-xl bg-slate-200/80 p-1 text-xs font-semibold">
-            <button type="button" data-view-mode="raw_text" class="insp-mode-btn px-3 py-1.5 rounded-lg bg-white text-slate-900 shadow-sm transition">
-              raw_text (12% overlap)
-            </button>
-            <button type="button" data-view-mode="embed_text" class="insp-mode-btn px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition">
-              embed_text (вектор)
-            </button>
-            <button type="button" data-view-mode="clean_text" class="insp-mode-btn px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition">
-              clean_text (чистый)
-            </button>
-          </div>
-
-          <button id="btn-close-inspector" type="button" class="p-2 rounded-xl text-slate-500 hover:bg-slate-200 hover:text-slate-900 transition">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-          </button>
-        </div>
-      </div>
-
-      <!-- Modal Split Body: Left Tree (unit_id -> ParentSectionRecord) | Right Chunks -->
-      <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 overflow-hidden">
-        <!-- Left Tree Navigation -->
-        <aside class="lg:col-span-4 border-r border-slate-200 bg-slate-50/60 overflow-y-auto p-3.5 space-y-3">
-          <div class="flex items-center justify-between text-xs">
-            <span class="font-bold uppercase tracking-wider text-slate-500">Дерево: Часть → Раздел (Parent)</span>
-            <button id="btn-insp-show-all" type="button" class="text-blue-600 hover:underline font-medium">Показать все</button>
-          </div>
-          <div id="insp-tree-container" class="space-y-2 text-xs"></div>
-        </aside>
-
-        <!-- Right Chunks & Parent Section View -->
-        <div id="insp-chunks-scroll" class="lg:col-span-8 overflow-y-auto p-4 sm:p-5 space-y-4 bg-white">
-          <div id="insp-selected-parent-box" class="hidden"></div>
-          <div id="insp-chunks-container" class="space-y-3"></div>
-        </div>
-      </div>
+        <div class="dv-body" id="dvBody" tabindex="0"></div>
+      </aside>
     </div>
   </div>
 
-  <!-- ===================================================================== -->
-  <!-- МОДАЛЬНОЕ ОКНО 2: РЕДАКТИРОВАНИЕ МЕТАДАННЫХ И ГРАФА РЕДАКЦИЙ          -->
-  <!-- ===================================================================== -->
-  <div id="metadata-modal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
-    <div class="bg-white w-full max-w-xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
-      <div class="px-5 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-        <div>
-          <h3 class="text-base font-bold text-slate-900">Редактирование метаданных и связей документа</h3>
-          <p id="meta-modal-doc-id" class="text-xs font-mono-code text-slate-500 mt-0.5"></p>
-        </div>
-        <button id="btn-close-meta-modal" type="button" class="p-1.5 rounded-lg text-slate-400 hover:bg-slate-200 hover:text-slate-700">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-        </button>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+  <dialog class="confirm" id="confirmDialog" aria-labelledby="confirmTitle">
+    <form method="dialog">
+      <h3 id="confirmTitle">Исключить документ из реестра?</h3>
+      <p id="confirmText"></p>
+      <div class="confirm-actions">
+        <button value="cancel" class="nav-btn" type="submit">Отмена</button>
+        <button value="ok" class="nav-btn danger" id="confirmOkBtn" type="submit">Удалить из базы</button>
       </div>
+    </form>
+  </dialog>
 
-      <form id="metadata-edit-form" class="p-5 space-y-3.5 text-xs">
-        <input type="hidden" id="meta-edit-doc-id" />
-
-        <div>
-          <label class="block font-semibold text-slate-700 mb-1">Название документа</label>
-          <input id="meta-edit-title" type="text" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div>
-            <label class="block font-semibold text-slate-700 mb-1">Номер акта</label>
-            <input id="meta-edit-number" type="text" placeholder="напр. 794-1" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-          <div>
-            <label class="block font-semibold text-slate-700 mb-1">Дата (YYYY-MM-DD)</label>
-            <input id="meta-edit-date" type="text" placeholder="2023-03-28" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-          <div>
-            <label class="block font-semibold text-slate-700 mb-1">Статус</label>
-            <select id="meta-edit-status" class="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="active">active (Действующий)</option>
-              <option value="superseded">superseded (Отменен)</option>
-              <option value="superseded_template_reference">superseded_template_reference (Шаблон формул)</option>
-              <option value="draft">draft (Проект)</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label class="block font-semibold text-slate-700 mb-1">Отменяет приказы № (supersedes)</label>
-            <input id="meta-edit-supersedes" type="text" placeholder="через запятую: 1469-1" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-          <div>
-            <label class="block font-semibold text-slate-700 mb-1">Изменяет приказы № (amends)</label>
-            <input id="meta-edit-amends" type="text" placeholder="через запятую: 3065-1" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-        </div>
-
-        <div>
-          <label class="block font-semibold text-slate-700 mb-1">Годы действия (applicable_years)</label>
-          <input id="meta-edit-years" type="text" placeholder="напр.: 2026-2028 или 2025, 2026" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono-code text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-
-        <div>
-          <label class="block font-semibold text-slate-700 mb-1">Комментарий к редакции (version_note → обновляет u00_meta и Qdrant)</label>
-          <textarea id="meta-edit-version-note" rows="3" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
-        </div>
-
-        <div>
-          <label class="block font-semibold text-slate-700 mb-1">Предупреждение о качестве исходника (quality_warning)</label>
-          <input id="meta-edit-quality-warning" type="text" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-
-        <div class="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-          <button id="btn-cancel-meta-modal" type="button" class="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 font-medium">Отмена</button>
-          <button type="submit" class="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-sm cursor-pointer">Сохранить и обновить Qdrant</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <!-- ===================================================================== -->
-  <!-- МОДАЛЬНОЕ ОКНО 3: КОНСТРУКТОР ЗАПРОСОВ К СТРУКТУРИРОВАННЫМ ТАБЛИЦАМ   -->
-  <!-- ===================================================================== -->
-  <div id="table-explorer-modal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-2 sm:p-4">
-    <div class="bg-white w-full max-w-7xl h-[93vh] rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
-      <!-- Explorer Top Header -->
-      <div class="px-5 py-3.5 bg-gradient-to-r from-slate-50 via-emerald-50/40 to-indigo-50/40 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-        <div class="min-w-0 flex-1 space-y-1.5">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
-              📊 SQLite Table Store · Конструктор запросов
-            </span>
-            <h3 id="texp-title" class="text-base font-bold text-slate-900 truncate">Интерактивный проводник структурированных таблиц</h3>
-          </div>
-          <div class="flex flex-wrap items-center gap-2 text-xs">
-            <label for="texp-table-select" class="font-semibold text-slate-600">Таблица:</label>
-            <select id="texp-table-select" class="max-w-xl w-full sm:w-auto rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"></select>
-            <button id="texp-btn-show-all-docs" type="button" class="hidden text-[11px] font-semibold text-blue-600 hover:underline cursor-pointer">
-              Показать таблицы всех документов
-            </button>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2 shrink-0 flex-wrap">
-          <div id="texp-passport-badges" class="flex flex-wrap items-center gap-1.5 text-[11px] font-mono-code"></div>
-          <button id="btn-close-table-explorer" type="button" class="p-2 rounded-xl text-slate-500 hover:bg-slate-200 hover:text-slate-900 transition cursor-pointer" title="Закрыть конструктор">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-          </button>
-        </div>
-      </div>
-
-      <!-- Schema & Column Types Strip -->
-      <details id="texp-schema-details" open class="border-b border-slate-200 bg-slate-50/70">
-        <summary class="px-5 py-2 cursor-pointer text-xs font-semibold text-slate-700 flex items-center justify-between select-none hover:bg-slate-100/70">
-          <span>Схема колонок и типы данных TablePassport (нажмите на колонку для быстрого выбора в фильтре / группировке)</span>
-          <span id="texp-schema-summary-meta" class="font-mono-code text-[11px] text-slate-500"></span>
-        </summary>
-        <div id="texp-columns-strip" class="px-5 py-2.5 flex flex-wrap gap-1.5 max-h-28 overflow-y-auto border-t border-slate-200/70 bg-white"></div>
-      </details>
-
-      <!-- Query Builder Controls -->
-      <div class="px-5 py-3 bg-white border-b border-slate-200 space-y-3 text-xs">
-        <!-- Operation Tabs -->
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="inline-flex flex-wrap rounded-xl bg-slate-100 p-1 border border-slate-200 font-semibold">
-            <button type="button" data-texp-op="filter_rows" class="texp-op-btn px-3 py-1.5 rounded-lg bg-white text-slate-900 shadow-sm transition cursor-pointer">
-              🔍 Фильтр строк (filter_rows)
-            </button>
-            <button type="button" data-texp-op="aggregate" class="texp-op-btn px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition cursor-pointer">
-              📈 Агрегация и группировка (aggregate)
-            </button>
-            <button type="button" data-texp-op="get_formulas" class="texp-op-btn px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition cursor-pointer">
-              🧮 Формулы Excel (get_formulas)
-            </button>
-          </div>
-
-          <div class="flex items-center gap-2">
-            <label for="texp-limit" class="text-slate-600 font-medium">Лимит строк:</label>
-            <select id="texp-limit" class="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1 font-mono-code font-semibold text-slate-800">
-              <option value="15">15</option>
-              <option value="25" selected>25</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-              <option value="250">250</option>
-            </select>
-            <button id="texp-btn-reset" type="button" class="px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-100 font-medium cursor-pointer">
-              Сбросить
-            </button>
-            <button id="texp-btn-run" type="button" class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm transition cursor-pointer">
-              Выполнить запрос
-            </button>
-          </div>
-        </div>
-
-        <!-- Filter Inputs (shared across filter_rows, aggregate, get_formulas) -->
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-2.5 items-end">
-          <div class="lg:col-span-4">
-            <label for="texp-search-text" class="block text-[11px] font-semibold text-slate-600 mb-1">Поиск по тексту строки / формуле (search_text, ё=е):</label>
-            <input id="texp-search-text" type="text" placeholder="напр.: ФРКТ, накладные, НДС, 224, SUM..." class="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
-          </div>
-
-          <div class="lg:col-span-4">
-            <label for="texp-filter-col" class="block text-[11px] font-semibold text-slate-600 mb-1">Фильтр по колонке (filters[col]):</label>
-            <select id="texp-filter-col" class="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600">
-              <option value="">— Любая колонка (без фильтра) —</option>
-            </select>
-          </div>
-
-          <div class="lg:col-span-4">
-            <label for="texp-filter-val" class="block text-[11px] font-semibold text-slate-600 mb-1">Значение / условие (подстрока или &gt;, &gt;=, &lt;, =):</label>
-            <input id="texp-filter-val" type="text" placeholder="напр.: ФРКТ или >= 20" class="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
-          </div>
-        </div>
-
-        <!-- Aggregation Controls (shown when operation === 'aggregate') -->
-        <div id="texp-agg-controls" class="hidden pt-2 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-          <div>
-            <label for="texp-agg-func" class="block text-[11px] font-semibold text-indigo-800 mb-1">Функция агрегации (agg_func):</label>
-            <select id="texp-agg-func" class="w-full rounded-lg border border-indigo-300 bg-indigo-50/40 px-2.5 py-1.5 font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600">
-              <option value="count">count — Количество строк</option>
-              <option value="distinct">distinct — Уникальные значения колонки</option>
-              <option value="sum">sum — Сумма числовых значений</option>
-              <option value="avg">avg — Среднее значение</option>
-              <option value="min">min — Минимум</option>
-              <option value="max">max — Максимум</option>
-            </select>
-          </div>
-
-          <div>
-            <label for="texp-agg-col" class="block text-[11px] font-semibold text-indigo-800 mb-1">Целевая колонка (agg_column):</label>
-            <select id="texp-agg-col" class="w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600">
-              <option value="">— Все строки (*) —</option>
-            </select>
-          </div>
-
-          <div>
-            <label for="texp-group-by" class="block text-[11px] font-semibold text-indigo-800 mb-1">Группировка (group_by):</label>
-            <select id="texp-group-by" class="w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600">
-              <option value="">— Без группировки —</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      <!-- Live Query Execution Status & Pagination Strip -->
-      <div class="px-5 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
-        <div id="texp-results-meta" class="text-slate-600 font-medium">Выберите таблицу для просмотра данных</div>
-        <div id="texp-pagination-bar" class="flex items-center gap-2">
-          <button id="texp-btn-prev" type="button" class="px-2.5 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40 cursor-pointer">← Назад</button>
-          <span id="texp-page-label" class="font-mono-code text-[11px] text-slate-600">offset: 0</span>
-          <button id="texp-btn-next" type="button" class="px-2.5 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40 cursor-pointer">Вперед →</button>
-        </div>
-      </div>
-
-      <!-- Explorer Scrollable Results Body -->
-      <div class="flex-1 overflow-auto p-4 sm:p-5 space-y-4 bg-white">
-        <div id="texp-agg-result-box" class="hidden"></div>
-        <div id="texp-formulas-summary-box" class="hidden"></div>
-        <div id="texp-table-container" class="text-xs text-slate-500">Загрузка таблиц...</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Toast Notifications Container -->
-  <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none"></div>
-
-  <script src="/static/app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </body>
 </html>
