@@ -31,7 +31,6 @@
 | `--prim-cobalt-800` / `--prim-cobalt-500` | `#08386B` | `#1D68BD` | Solid primary hover (>= 5.4:1 w/ `#FFFFFF`) |
 | `--prim-emerald-700` / `--prim-emerald-300` | `#0A6644` | `#4ADE9B` | Archival verification seal |
 | `--prim-ochre-200` / `--prim-ochre-dark-bg` | `#FDE68A` | `rgba(234, 179, 8, 0.26)` | Clause highlight `<mark>` |
-| `--prim-ochre-overlay-light` / `--prim-ochre-overlay-dark` | `rgba(245, 158, 11, 0.28)` | `rgba(250, 204, 21, 0.30)` | PDF page bounding-box highlight overlay |
 | `--prim-crimson-700` / `--prim-crimson-300` | `#B42318` | `#FDA29B` | Destructive / error ink |
 
 ### Layer 2: Typography Roles
@@ -42,9 +41,9 @@
 
 ### Layer 3: Component Tokens
 
-Every UI component (`--masthead-*`, `--history-*`, `--composer-*`, `--dossier-*`, `--quote-*`, `--source-*`, `--viewer-*`, `--ledger-*`, `--btn-*`, `--dialog-*`) references Layer 2 semantic tokens exclusively. Zero raw hex values appear outside Layer 1.
+Every UI component (`--masthead-*`, `--history-*`, `--composer-*`, `--dossier-*`, `--quote-*`, `--source-*`, `--viewer-*`, `--ledger-*`, `--upload-*`, `--url-upload-*`, `--btn-*`, `--dialog-*`) references Layer 2 semantic tokens exclusively. Zero raw hex values appear outside Layer 1.
 
 ### Workspace Split Architecture (`v6`)
 
 - **Left Query History Rail (`--history-width: 272px`)**: Docked alongside `#/` on desktop (`> 1024px`, collapsible via masthead toggle; auto-collapses `< 1280px` when the Document Viewer opens) and transitions into a modal slide-over drawer with scrim on `<= 1024px`.
-- **Right Side-by-Side Document Viewer (`--viewer-width: min(48vw, 680px)`)**: Docked right split panel on desktop (`> 768px`) and full-viewport archival sheet on mobile (`<= 768px`), rendering zero-layout-shift PDF page frames with `0..1` warm ochre overlays as well as structured Word/Excel folios with `<mark>` passage highlights.
+- **Right Side-by-Side Document Viewer (`--viewer-width: min(48vw, 680px)`)**: Docked right split panel on desktop (`> 768px`) and full-viewport archival sheet on mobile (`<= 768px`), rendering clean, authentic PDF page frames and structured Word/Excel folios navigated straight to the target page or sheet.

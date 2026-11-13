@@ -193,6 +193,31 @@
               </span>
             </label>
 
+            <form class="url-upload" id="urlUploadForm" autocomplete="off" novalidate>
+              <div class="url-upload-field">
+                <span class="url-upload-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07L11.2 4.72" />
+                    <path d="M14 11a5 5 0 0 0-7.07 0L4.1 13.83a5 5 0 0 0 7.07 7.07l1.63-1.62" />
+                  </svg>
+                </span>
+                <input
+                  type="url"
+                  id="urlInput"
+                  placeholder="Вставьте ссылку на документ (PDF, DOCX, DOC, XLSX, XLS, Google Docs, Яндекс Диск)…"
+                  aria-label="Ссылка на документ для загрузки в базу"
+                  required
+                />
+              </div>
+              <button type="submit" class="url-upload-btn" id="urlUploadBtn" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 15V4M7.5 8.5L12 4l4.5 4.5" />
+                  <path d="M4 15.5v2A1.5 1.5 0 0 0 5.5 19h13a1.5 1.5 0 0 0 1.5-1.5v-2" />
+                </svg>
+                <span>Загрузить по ссылке</span>
+              </button>
+            </form>
+
             <ul class="uploads" id="uploads" aria-live="polite"></ul>
 
             <div class="doc-toolbar">

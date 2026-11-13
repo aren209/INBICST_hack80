@@ -16,21 +16,29 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import email.header
+import hashlib
 import inspect
+import io
+import ipaddress
 import json
 import logging
 import re
+import socket
 import threading
 from pathlib import Path
 from typing import Any, Optional
 import urllib.parse
 import uuid
 import warnings
+import zipfile
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+import httpx
+import olefile
 from pydantic import BaseModel, ConfigDict
 
 import pymupdf as fitz
@@ -257,6 +265,22 @@ class SyncFolderRequest(BaseModel):
     async_task: bool = True
 
 
+class UploadUrlRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    url: Optional[str] = None
+    urls: Optional[list[str]] = None
+    filename: Optional[str] = None
+    status: Optional[str] = "active"
+    supersedes: Optional[str] = ""
+    amends: Optional[str] = ""
+    applicable_years: Optional[str] = ""
+    version_note: Optional[str] = ""
+    ocr_backend: Optional[str] = None
+    force_reindex: bool = False
+    async_task: bool = True
+
+
 class MetadataPatchRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -468,6 +492,708 @@ async def upload_documents(
         return {
             "task_id": task.task_id,
             "status": task.status,
+            "result": task.result,
+            "error": task.error,
+        }
+
+
+# -----------------------------------------------------------------------------
+# Document Upload via URL Endpoint & Helpers (SSRF-Safe + Cloud Link Normalizer)
+# -----------------------------------------------------------------------------
+
+MAX_URL_UPLOAD_BYTES: int = 100 * 1024 * 1024  # 100 MB
+MAX_URL_REDIRECTS: int = 6
+_URL_DOWNLOAD_USER_AGENT: str = (
+    "Mozilla/5.0 (compatible; MIPT-Normative-RAG/3.1; +DocumentIngestion)"
+)
+_GENERIC_URL_BASENAMES: frozenset[str] = frozenset(
+    {
+        "download",
+        "export",
+        "uc",
+        "view",
+        "open",
+        "edit",
+        "raw",
+        "preview",
+        "sharing",
+        "file",
+        "document",
+        "spreadsheets",
+        "d",
+    }
+)
+_FORBIDDEN_HOSTNAMES: frozenset[str] = frozenset(
+    {
+        "localhost",
+        "localhost.localdomain",
+        "metadata.google.internal",
+        "metadata",
+        "169.254.169.254",
+    }
+)
+_SSRF_BLOCK_MESSAGE: str = (
+    "Недопустимый адрес ссылки: загрузка с локальных и внутренних адресов запрещена"
+)
+_HTML_TRAP_MESSAGE: str = (
+    "По указанной ссылке открывается веб-страница (HTML), а не файл документа. "
+    "Укажите прямую ссылку на скачивание файла (PDF, DOCX, DOC, XLSX, XLS) или проверьте доступ по ссылке."
+)
+
+
+def _create_url_download_client() -> httpx.Client:
+    """Create an HTTP client configured for safe manual-redirect document fetching."""
+    return httpx.Client(
+        timeout=httpx.Timeout(45.0, connect=15.0),
+        follow_redirects=False,
+        headers={
+            "User-Agent": _URL_DOWNLOAD_USER_AGENT,
+            "Accept": (
+                "application/pdf,application/msword,"
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
+                "application/vnd.ms-excel,"
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
+                "application/octet-stream,*/*;q=0.8"
+            ),
+        },
+    )
+
+
+def _is_forbidden_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if an IP address is loopback, private, link-local, reserved, multicast, or unspecified."""
+    mapped = getattr(ip_obj, "ipv4_mapped", None)
+    if mapped is not None and _is_forbidden_ip(mapped):
+        return True
+    return bool(
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_link_local
+        or ip_obj.is_reserved
+        or ip_obj.is_multicast
+        or ip_obj.is_unspecified
+    )
+
+
+def _validate_public_http_url(url: str) -> str:
+    """
+    Validate that `url` uses http/https and resolves strictly to public routable IP addresses.
+    Protects against SSRF to loopback, RFC1918 private networks, link-local / cloud metadata IPs.
+    """
+    clean_url = (url or "").strip()
+    parsed = urllib.parse.urlsplit(clean_url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Ссылка должна начинаться с http:// или https://",
+        )
+
+    hostname = (parsed.hostname or "").strip()
+    if not hostname:
+        raise HTTPException(
+            status_code=400,
+            detail="Некорректный адрес ссылки: отсутствует имя хоста",
+        )
+
+    host_low = hostname.lower().rstrip(".")
+    if host_low in _FORBIDDEN_HOSTNAMES or host_low.endswith(".localhost"):
+        raise HTTPException(status_code=400, detail=_SSRF_BLOCK_MESSAGE)
+
+    # Immediate check if hostname is an IP literal (works even without DNS)
+    ip_candidate = host_low.split("%", 1)[0]
+    try:
+        literal_ip = ipaddress.ip_address(ip_candidate)
+    except ValueError:
+        literal_ip = None
+
+    if literal_ip is not None:
+        if _is_forbidden_ip(literal_ip):
+            raise HTTPException(status_code=400, detail=_SSRF_BLOCK_MESSAGE)
+        return clean_url
+
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Некорректный порт в адресе ссылки")
+
+    try:
+        addr_infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, OSError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Не удалось разрешить доменное имя '{hostname}'. Проверьте правильность ссылки.",
+        )
+
+    if not addr_infos:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Не удалось определить IP-адрес для '{hostname}'.",
+        )
+
+    for _family, _socktype, _proto, _canonname, sockaddr in addr_infos:
+        if not sockaddr:
+            continue
+        raw_ip = str(sockaddr[0]).split("%", 1)[0]
+        try:
+            resolved_ip = ipaddress.ip_address(raw_ip)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=_SSRF_BLOCK_MESSAGE)
+        if _is_forbidden_ip(resolved_ip):
+            raise HTTPException(status_code=400, detail=_SSRF_BLOCK_MESSAGE)
+
+    return clean_url
+
+
+def _normalize_document_download_url(
+    raw_url: str,
+    client: Optional[httpx.Client] = None,
+) -> str:
+    """
+    Convert popular cloud sharing links into direct file download URLs:
+    - Google Docs -> `/export?format=docx`
+    - Google Sheets -> `/export?format=xlsx`
+    - Google Drive file view / open -> `/uc?export=download&id=<ID>`
+    - GitHub blob -> `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`
+    - Yandex Disk public link -> `cloud-api.yandex.net` direct `href`
+    """
+    clean_url = (raw_url or "").strip()
+    parsed = urllib.parse.urlsplit(clean_url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+
+    # 1. Google Docs & Google Sheets
+    if host == "docs.google.com":
+        m_doc = re.search(r"/document/(?:u/\d+/)?d/([a-zA-Z0-9_-]+)", parsed.path)
+        if m_doc:
+            doc_id = m_doc.group(1)
+            qs = urllib.parse.parse_qs(parsed.query)
+            req_fmt = (qs.get("format", [""])[0] or "").strip().lower()
+            export_fmt = req_fmt if (parsed.path.rstrip("/").endswith("/export") and req_fmt in {"pdf", "docx", "doc"}) else "docx"
+            return f"https://docs.google.com/document/d/{doc_id}/export?format={export_fmt}"
+
+        m_sheet = re.search(r"/spreadsheets/(?:u/\d+/)?d/([a-zA-Z0-9_-]+)", parsed.path)
+        if m_sheet:
+            sheet_id = m_sheet.group(1)
+            qs = urllib.parse.parse_qs(parsed.query)
+            req_fmt = (qs.get("format", [""])[0] or "").strip().lower()
+            export_fmt = req_fmt if (parsed.path.rstrip("/").endswith("/export") and req_fmt in {"pdf", "xlsx", "xls"}) else "xlsx"
+            return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format={export_fmt}"
+
+    # 2. Google Drive file view / open
+    if host in {"drive.google.com", "www.drive.google.com"}:
+        m_file = re.search(r"/file/(?:u/\d+/)?d/([a-zA-Z0-9_-]+)", parsed.path)
+        if m_file:
+            return f"https://drive.google.com/uc?export=download&id={m_file.group(1)}"
+        if parsed.path.rstrip("/") in {"/open", "/uc"}:
+            qs = urllib.parse.parse_qs(parsed.query)
+            file_id = (qs.get("id", [""])[0] or "").strip()
+            if file_id:
+                return f"https://drive.google.com/uc?export=download&id={file_id}"
+
+    # 3. GitHub blob URL
+    if host in {"github.com", "www.github.com"}:
+        m_gh = re.match(r"^/([^/]+)/([^/]+)/blob/(.+)$", parsed.path)
+        if m_gh:
+            owner, repo, rest = m_gh.group(1), m_gh.group(2), m_gh.group(3)
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{rest}"
+
+    # 4. Yandex Disk public link (`disk.yandex.ru`, `disk.yandex.com`, `yadi.sk`, etc.)
+    if host in {"yadi.sk", "www.yadi.sk"} or host.startswith("disk.yandex."):
+        encoded_key = urllib.parse.quote(clean_url, safe="")
+        api_url = f"https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key={encoded_key}"
+        _validate_public_http_url(api_url)
+
+        def _resolve_ydisk(http_client: httpx.Client) -> str:
+            try:
+                resp = http_client.get(api_url)
+            except httpx.TimeoutException:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Превышено время ожидания при обращении к Яндекс Диску",
+                )
+            except httpx.RequestError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Ошибка сети при обращении к Яндекс Диску: {exc}",
+                )
+
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Не удалось получить прямую ссылку с Яндекс Диска (HTTP {resp.status_code}). "
+                        "Проверьте публичный доступ к файлу."
+                    ),
+                )
+            try:
+                payload = resp.json()
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Некорректный ответ API Яндекс Диска при получении ссылки на файл",
+                )
+            href = str((payload or {}).get("href") or "").strip()
+            if not href:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Яндекс Диск не вернул прямую ссылку на скачивание файла",
+                )
+            return href
+
+        if client is not None:
+            return _resolve_ydisk(client)
+        with _create_url_download_client() as tmp_client:
+            return _resolve_ydisk(tmp_client)
+
+    return clean_url
+
+
+def _parse_content_disposition_filename(header_val: str) -> Optional[str]:
+    """Extract UTF-8 / RFC 5987 / quoted filename from a `Content-Disposition` HTTP header."""
+    if not header_val or not header_val.strip():
+        return None
+
+    # 1. RFC 5987: filename*=UTF-8''%D0%9F%D1%80%D0%B8%D0%BA%D0%B0%D0%B7.docx
+    m_star = re.search(r"filename\*\s*=\s*\"?([^;\"]+)\"?", header_val, flags=re.IGNORECASE)
+    if m_star:
+        raw_star = m_star.group(1).strip()
+        if "''" in raw_star:
+            charset_part, _, encoded_part = raw_star.partition("''")
+            charset = charset_part.split("'", 1)[0].strip() or "utf-8"
+            try:
+                decoded = urllib.parse.unquote(encoded_part, encoding=charset, errors="replace")
+            except LookupError:
+                decoded = urllib.parse.unquote(encoded_part, encoding="utf-8", errors="replace")
+        else:
+            decoded = urllib.parse.unquote(raw_star, encoding="utf-8", errors="replace")
+        clean_name = Path(decoded.strip().strip("\"'")).name
+        if clean_name and clean_name not in {".", ".."}:
+            return clean_name
+
+    # 2. Standard filename="..." or filename=token
+    m_quoted = re.search(r'(?<![a-zA-Z0-9_*])filename\s*=\s*"([^"]+)"', header_val, flags=re.IGNORECASE)
+    raw_fn = m_quoted.group(1).strip() if m_quoted else ""
+    if not raw_fn:
+        m_token = re.search(r"(?<![a-zA-Z0-9_*])filename\s*=\s*([^;\s]+)", header_val, flags=re.IGNORECASE)
+        if m_token:
+            raw_fn = m_token.group(1).strip().strip("\"'")
+
+    if raw_fn:
+        if "=?" in raw_fn and "?=" in raw_fn:
+            try:
+                parts = email.header.decode_header(raw_fn)
+                raw_fn = "".join(
+                    frag.decode(enc or "utf-8", errors="replace") if isinstance(frag, bytes) else str(frag)
+                    for frag, enc in parts
+                )
+            except Exception:
+                pass
+        if re.search(r"%[0-9a-fA-F]{2}", raw_fn):
+            raw_fn = urllib.parse.unquote(raw_fn, encoding="utf-8", errors="replace")
+        clean_name = Path(raw_fn.strip()).name
+        if clean_name and clean_name not in {".", ".."}:
+            return clean_name
+
+    return None
+
+
+def _extract_url_candidate_basename(url: str) -> Optional[str]:
+    """Extract decoded filename from URL path, ignoring generic extensionless endpoint segments."""
+    parsed = urllib.parse.urlsplit(url or "")
+    raw_seg = urllib.parse.unquote(Path(parsed.path or "").name).strip()
+    if not raw_seg or raw_seg in {".", ".."}:
+        return None
+    ext = Path(raw_seg).suffix.lower()
+    stem_low = Path(raw_seg).stem.lower()
+    if ext not in SUPPORTED_EXTENSIONS and stem_low in _GENERIC_URL_BASENAMES:
+        return None
+    return raw_seg
+
+
+def _sniff_document_extension(data: bytes, content_type: str = "") -> Optional[str]:
+    """Sniff `.pdf`, `.docx`, `.doc`, `.xlsx`, or `.xls` from file magic bytes and `Content-Type`."""
+    if not data:
+        return None
+
+    ct_mime = (content_type or "").split(";", 1)[0].strip().lower()
+    head_stripped = data[:1024].lstrip()
+
+    # 1. PDF signature (%PDF-)
+    if head_stripped.startswith(b"%PDF-") or data[:8].startswith(b"%PDF-"):
+        return ".pdf"
+
+    # 2. OOXML ZIP container (PK\x03\x04) -> .docx or .xlsx
+    if data[:4] == b"PK\x03\x04":
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                names = zf.namelist()
+            if any(n.startswith("word/") for n in names):
+                return ".docx"
+            if any(n.startswith("xl/") for n in names):
+                return ".xlsx"
+        except zipfile.BadZipFile:
+            pass
+        if "wordprocessingml" in ct_mime:
+            return ".docx"
+        if "spreadsheetml" in ct_mime:
+            return ".xlsx"
+        return None
+
+    # 3. OLE2 Compound File Binary (\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1) -> .doc or .xls
+    if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        try:
+            with olefile.OleFileIO(io.BytesIO(data)) as ole:
+                entries = ole.listdir()
+            top_streams = {entry[0].lower() for entry in entries if entry}
+            if "worddocument" in top_streams:
+                return ".doc"
+            if "workbook" in top_streams or "book" in top_streams:
+                return ".xls"
+        except Exception:
+            pass
+        if "msword" in ct_mime:
+            return ".doc"
+        if "ms-excel" in ct_mime or "excel" in ct_mime:
+            return ".xls"
+        return None
+
+    # 4. Rich Text Format ({\rtf) -> .doc
+    if head_stripped[:5].lower() == b"{\\rtf":
+        return ".doc"
+
+    # 5. Fallback Content-Type mapping (e.g. Word-exported HTML with application/msword)
+    if ct_mime == "application/pdf":
+        return ".pdf"
+    if "wordprocessingml" in ct_mime:
+        return ".docx"
+    if "spreadsheetml" in ct_mime:
+        return ".xlsx"
+    if ct_mime == "application/msword":
+        return ".doc"
+    if ct_mime in {"application/vnd.ms-excel", "application/excel", "application/x-excel", "application/x-msexcel"}:
+        return ".xls"
+
+    return None
+
+
+def _is_html_webpage_payload(data: bytes) -> bool:
+    """Return True if leading bytes match an HTML document (`<!doctype html` or `<html`)."""
+    head = data[:512].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
+        return True
+    if head.startswith(b"<?xml") and b"<html" in head[:256]:
+        return True
+    return False
+
+
+def _sanitize_downloaded_filename(raw_stem: str, ext: str, data: bytes) -> str:
+    """Produce a safe, filesystem-clean filename with guaranteed non-empty stem and valid extension."""
+    cleaned_stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", (raw_stem or "")).strip(" ._")
+    if len(cleaned_stem) > 180:
+        cleaned_stem = cleaned_stem[:180].rstrip(" ._")
+    if not cleaned_stem:
+        cleaned_stem = f"doc_{hashlib.sha256(data).hexdigest()[:8]}"
+    clean_ext = ext.lower() if ext.startswith(".") else f".{ext.lower()}"
+    return f"{cleaned_stem}{clean_ext}"
+
+
+def _download_document_from_url(
+    raw_url: str,
+    explicit_filename: Optional[str] = None,
+    client: Optional[httpx.Client] = None,
+) -> tuple[str, bytes]:
+    """
+    Validate, normalize, and safely download a document (`PDF`, `DOCX`, `DOC`, `XLSX`, `XLS`) from `raw_url`.
+    Enforces SSRF protection on every redirect hop, 100 MB streaming cap, HTML webpage trap guard,
+    and smart filename + magic-byte format detection.
+    """
+    _validate_public_http_url(raw_url)
+
+    def _run_with_client(http_client: httpx.Client) -> tuple[str, bytes]:
+        current_url = _normalize_document_download_url(raw_url, client=http_client)
+        if current_url != raw_url.strip():
+            _validate_public_http_url(current_url)
+
+        final_url = current_url
+        content_type = ""
+        content_disposition = ""
+        buf = bytearray()
+
+        for hop in range(MAX_URL_REDIRECTS + 1):
+            try:
+                with http_client.stream("GET", current_url) as resp:
+                    if resp.status_code in {301, 302, 303, 307, 308}:
+                        if hop >= MAX_URL_REDIRECTS:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Слишком много перенаправлений при скачивании документа по ссылке",
+                            )
+                        location = (resp.headers.get("location") or "").strip()
+                        if not location:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Сервер вернул перенаправление (HTTP {resp.status_code}) без адреса назначения",
+                            )
+                        next_url = urllib.parse.urljoin(current_url, location)
+                        _validate_public_http_url(next_url)
+                        current_url = next_url
+                        continue
+
+                    if resp.status_code >= 400:
+                        if resp.status_code == 404:
+                            detail_msg = "Не удалось скачать документ по ссылке (HTTP 404): файл не найден"
+                        elif resp.status_code in {401, 403}:
+                            detail_msg = (
+                                f"Не удалось скачать документ по ссылке (HTTP {resp.status_code}): "
+                                "доступ к файлу ограничен"
+                            )
+                        else:
+                            detail_msg = f"Не удалось скачать документ по ссылке (HTTP {resp.status_code})"
+                        raise HTTPException(status_code=400, detail=detail_msg)
+
+                    cl_header = resp.headers.get("content-length")
+                    if cl_header:
+                        try:
+                            if int(cl_header) > MAX_URL_UPLOAD_BYTES:
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail="Размер файла по ссылке превышает допустимый лимит (100 МБ)",
+                                )
+                        except ValueError:
+                            pass
+
+                    buf.clear()
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        if not chunk:
+                            continue
+                        if len(buf) + len(chunk) > MAX_URL_UPLOAD_BYTES:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Размер файла по ссылке превышает допустимый лимит (100 МБ)",
+                            )
+                        buf.extend(chunk)
+
+                    final_url = current_url
+                    content_type = resp.headers.get("content-type", "")
+                    content_disposition = resp.headers.get("content-disposition", "")
+                    break
+            except HTTPException:
+                raise
+            except httpx.TimeoutException:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Превышено время ожидания при скачивании документа по ссылке",
+                )
+            except httpx.RequestError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Не удалось скачать документ по ссылке (ошибка сети: {exc})",
+                )
+
+        data = bytes(buf)
+        if not data:
+            raise HTTPException(
+                status_code=400,
+                detail="По указанной ссылке получен пустой ответ (0 байт)",
+            )
+
+        ct_mime = (content_type or "").split(";", 1)[0].strip().lower()
+        cd_filename = _parse_content_disposition_filename(content_disposition)
+        cd_is_explicit_doc = bool(cd_filename and Path(cd_filename).suffix.lower() == ".doc")
+        ct_is_msword = ct_mime == "application/msword"
+
+        # HTML Webpage Trap Guard: reject HTML pages unless explicitly served as Word .doc
+        if (ct_mime.startswith("text/html") or _is_html_webpage_payload(data)) and not (
+            cd_is_explicit_doc or ct_is_msword
+        ):
+            raise HTTPException(status_code=400, detail=_HTML_TRAP_MESSAGE)
+
+        # Candidate filename resolution in priority order:
+        # 1) explicit req.filename -> 2) Content-Disposition -> 3) final URL path -> 4) original URL path
+        clean_explicit = Path(explicit_filename.strip()).name if (explicit_filename and explicit_filename.strip()) else None
+        candidate_name = (
+            clean_explicit
+            or cd_filename
+            or _extract_url_candidate_basename(final_url)
+            or _extract_url_candidate_basename(raw_url)
+        )
+
+        sniffed_ext = _sniff_document_extension(data, content_type)
+        cand_ext = Path(candidate_name).suffix.lower() if candidate_name else ""
+
+        if cand_ext in SUPPORTED_EXTENSIONS:
+            if ct_mime == "application/json" and sniffed_ext is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="По указанной ссылке получен JSON-ответ вместо файла документа",
+                )
+            resolved_ext = cand_ext
+            cand_stem = Path(candidate_name).stem if candidate_name else ""
+        elif sniffed_ext in SUPPORTED_EXTENSIONS:
+            resolved_ext = sniffed_ext
+            if candidate_name and cand_ext in {".php", ".aspx", ".jsp", ".cgi", ".ashx", ".do", ".action", ".html", ".htm"}:
+                cand_stem = Path(candidate_name).stem
+                if cand_stem.lower() in _GENERIC_URL_BASENAMES:
+                    cand_stem = ""
+            else:
+                cand_stem = candidate_name or ""
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Неподдерживаемый формат файла по ссылке. "
+                    "Допустимые форматы документов: PDF, DOCX, DOC, XLSX, XLS"
+                ),
+            )
+
+        safe_filename = _sanitize_downloaded_filename(cand_stem, resolved_ext, data)
+        return safe_filename, data
+
+    if client is not None:
+        return _run_with_client(client)
+    with _create_url_download_client() as managed_client:
+        return _run_with_client(managed_client)
+
+
+@app.post("/api/documents/upload-url", summary="Download document(s) by URL and index into knowledge base")
+async def upload_documents_by_url(req: UploadUrlRequest):
+    raw_urls: list[str] = []
+    if req.url and req.url.strip():
+        raw_urls.append(req.url.strip())
+    if req.urls:
+        for item in req.urls:
+            if isinstance(item, str) and item.strip():
+                raw_urls.append(item.strip())
+
+    # Deduplicate preserving order
+    unique_urls = list(dict.fromkeys(raw_urls))
+    if not unique_urls:
+        raise HTTPException(status_code=400, detail="Не указана ссылка на документ")
+
+    explicit_fn = (
+        req.filename.strip()
+        if (len(unique_urls) == 1 and req.filename and req.filename.strip())
+        else None
+    )
+
+    def _download_all_urls() -> list[Path]:
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        paths: list[Path] = []
+        used_names: set[str] = set()
+        with _create_url_download_client() as dl_client:
+            for u in unique_urls:
+                safe_name, content_bytes = _download_document_from_url(
+                    raw_url=u,
+                    explicit_filename=explicit_fn,
+                    client=dl_client,
+                )
+                if safe_name in used_names:
+                    base_stem = Path(safe_name).stem
+                    ext_part = Path(safe_name).suffix
+                    counter = 2
+                    while f"{base_stem}_{counter}{ext_part}" in used_names:
+                        counter += 1
+                    safe_name = f"{base_stem}_{counter}{ext_part}"
+                used_names.add(safe_name)
+                dest_path = UPLOADS_DIR / safe_name
+                dest_path.write_bytes(content_bytes)
+                paths.append(dest_path)
+        return paths
+
+    saved_paths = await asyncio.to_thread(_download_all_urls)
+
+    metadata_overrides: dict[str, Any] = {}
+    if req.status and req.status.strip():
+        metadata_overrides["status"] = req.status.strip()
+    if req.supersedes and req.supersedes.strip():
+        metadata_overrides["supersedes"] = req.supersedes.strip()
+    if req.amends and req.amends.strip():
+        metadata_overrides["amends"] = req.amends.strip()
+    if req.applicable_years and req.applicable_years.strip():
+        metadata_overrides["applicable_years"] = req.applicable_years.strip()
+    if req.version_note and req.version_note.strip():
+        metadata_overrides["version_note"] = req.version_note.strip()
+
+    clean_ocr_backend = req.ocr_backend.strip() if req.ocr_backend and req.ocr_backend.strip() else None
+
+    task = _get_or_create_task(task_type="upload_url")
+    pipeline = get_pipeline()
+
+    def _run_url_upload_indexing():
+        task.status = "running"
+        task.started_at = datetime.now(timezone.utc).isoformat()
+        total_files = len(saved_paths)
+        file_statuses: list[dict[str, Any]] = []
+
+        try:
+            for idx, file_path in enumerate(saved_paths, start=1):
+                task.file_name = file_path.name
+
+                def _file_progress(ev: dict[str, Any], _idx: int = idx, _tot: int = total_files):
+                    overall_pct = int(((_idx - 1) + (ev.get("percent", 0) / 100.0)) / max(1, _tot) * 100)
+                    patched = dict(ev)
+                    patched["percent"] = max(
+                        1,
+                        min(99 if ev.get("stage") != "done" or _idx < _tot else 100, overall_pct),
+                    )
+                    patched["message"] = f"[{_idx}/{_tot}] {ev.get('message', '')}"
+                    task.emit_event(patched)
+
+                st = pipeline.index_file(
+                    file_path=file_path,
+                    metadata_overrides=metadata_overrides if metadata_overrides else None,
+                    ocr_backend=clean_ocr_backend,
+                    force=req.force_reindex,
+                    progress_callback=_file_progress,
+                )
+                file_statuses.append(st.model_dump())
+
+            task.status = "completed"
+            task.completed_at = datetime.now(timezone.utc).isoformat()
+            task.percent = 100
+            task.result = {"files": file_statuses, "total_files": total_files}
+            task.emit_event(
+                {
+                    "stage": "done",
+                    "stage_index": 6,
+                    "total_stages": 6,
+                    "stage_label": "Завершено",
+                    "percent": 100,
+                    "message": f"Успешно обработано файлов: {total_files}",
+                    "file_name": "",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        except Exception as exc:
+            logger.exception("URL upload indexing failed: %s", exc)
+            task.status = "failed"
+            task.error = str(exc)
+            task.completed_at = datetime.now(timezone.utc).isoformat()
+            task.emit_event(
+                {
+                    "stage": "error",
+                    "stage_index": task.stage_index,
+                    "total_stages": 6,
+                    "stage_label": "Ошибка",
+                    "percent": task.percent,
+                    "message": f"Ошибка обработки: {exc}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+    if req.async_task:
+        asyncio.create_task(asyncio.to_thread(_run_url_upload_indexing))
+        return {
+            "task_id": task.task_id,
+            "status": "running",
+            "files": [p.name for p in saved_paths],
+            "message": "Индексация загруженных по ссылке документов запущена в фоновом режиме",
+        }
+    else:
+        await asyncio.to_thread(_run_url_upload_indexing)
+        return {
+            "task_id": task.task_id,
+            "status": task.status,
+            "files": [p.name for p in saved_paths],
             "result": task.result,
             "error": task.error,
         }

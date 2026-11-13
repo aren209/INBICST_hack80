@@ -67,10 +67,6 @@
   --prim-ochre-200: #fde68a;
   --prim-ochre-dark-bg: rgba(234, 179, 8, 0.26);
   --prim-ochre-dark-fg: #fef9c3;
-  --prim-ochre-overlay-light: rgba(245, 158, 11, 0.28);
-  --prim-ochre-overlay-border-light: rgba(180, 83, 9, 0.72);
-  --prim-ochre-overlay-dark: rgba(250, 204, 21, 0.3);
-  --prim-ochre-overlay-border-dark: rgba(250, 204, 21, 0.78);
   --prim-amber-50: #fef6e7;
   --prim-amber-300: #fbbf24;
   --prim-amber-700: #9a5b08;
@@ -181,8 +177,6 @@
 
   --color-highlight-bg: var(--prim-ochre-200);
   --color-highlight-fg: var(--prim-ink-950);
-  --color-pdf-hl-bg: var(--prim-ochre-overlay-light);
-  --color-pdf-hl-border: var(--prim-ochre-overlay-border-light);
   --color-paper-sheet: var(--prim-paper-0);
   --color-viewer-well: var(--prim-paper-200);
 
@@ -270,8 +264,6 @@
 
     --color-highlight-bg: var(--prim-ochre-dark-bg);
     --color-highlight-fg: var(--prim-ochre-dark-fg);
-    --color-pdf-hl-bg: var(--prim-ochre-overlay-dark);
-    --color-pdf-hl-border: var(--prim-ochre-overlay-border-dark);
     --color-paper-sheet: var(--prim-paper-0);
     --color-viewer-well: var(--prim-night-950);
 
@@ -330,8 +322,6 @@
 
   --color-highlight-bg: var(--prim-ochre-dark-bg);
   --color-highlight-fg: var(--prim-ochre-dark-fg);
-  --color-pdf-hl-bg: var(--prim-ochre-overlay-dark);
-  --color-pdf-hl-border: var(--prim-ochre-overlay-border-dark);
   --color-paper-sheet: var(--prim-paper-0);
   --color-viewer-well: var(--prim-night-950);
 
@@ -428,11 +418,13 @@
   --ledger-fmt-fg: var(--color-fg-secondary);
   --ledger-fmt-border: var(--color-border-default);
 
-  /* Upload Dropzone */
+  /* Upload Dropzone & URL Bar */
   --upload-bg: var(--color-bg-surface);
   --upload-border: var(--color-border-strong);
   --upload-drag-bg: var(--color-accent-tint);
   --upload-drag-border: var(--color-accent);
+  --url-upload-bg: var(--color-bg-surface);
+  --url-upload-border: var(--color-border-default);
 
   /* Modal & Toast */
   --dialog-bg: var(--color-bg-surface);
@@ -1442,7 +1434,7 @@ svg {
 .md .dq-src:hover:not(:disabled) {
   border-color: var(--color-accent);
   color: var(--color-accent);
-  background-color: var(--color-bg-surface);
+  background-color: var(--color-accent-tint);
 }
 
 .md .dq-src:active:not(:disabled) {
@@ -2043,6 +2035,102 @@ svg {
   font-weight: 500;
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+/* Editorial URL Upload Bar */
+.url-upload {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3-5);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--url-upload-border);
+  background-color: var(--url-upload-bg);
+  box-shadow: var(--shadow-xs);
+  transition: border-color var(--prim-dur-fast) var(--prim-ease-std),
+              box-shadow var(--prim-dur-fast) var(--prim-ease-std);
+}
+
+.url-upload:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-xs), 0 0 0 3px var(--color-focus-ring);
+}
+
+.url-upload-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+}
+
+.url-upload-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.url-upload-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.url-upload input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: var(--prim-text-md);
+  color: var(--color-fg-primary);
+}
+
+.url-upload input::placeholder {
+  color: var(--color-fg-placeholder);
+}
+
+.url-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1-5);
+  height: 36px;
+  padding: 0 var(--space-3-5);
+  border: 1px solid transparent;
+  border-radius: var(--btn-radius);
+  background-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  font-size: var(--prim-text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color var(--prim-dur-fast) var(--prim-ease-std),
+              border-color var(--prim-dur-fast) var(--prim-ease-std),
+              color var(--prim-dur-fast) var(--prim-ease-std);
+}
+
+.url-upload-btn svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2;
+}
+
+.url-upload-btn:hover:not(:disabled) {
+  background-color: var(--btn-primary-bg-hover);
+}
+
+.url-upload-btn:active:not(:disabled) {
+  background-color: var(--btn-primary-bg-active);
+}
+
+.url-upload-btn:disabled {
+  background-color: var(--color-bg-subtle);
+  color: var(--color-fg-muted);
+  border-color: var(--color-border-default);
+  cursor: not-allowed;
 }
 
 /* Upload Progress Queue */
@@ -2797,20 +2885,6 @@ svg {
   font-variant-numeric: tabular-nums;
 }
 
-.dv-page-match-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 1px var(--space-2);
-  border-radius: var(--radius-xs);
-  background-color: var(--color-verified-bg);
-  border: 1px solid var(--color-verified-border);
-  color: var(--color-verified-fg);
-  font-family: var(--font-sans);
-  font-size: var(--prim-text-xs);
-  font-weight: 500;
-}
-
 .dv-pdf-stage {
   position: relative;
   width: 100%;
@@ -2821,26 +2895,12 @@ svg {
   overflow: hidden;
 }
 
-.dv-page-card.is-target .dv-pdf-stage {
-  border-color: var(--color-accent);
-  box-shadow: var(--viewer-page-shadow), 0 0 0 2px var(--color-focus-ring);
-}
-
 .dv-pdf-img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
   user-select: none;
-}
-
-.dv-pdf-hl {
-  position: absolute;
-  background-color: var(--color-pdf-hl-bg);
-  border: 1.5px solid var(--color-pdf-hl-border);
-  border-radius: 2px;
-  pointer-events: none;
-  z-index: 2;
 }
 
 /* Word / Excel Archival Folio Sheet */
@@ -2854,11 +2914,6 @@ svg {
   padding: var(--space-5);
   font-size: calc(0.9375rem * var(--dv-zoom-factor));
   line-height: 1.66;
-}
-
-.dv-folio-sheet.is-target {
-  border-color: var(--color-accent);
-  box-shadow: var(--viewer-page-shadow), 0 0 0 2px var(--color-focus-ring);
 }
 
 .dv-folio-head {
@@ -2896,27 +2951,12 @@ svg {
   word-wrap: break-word;
 }
 
-.dv-block-para.is-clause-match,
-.dv-block-heading.is-clause-match {
-  padding-left: var(--space-3);
-  border-left: 3px solid var(--color-accent);
-}
-
 .dv-clause-tag {
   font-family: var(--font-mono);
   font-size: 0.86em;
   font-weight: 500;
   color: var(--color-accent);
   margin-right: var(--space-1-5);
-}
-
-.dv-mark {
-  background-color: var(--quote-mark-bg);
-  color: var(--quote-mark-fg);
-  padding: 1px 3px;
-  border-radius: var(--radius-xs);
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
 }
 
 .dv-table-wrap {
@@ -2959,10 +2999,6 @@ svg {
 
 .dv-table tr:last-child td {
   border-bottom: 0;
-}
-
-.dv-table tr.is-match-row td {
-  background-color: var(--color-accent-tint);
 }
 
 /* ==========================================================================
@@ -3304,6 +3340,30 @@ svg {
     align-items: flex-start;
     padding: var(--space-4);
     gap: var(--space-3);
+  }
+
+  .url-upload {
+    flex-direction: column;
+    align-items: stretch;
+    padding: var(--space-2-5);
+    gap: var(--space-2);
+  }
+
+  .url-upload-field {
+    min-height: 44px;
+    padding: 0 var(--space-1-5);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .url-upload input {
+    min-height: 44px;
+    height: 44px;
+    font-size: 1rem;
+  }
+
+  .url-upload-btn {
+    width: 100%;
+    min-height: 44px;
   }
 
   .source {
