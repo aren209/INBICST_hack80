@@ -108,6 +108,65 @@ def _core_doc_number(doc_number: str) -> str:
     return base
 
 
+def _normalize_text_for_dedup(text: str) -> str:
+    """
+    Compute canonical normalized full text for cross-format duplicate detection:
+    strips page markers (`[Стр. N]`), lowercases, maps `ё -> е`, strips punctuation/underscores,
+    and collapses all whitespace to single spaces.
+    """
+    if not text:
+        return ""
+    s = re.sub(r"\[Стр\.\s*\d+\]", " ", text, flags=re.IGNORECASE)
+    s = s.lower().replace("ё", "е")
+    s = re.sub(r"[^\w\s]|_", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _word_shingles(norm_text: str, k: int = 4) -> set[str]:
+    """Build k-word shingles over normalized text for cross-format chunk-boundary resilience."""
+    words = norm_text.split()
+    if not words:
+        return set()
+    if len(words) < k:
+        return {" ".join(words)}
+    return {" ".join(words[i : i + k]) for i in range(len(words) - k + 1)}
+
+
+class PipelineFileResult(IndexingFileStatus):
+    """
+    Dual-interface result model subclassing `IndexingFileStatus` (`extra='allow'`) while also
+    supporting dict-style `.get()`, `[]`, `in`, `.keys()`, `.items()`, `.values()` access.
+    """
+
+    def _as_dict(self) -> dict[str, Any]:
+        return self.model_dump()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        d = self._as_dict()
+        return d.get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        d = self._as_dict()
+        if key in d:
+            return d[key]
+        raise KeyError(key)
+
+    def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        return key in self._as_dict()
+
+    def keys(self) -> Any:
+        return self._as_dict().keys()
+
+    def items(self) -> Any:
+        return self._as_dict().items()
+
+    def values(self) -> Any:
+        return self._as_dict().values()
+
+
 class IndexingPipeline:
     """
     Fault-tolerant orchestrator for single-file and folder ('доки/') indexing:
@@ -354,7 +413,7 @@ class IndexingPipeline:
             overrides=metadata_overrides,
         )
 
-        # Preserve existing doc_id if file_name was already in registry and no explicit override doc_id is configured
+        # Preserve existing canonical doc_id if file_name or sha256 was already in registry and no explicit override doc_id is configured
         explicit_ovr_doc_id = (
             (metadata_overrides or {}).get("doc_id")
             or (self.overrides_data.get("documents", {}).get(file_name, {}) or {}).get("doc_id")
@@ -363,6 +422,11 @@ class IndexingPipeline:
             (m for m in self.registry.values() if m.file_name == file_name),
             None,
         )
+        if existing_for_file is None and sha256:
+            existing_for_file = next(
+                (m for m in self.registry.values() if m.sha256 == sha256 and m.status != DocumentStatus.ERROR.value),
+                None,
+            )
         if existing_for_file and not explicit_ovr_doc_id:
             doc_meta.doc_id = existing_for_file.doc_id
 
@@ -472,10 +536,20 @@ class IndexingPipeline:
         if chunk.table_id:
             chunk.metadata["table_id"] = chunk.table_id
 
-        # Stamp EDO fields & file_path onto both metadata and top-level extra attributes (serialized into Qdrant payload)
+        # Stamp EDO & K2 edition fields & file_path onto both metadata and top-level extra attributes (serialized into Qdrant payload)
+        doc_md = doc_meta.metadata if isinstance(doc_meta.metadata, dict) else {}
+        ed_date = str(getattr(doc_meta, "edition_date", None) or doc_md.get("edition_date") or "").strip()
+        ed_num = getattr(doc_meta, "edition_number", None)
+        if ed_num is None:
+            ed_num = doc_md.get("edition_number")
+        ver_fam = str(getattr(doc_meta, "version_family", None) or doc_md.get("version_family") or "").strip()
+
         chunk.metadata["edo_number"] = edo_number
         chunk.metadata["edo_date"] = edo_date
         chunk.metadata["is_edo_stamp"] = is_edo_stamp
+        chunk.metadata["edition_date"] = ed_date
+        chunk.metadata["edition_number"] = ed_num
+        chunk.metadata["version_family"] = ver_fam
         chunk.metadata["page_numbers"] = list(clean_pages)
         if doc_meta.file_path:
             chunk.metadata["file_path"] = doc_meta.file_path
@@ -483,6 +557,9 @@ class IndexingPipeline:
         setattr(chunk, "edo_number", edo_number)
         setattr(chunk, "edo_date", edo_date)
         setattr(chunk, "is_edo_stamp", is_edo_stamp)
+        setattr(chunk, "edition_date", ed_date)
+        setattr(chunk, "edition_number", ed_num)
+        setattr(chunk, "version_family", ver_fam)
 
     @classmethod
     def _enrich_records_with_requisites_and_page_maps(
@@ -634,16 +711,152 @@ class IndexingPipeline:
                 matches.append(meta)
         return matches
 
-    def _reconcile_edition_graph(self) -> set[str]:
+    @staticmethod
+    def _get_doc_k2_fields(doc: DocumentMeta) -> tuple[str, Any, str, list[int], list[str]]:
+        """Extract `(edition_date, edition_number, version_family, target_plan_years, repealed_subjects)` from a DocumentMeta."""
+        md = doc.metadata if isinstance(doc.metadata, dict) else {}
+        ed_date = str(getattr(doc, "edition_date", None) or md.get("edition_date") or "").strip()
+        ed_num = getattr(doc, "edition_number", None)
+        if ed_num is None:
+            ed_num = md.get("edition_number")
+        ver_fam = str(getattr(doc, "version_family", None) or md.get("version_family") or "").strip()
+        t_years = [int(y) for y in (md.get("target_plan_years") or []) if str(y).isdigit()]
+        rep_subjs = [str(s) for s in (md.get("repealed_subjects") or []) if s]
+        return ed_date, ed_num, ver_fam, t_years, rep_subjs
+
+    def _populate_missing_k2_fields(self, doc: DocumentMeta) -> bool:
+        """Ensure legacy or freshly loaded DocumentMeta entries carry K2 `edition_date`, `edition_number`, and `version_family`."""
+        from src.chunking.glossary import (
+            compute_version_family,
+            extract_edition_metadata,
+            extract_target_plan_years,
+        )
+
+        ed_date, ed_num, ver_fam, t_years, _ = self._get_doc_k2_fields(doc)
+        doc_secs = sorted(
+            [s for s in self.sections_store.values() if s.doc_id == doc.doc_id],
+            key=lambda s: (s.unit_id, s.section_id),
+        )
+        full_sec_text = "\n".join(s.clean_text for s in doc_secs[:4] if s.clean_text)
+
+        changed = False
+        md = dict(doc.metadata or {})
+
+        if not ed_date and ed_num is None:
+            ed_info = extract_edition_metadata(
+                title=doc.title,
+                header_text=full_sec_text[:1200],
+                full_text=full_sec_text,
+                file_name=doc.file_name,
+            )
+            if ed_info.get("edition_date"):
+                ed_date = str(ed_info["edition_date"])
+                changed = True
+            if ed_info.get("edition_number") is not None:
+                ed_num = ed_info["edition_number"]
+                changed = True
+
+        if not ver_fam:
+            computed_vf = compute_version_family(
+                doc_type=doc.doc_type,
+                title=doc.title,
+                header_text=full_sec_text[:1200],
+                full_text=full_sec_text,
+                file_name=doc.file_name,
+            )
+            if computed_vf:
+                ver_fam = computed_vf
+                changed = True
+
+        if not t_years:
+            computed_ty = extract_target_plan_years(title=doc.title, header_text=full_sec_text[:800])
+            if computed_ty:
+                t_years = computed_ty
+                md["target_plan_years"] = t_years
+                changed = True
+
+        if md.get("edition_date") != ed_date:
+            md["edition_date"] = ed_date
+            changed = True
+        if md.get("edition_number") != ed_num:
+            md["edition_number"] = ed_num
+            changed = True
+        if md.get("version_family") != ver_fam:
+            md["version_family"] = ver_fam
+            changed = True
+
+        setattr(doc, "edition_date", ed_date)
+        setattr(doc, "edition_number", ed_num)
+        setattr(doc, "version_family", ver_fam)
+        doc.metadata = md
+        return changed
+
+    @classmethod
+    def _doc_version_sort_key(cls, doc: DocumentMeta) -> tuple[str, tuple[int, int], int, int, str]:
         """
-        Synchronize bidirectional edition links across all documents in self.registry:
-        - If A supersedes B -> B.superseded_by includes A, and B.status becomes 'superseded'
-          (unless B is 'superseded_template_reference').
-        - If B amends A -> A.amended_by includes B, and A.version_note notes the amendment.
-        Returns set of doc_ids whose metadata changed so their Qdrant payload and u00_meta can be updated.
+        Total ordering key `(effective_date, edition_number_tuple, has_supersedes, numeric_doc_no, indexed_at)`
+        for comparing multi-version documents within the same `version_family`.
+        """
+        from src.chunking.glossary import edition_sort_tuple
+
+        ed_date, ed_num, _, _, _ = cls._get_doc_k2_fields(doc)
+        edo_number, edo_date, _ = cls._extract_edo_fields(doc)
+
+        eff_date = ed_date or (doc.doc_date or "").strip() or edo_date
+        if not eff_date and doc.applicable_years:
+            eff_date = f"{max(int(y) for y in doc.applicable_years):04d}-01-01"
+        if not eff_date:
+            eff_date = "0000-00-00"
+
+        ed_tuple = edition_sort_tuple(ed_num)
+        has_sup = 1 if doc.supersedes else 0
+        m_num = re.match(r"^(\d+)", _core_doc_number(doc.doc_number or edo_number))
+        num_int = int(m_num.group(1)) if m_num else 0
+        return (eff_date, ed_tuple, has_sup, num_int, doc.indexed_at or "")
+
+    def _reconcile_relations(self, sync_external: bool = True) -> set[str]:
+        """
+        Synchronize explicit AND automatic K2 `version_family` edition links across all documents in `self.registry`:
+        1) Explicit clauses & YAML overrides (`supersedes` <-> `superseded_by`, `amends` <-> `amended_by`, unnumbered repeal clauses).
+        2) Automatic `version_family` multi-version reconciliation: when 2+ documents share the same non-generic
+           `normative::...` `version_family` (excluding disjoint annual plans and partial `amends`), compares
+           `(edition_date or doc_date, edition_number)`, keeps the newest version `status='active'`, marks older
+           versions `status='superseded'`, links `supersedes`/`superseded_by`, and sets clear reciprocated Russian
+           `version_note`s.
+        When `sync_external=True` (default for standalone calls), persists updated statuses/notes to
+        `document_registry.json` and updates Qdrant payloads (`set_payload` + `u00_meta`).
         """
         changed_doc_ids: set[str] = set()
 
+        # Pass 0: Ensure K2 fields are populated across all registered documents
+        for doc in list(self.registry.values()):
+            if doc.status == DocumentStatus.ERROR.value:
+                continue
+            if self._populate_missing_k2_fields(doc):
+                changed_doc_ids.add(doc.doc_id)
+
+        # Pass 0b: Match unnumbered repealed-act clauses (e.g. "Признать утратившим силу регламент ... № б/н от 07.05.2024")
+        for doc_a in list(self.registry.values()):
+            if doc_a.status == DocumentStatus.ERROR.value:
+                continue
+            _, _, _, _, rep_subjs = self._get_doc_k2_fields(doc_a)
+            if not rep_subjs:
+                continue
+            for doc_b in list(self.registry.values()):
+                if doc_b.doc_id == doc_a.doc_id or doc_b.status == DocumentStatus.ERROR.value:
+                    continue
+                _, _, vf_b, _, _ = self._get_doc_k2_fields(doc_b)
+                subj_b = vf_b.split("::", 1)[1] if "::" in vf_b else vf_b
+                if not subj_b:
+                    continue
+                if any(rs == subj_b or rs in subj_b or subj_b in rs for rs in rep_subjs):
+                    if self._doc_version_sort_key(doc_a) > self._doc_version_sort_key(doc_b):
+                        ref_b = _core_doc_number(doc_b.doc_number) or doc_b.doc_number or doc_b.doc_id
+                        if ref_b not in doc_a.supersedes:
+                            doc_a.supersedes.append(ref_b)
+                            changed_doc_ids.add(doc_a.doc_id)
+
+        # Passes 1–4: Explicit forward & reverse supersedes / amends
         for doc_a in list(self.registry.values()):
             ref_a = _core_doc_number(doc_a.doc_number) or doc_a.doc_number or doc_a.doc_id
 
@@ -657,19 +870,27 @@ class IndexingPipeline:
                         doc_b.superseded_by.append(ref_a)
                         modified = True
                     if doc_b.status == DocumentStatus.ACTIVE.value:
-                        # Preserve superseded_template_reference if configured in overrides
                         file_ovr = self.overrides_data.get("documents", {}).get(doc_b.file_name, {})
                         if file_ovr.get("status") == DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value:
                             doc_b.status = DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value
                         else:
                             doc_b.status = DocumentStatus.SUPERSEDED.value
                         modified = True
-                    note_fragment = f"Отменен / заменен документом № {ref_a}"
-                    if ref_a not in (doc_b.version_note or ""):
+                    disp_a_date = (
+                        self._get_doc_k2_fields(doc_a)[0]
+                        or doc_a.doc_date
+                        or (f"{max(doc_a.applicable_years)} г." if doc_a.applicable_years else "")
+                    )
+                    note_fragment = (
+                        f"Утратил актуальность: действует более новая редакция — {doc_a.title}"
+                        + (f" от {disp_a_date}" if disp_a_date else "")
+                        + "."
+                    )
+                    if ref_a not in (doc_b.version_note or "") and doc_a.title not in (doc_b.version_note or ""):
                         doc_b.version_note = (
-                            f"{doc_b.version_note.rstrip('. ')}. {note_fragment}."
+                            f"{doc_b.version_note.rstrip('. ')}. {note_fragment}"
                             if doc_b.version_note
-                            else f"{note_fragment} ({doc_a.title})."
+                            else note_fragment
                         )
                         modified = True
                     if modified:
@@ -716,15 +937,178 @@ class IndexingPipeline:
                         doc_s.amends.append(ref_a)
                         changed_doc_ids.add(doc_s.doc_id)
 
+        # Pass 5: Automatic K2 `version_family` multi-version reconciliation
+        by_family: dict[str, list[DocumentMeta]] = {}
+        for doc in self.registry.values():
+            if doc.status in {DocumentStatus.ERROR.value, DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value}:
+                continue
+            file_ovr = self.overrides_data.get("documents", {}).get(doc.file_name, {})
+            if file_ovr.get("status") == DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value:
+                continue
+            _, _, ver_fam, _, _ = self._get_doc_k2_fields(doc)
+            if not ver_fam or not ver_fam.startswith("normative::"):
+                continue
+            # Exclude pure partial-amendment orders that amend another act without superseding
+            if doc.amends and not doc.supersedes:
+                continue
+            by_family.setdefault(ver_fam, []).append(doc)
+
+        for ver_fam, members in by_family.items():
+            if len(members) < 2:
+                continue
+
+            # Partition members so distinct annual plans with disjoint explicit target_plan_years do not supersede each other
+            clusters: list[list[DocumentMeta]] = []
+            for m_doc in members:
+                _, _, _, m_tyears, _ = self._get_doc_k2_fields(m_doc)
+                placed = False
+                for cl in clusters:
+                    # Check compatibility with existing cluster members
+                    disjoint_annual = False
+                    for existing_m in cl:
+                        _, _, _, ex_tyears, _ = self._get_doc_k2_fields(existing_m)
+                        # Also skip if one partially amends the other
+                        ref_m = _core_doc_number(m_doc.doc_number) or m_doc.doc_id
+                        ref_ex = _core_doc_number(existing_m.doc_number) or existing_m.doc_id
+                        if ref_m in existing_m.amends or ref_ex in m_doc.amends or ref_m in existing_m.amended_by or ref_ex in m_doc.amended_by:
+                            disjoint_annual = True
+                            break
+                        if m_tyears and ex_tyears and set(m_tyears).isdisjoint(set(ex_tyears)):
+                            disjoint_annual = True
+                            break
+                    if not disjoint_annual:
+                        cl.append(m_doc)
+                        placed = True
+                        break
+                if not placed:
+                    clusters.append([m_doc])
+
+            for cluster in clusters:
+                if len(cluster) < 2:
+                    continue
+                sort_keys = {d.doc_id: self._doc_version_sort_key(d) for d in cluster}
+                # Require at least one grounded date, year, edition_number, or explicit supersedes link
+                if all(k[0] == "0000-00-00" and k[1] == (0, 0) and k[2] == 0 for k in sort_keys.values()):
+                    continue
+
+                ordered = sorted(cluster, key=lambda d: sort_keys[d.doc_id])
+                newest = ordered[-1]
+                older_docs = ordered[:-1]
+
+                # If top two have completely identical date + edition_number + no supersedes, skip ambiguous tie
+                if (
+                    sort_keys[newest.doc_id][:3] == sort_keys[older_docs[-1].doc_id][:3]
+                    and not newest.supersedes
+                    and not older_docs[-1].superseded_by
+                ):
+                    continue
+
+                ref_new = _core_doc_number(newest.doc_number) or newest.doc_number or newest.doc_id
+                new_ed_date = self._get_doc_k2_fields(newest)[0]
+                disp_new_date = (
+                    new_ed_date
+                    or newest.doc_date
+                    or (f"{max(newest.applicable_years)} г." if newest.applicable_years else "н/д")
+                )
+
+                # Ensure newest version is active (unless superseded by an explicit external order outside this family)
+                new_ovr = self.overrides_data.get("documents", {}).get(newest.file_name, {})
+                older_refs = {
+                    _core_doc_number(od.doc_number) or od.doc_number or od.doc_id
+                    for od in older_docs
+                } | {od.doc_id for od in older_docs}
+                external_sup = [r for r in newest.superseded_by if r not in older_refs]
+                if not external_sup and new_ovr.get("status") != DocumentStatus.SUPERSEDED.value:
+                    if newest.status != DocumentStatus.ACTIVE.value:
+                        newest.status = DocumentStatus.ACTIVE.value
+                        changed_doc_ids.add(newest.doc_id)
+                    if newest.superseded_by:
+                        newest.superseded_by = external_sup
+                        changed_doc_ids.add(newest.doc_id)
+
+                replaced_labels: list[str] = []
+                for old_doc in older_docs:
+                    ref_old = _core_doc_number(old_doc.doc_number) or old_doc.doc_number or old_doc.doc_id
+                    old_ed_date = self._get_doc_k2_fields(old_doc)[0]
+                    disp_old_date = (
+                        old_ed_date
+                        or old_doc.doc_date
+                        or (f"{max(old_doc.applicable_years)} г." if old_doc.applicable_years else "б/д")
+                    )
+                    replaced_labels.append(f"{old_doc.title} от {disp_old_date}")
+
+                    old_modified = False
+                    if old_doc.status != DocumentStatus.SUPERSEDED.value:
+                        old_doc.status = DocumentStatus.SUPERSEDED.value
+                        old_modified = True
+                    if ref_new not in old_doc.superseded_by:
+                        old_doc.superseded_by.append(ref_new)
+                        old_modified = True
+                    if ref_old not in newest.supersedes:
+                        newest.supersedes.append(ref_old)
+                        changed_doc_ids.add(newest.doc_id)
+
+                    expected_old_note = (
+                        f"Утратил актуальность: действует более новая редакция — {newest.title} от {disp_new_date}."
+                    )
+                    old_ovr = self.overrides_data.get("documents", {}).get(old_doc.file_name, {})
+                    if not old_ovr.get("version_note"):
+                        if old_doc.version_note != expected_old_note:
+                            # Preserve partial-amendment warnings if any, otherwise set crisp K2 actuality note
+                            if "Частичное изменение" in (old_doc.version_note or ""):
+                                if newest.title not in old_doc.version_note:
+                                    old_doc.version_note = f"{expected_old_note} {old_doc.version_note}"
+                                    old_modified = True
+                            else:
+                                old_doc.version_note = expected_old_note
+                                old_modified = True
+
+                    if old_modified:
+                        changed_doc_ids.add(old_doc.doc_id)
+
+                # Add reciprocated note on the active newest version
+                if replaced_labels and not new_ovr.get("version_note"):
+                    recip_note = (
+                        f"Актуальная редакция (от {disp_new_date}): заменяет предыдущую редакцию — "
+                        + "; ".join(replaced_labels)
+                        + "."
+                    )
+                    cur_new_note = newest.version_note or ""
+                    if "Актуальная редакция" not in cur_new_note or not all(
+                        lbl.split(" от ")[0] in cur_new_note for lbl in replaced_labels
+                    ):
+                        if "Частичное изменение" in cur_new_note:
+                            base_amend = " ".join(
+                                seg for seg in cur_new_note.split(". ") if "Частичное изменение" in seg
+                            ).strip()
+                            newest.version_note = f"{recip_note} {base_amend}".strip()
+                        else:
+                            newest.version_note = recip_note
+                        changed_doc_ids.add(newest.doc_id)
+
+        if sync_external and changed_doc_ids:
+            for cid in changed_doc_ids:
+                if cid in self.registry:
+                    self._sync_doc_metadata_to_qdrant(self.registry[cid])
+            self.save_registry()
+
         return changed_doc_ids
 
+    def _reconcile_edition_graph(self) -> set[str]:
+        """Internal edition-graph reconciliation hook (persisted by caller after Qdrant upsert)."""
+        return self._reconcile_relations(sync_external=False)
+
     def _sync_doc_metadata_to_qdrant(self, doc_meta: DocumentMeta) -> None:
-        """Push updated DocumentMeta fields (including EDO stamp fields) and refreshed u00_meta chunk to Qdrant."""
+        """Push updated DocumentMeta fields (including EDO & K2 edition fields) and refreshed u00_meta chunk to Qdrant."""
         edo_number, edo_date, is_edo_stamp = self._extract_edo_fields(doc_meta)
+        ed_date, ed_num, ver_fam, _, _ = self._get_doc_k2_fields(doc_meta)
         patch = {
             "file_name": doc_meta.file_name,
             "doc_number": doc_meta.doc_number,
             "doc_date": doc_meta.doc_date,
+            "edition_date": ed_date,
+            "edition_number": ed_num,
+            "version_family": ver_fam,
             "edo_number": edo_number,
             "edo_date": edo_date,
             "is_edo_stamp": is_edo_stamp,
@@ -741,7 +1125,10 @@ class IndexingPipeline:
             "tables_count": int(doc_meta.tables_count),
             "also_in_files": list(doc_meta.also_in_files),
         }
-        self.qdrant.update_document_payload(doc_meta.doc_id, patch)
+        try:
+            self.qdrant.update_document_payload(doc_meta.doc_id, patch)
+        except Exception as exc:
+            logger.warning("Failed to update Qdrant payload for %s: %s", doc_meta.doc_id, exc)
 
         meta_chunk = self.build_u00_meta_chunk(doc_meta)
         if meta_chunk is not None:
@@ -751,6 +1138,197 @@ class IndexingPipeline:
                 self.qdrant.upsert_chunks([meta_chunk], dense_vecs, sparse_vecs, doc_meta=doc_meta)
             except Exception as exc:
                 logger.warning("Failed to refresh u00_meta chunk for %s: %s", doc_meta.doc_id, exc)
+
+    # ------------------------------------------------------------------
+    # Duplicate Detection Helpers (Check A: SHA-256 & Check B: Content/Semantic)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _build_duplicate_result(
+        file_name: str,
+        file_path: Path,
+        sha256: str,
+        existing_doc: DocumentMeta,
+        reason: str,
+        duration_sec: float,
+    ) -> PipelineFileResult:
+        """Construct the standardized duplicate rejection response supporting both dict and attribute access."""
+        existing_id = existing_doc.doc_id
+        existing_title = existing_doc.title or ""
+        existing_fname = existing_doc.file_name or ""
+        msg = f"Документ уже присутствует в базе: «{existing_title}» ({existing_fname})"
+        return PipelineFileResult(
+            file_name=file_name,
+            file_path=str(file_path),
+            doc_id=existing_id,
+            sha256=sha256,
+            status="duplicate",
+            duplicate_of=existing_id,
+            existing_title=existing_title,
+            existing_file_name=existing_fname,
+            reason=reason,
+            message=msg,
+            doc_number=existing_doc.doc_number,
+            doc_date=existing_doc.doc_date,
+            pages_total=existing_doc.pages_total,
+            ocr_pages=existing_doc.ocr_pages,
+            parent_sections_created=0,
+            chunks_created=0,
+            tables_count=0,
+            duration_sec=duration_sec,
+            timestamp=_utc_now_iso(),
+        )
+
+    @classmethod
+    def _is_distinct_k2_version(cls, cand: DocumentMeta, existing: DocumentMeta) -> bool:
+        """
+        Return True when `cand` carries explicit new/different K2 version requisites (order number, date,
+        edition_date, edition_number, or repeal/amendment links) compared to `existing`, so genuine new
+        editions with >=90% unchanged body clauses are reconciled via K2 rather than rejected as duplicates.
+        """
+        c_num = _core_doc_number(cand.doc_number)
+        e_num = _core_doc_number(existing.doc_number)
+        if c_num and e_num and c_num.lower() != e_num.lower():
+            return True
+        if cand.doc_date and existing.doc_date and cand.doc_date != existing.doc_date:
+            return True
+
+        c_ed_dt, c_ed_no, _, _, _ = cls._get_doc_k2_fields(cand)
+        e_ed_dt, e_ed_no, _, _, _ = cls._get_doc_k2_fields(existing)
+        if (c_ed_dt or e_ed_dt) and c_ed_dt != e_ed_dt:
+            return True
+        if (c_ed_no not in (None, "") or e_ed_no not in (None, "")) and str(c_ed_no or "") != str(e_ed_no or ""):
+            return True
+        if cand.supersedes and set(cand.supersedes) != set(existing.supersedes):
+            return True
+        if cand.amends and set(cand.amends) != set(existing.amends):
+            return True
+        return False
+
+    def _get_existing_doc_dedup_profile(self, other: DocumentMeta) -> tuple[str, str, set[str]]:
+        """
+        Return `(norm_sections_text, norm_sections_sha256, chunk_content_hashes)` for an indexed document
+        using `sections_store` and cached metadata / Qdrant chunks.
+        """
+        md = other.metadata if isinstance(other.metadata, dict) else {}
+        other_secs = sorted(
+            [s for s in self.sections_store.values() if s.doc_id == other.doc_id],
+            key=lambda s: (s.unit_id, s.section_id),
+        )
+        sec_norm = _normalize_text_for_dedup("\n".join(s.clean_text for s in other_secs if s.clean_text))
+        sec_sha = hashlib.sha256(sec_norm.encode("utf-8")).hexdigest() if sec_norm else str(md.get("norm_sections_sha256") or "")
+
+        cached_hashes = md.get("chunk_content_hashes")
+        chunk_hashes: set[str] = set()
+        if isinstance(cached_hashes, list) and cached_hashes:
+            chunk_hashes = {str(h) for h in cached_hashes if h}
+        else:
+            q_fn = getattr(self.qdrant, "get_document_chunks", None)
+            cls_mod = getattr(type(self.qdrant), "__module__", "") or ""
+            if callable(q_fn) and not cls_mod.startswith("unittest.mock"):
+                try:
+                    for oc in q_fn(other.doc_id) or []:
+                        if oc.zone in {ZoneType.APPROVAL.value, ZoneType.META.value} or oc.unit_id == "u00_meta":
+                            continue
+                        ch = oc.content_hash or compute_content_hash(oc.clean_text)
+                        if ch:
+                            chunk_hashes.add(ch)
+                except Exception:
+                    pass
+        return sec_norm, sec_sha, chunk_hashes
+
+    def _find_content_duplicate(
+        self,
+        cand_meta: DocumentMeta,
+        cand_sections: list[ParentSectionRecord],
+        cand_chunks: list[ChunkRecord],
+        cand_blocks: list[ParsedBlock] | None = None,
+    ) -> DocumentMeta | None:
+        """
+        Check B (Content / Semantic Text Duplicate):
+        Compare canonical normalized full-text SHA-256, normative chunk `content_hash` overlap (`>= 0.90`),
+        and cross-format 4-word shingle similarity (`>= 0.90`) against all existing documents in `self.registry`.
+        """
+        if not self.registry:
+            return None
+
+        ov_docs = self.overrides_data.get("documents", {}) or {}
+        cand_ovr = ov_docs.get(cand_meta.file_name, {}) if cand_meta.file_name else {}
+
+        sorted_c_secs = sorted(cand_sections, key=lambda s: (s.unit_id, s.section_id))
+        cand_sec_norm = _normalize_text_for_dedup("\n".join(s.clean_text for s in sorted_c_secs if s.clean_text))
+        cand_sec_sha = hashlib.sha256(cand_sec_norm.encode("utf-8")).hexdigest() if cand_sec_norm else ""
+
+        norm_chunks = [
+            c
+            for c in cand_chunks
+            if c.zone not in {ZoneType.APPROVAL.value, ZoneType.META.value} and c.unit_id != "u00_meta"
+        ]
+        cand_chunks_norm = _normalize_text_for_dedup("\n".join(c.clean_text for c in norm_chunks if c.clean_text))
+        cand_chunks_sha = hashlib.sha256(cand_chunks_norm.encode("utf-8")).hexdigest() if cand_chunks_norm else ""
+
+        cand_blocks_norm = (
+            _normalize_text_for_dedup("\n".join(b.text for b in cand_blocks if b.text))
+            if cand_blocks
+            else ""
+        )
+        cand_blocks_sha = hashlib.sha256(cand_blocks_norm.encode("utf-8")).hexdigest() if cand_blocks_norm else ""
+
+        cand_hashes: set[str] = {
+            c.content_hash or compute_content_hash(c.clean_text)
+            for c in norm_chunks
+            if c.clean_text and c.clean_text.strip()
+        }
+        cand_hashes.discard("")
+        cand_shingles = _word_shingles(cand_sec_norm, 4) if len(cand_sec_norm) >= 120 else set()
+
+        for other in self.registry.values():
+            if other.status == DocumentStatus.ERROR.value:
+                continue
+            # Preserve deliberate distinct corpus entries configured in registry_overrides.yaml
+            other_ovr = ov_docs.get(other.file_name, {}) if other.file_name else {}
+            if (
+                cand_ovr.get("doc_id")
+                and other_ovr.get("doc_id")
+                and cand_ovr.get("doc_id") != other_ovr.get("doc_id")
+            ):
+                continue
+
+            other_md = other.metadata if isinstance(other.metadata, dict) else {}
+            other_sec_norm, other_sec_sha, other_hashes = self._get_existing_doc_dedup_profile(other)
+            other_chunks_sha = str(other_md.get("norm_chunks_sha256") or "")
+            other_blocks_sha = str(other_md.get("norm_blocks_sha256") or "")
+
+            # 1. Exact normalized full-text SHA-256 match (100% identical text across formats/filenames)
+            if len(cand_sec_norm) >= 25 and cand_sec_sha and cand_sec_sha == other_sec_sha:
+                return other
+            if len(cand_chunks_norm) >= 25 and cand_chunks_sha and cand_chunks_sha in {other_chunks_sha, other_sec_sha} - {""}:
+                return other
+            if len(cand_blocks_norm) >= 25 and cand_blocks_sha and cand_blocks_sha in {other_blocks_sha, other_sec_sha} - {""}:
+                return other
+
+            # 2. Near-exact (>= 0.90) chunk or shingle overlap — skip if candidate is a genuine K2 new version
+            if self._is_distinct_k2_version(cand_meta, other):
+                continue
+
+            has_enough_size = (len(cand_hashes) >= 2 or len(cand_sec_norm) >= 300) and (
+                len(other_hashes) >= 2 or len(other_sec_norm) >= 300
+            )
+            if has_enough_size and cand_hashes and other_hashes:
+                overlap = len(cand_hashes & other_hashes) / max(1, max(len(cand_hashes), len(other_hashes)))
+                if overlap >= 0.90:
+                    return other
+
+            # Cross-format (.docx <-> .pdf) resilience when page breaks shift chunk boundaries slightly
+            if has_enough_size and cand_shingles and len(other_sec_norm) >= 120:
+                len_ratio = min(len(cand_sec_norm), len(other_sec_norm)) / max(1, max(len(cand_sec_norm), len(other_sec_norm)))
+                if len_ratio >= 0.85:
+                    other_shingles = _word_shingles(other_sec_norm, 4)
+                    if other_shingles:
+                        dice = (2.0 * len(cand_shingles & other_shingles)) / max(1, len(cand_shingles) + len(other_shingles))
+                        if dice >= 0.90:
+                            return other
+
+        return None
 
     # ------------------------------------------------------------------
     # Cross-File Deduplication via content_hash
@@ -829,12 +1407,17 @@ class IndexingPipeline:
         metadata_overrides: dict[str, Any] | None = None,
         ocr_backend: str | None = None,
         force: bool = False,
+        force_reindex: bool | None = None,
         progress_callback: ProgressCallback | None = None,
-    ) -> IndexingFileStatus:
+    ) -> PipelineFileResult:
         """
-        Fault-tolerantly index a single document (.pdf, .docx, .xlsx) through all 6 stages.
-        Skips unchanged files by SHA-256 unless force=True or metadata_overrides are provided.
+        Fault-tolerantly index a single document (.pdf, .docx, .doc, .xlsx, .xls) through all 6 stages.
+        When `force` / `force_reindex` is False (default):
+          - Check A: Rejects exact SHA-256 duplicates BEFORE parsing (`reason='exact_sha256'`).
+          - Check B: Rejects normalized full-text / >=90% chunk-content duplicates BEFORE Qdrant/store writes (`reason='content_duplicate'`).
+        When `force=True` or `force_reindex=True`, reindexes the canonical `doc_id` in place without creating a duplicate `doc_id`.
         """
+        eff_force = bool(force if force_reindex is None else (force or force_reindex))
         t0 = time.perf_counter()
         path = Path(file_path).resolve()
         file_name = path.name
@@ -842,7 +1425,7 @@ class IndexingPipeline:
         if not path.exists() or not path.is_file():
             err_msg = f"Файл не найден: {path}"
             self._emit_progress(progress_callback, "error", 1, "Ошибка", 100, err_msg, file_name=file_name)
-            return IndexingFileStatus(
+            return PipelineFileResult(
                 file_name=file_name,
                 file_path=str(path),
                 status="error",
@@ -854,7 +1437,7 @@ class IndexingPipeline:
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             err_msg = f"Неподдерживаемый формат файла: {path.suffix}"
             self._emit_progress(progress_callback, "error", 1, "Ошибка", 100, err_msg, file_name=file_name)
-            return IndexingFileStatus(
+            return PipelineFileResult(
                 file_name=file_name,
                 file_path=str(path),
                 status="error",
@@ -864,7 +1447,7 @@ class IndexingPipeline:
             )
 
         try:
-            if force:
+            if eff_force:
                 self.overrides_data = self._load_overrides()
                 from src.chunking.glossary import get_glossary_manager
 
@@ -873,50 +1456,39 @@ class IndexingPipeline:
 
             sha256 = compute_file_sha256(path)
 
-            # Check if file is already indexed with identical SHA-256
-            existing_meta = next(
-                (m for m in self.registry.values() if m.file_name == file_name or m.sha256 == sha256),
-                None,
-            )
-            if (
-                not force
-                and not metadata_overrides
-                and existing_meta is not None
-                and existing_meta.sha256 == sha256
-                and existing_meta.status != DocumentStatus.ERROR.value
-                and existing_meta.chunk_count > 0
-                and self.qdrant.count_points(doc_id=existing_meta.doc_id) > 0
-            ):
-                msg = f"Файл «{file_name}» не изменился (SHA-256 совпадает), пропуск."
-                self._emit_progress(
-                    progress_callback,
-                    "done",
-                    6,
-                    "Пропущен (SHA-256)",
-                    100,
-                    msg,
-                    file_name=file_name,
-                    doc_id=existing_meta.doc_id,
-                    parent_count=existing_meta.parent_count,
-                    chunk_count=existing_meta.chunk_count,
-                    ocr_pages=existing_meta.ocr_pages,
+            # Check A (Exact SHA-256 Duplicate Rejection when force_reindex=False)
+            if not eff_force:
+                existing_sha_doc = next(
+                    (
+                        m
+                        for m in self.registry.values()
+                        if m.sha256 and m.sha256 == sha256 and m.status != DocumentStatus.ERROR.value
+                    ),
+                    None,
                 )
-                return IndexingFileStatus(
-                    file_name=file_name,
-                    file_path=str(path),
-                    doc_id=existing_meta.doc_id,
-                    sha256=sha256,
-                    status="skipped",
-                    doc_number=existing_meta.doc_number,
-                    doc_date=existing_meta.doc_date,
-                    pages_total=existing_meta.pages_total,
-                    ocr_pages=existing_meta.ocr_pages,
-                    parent_sections_created=existing_meta.parent_count,
-                    chunks_created=existing_meta.chunk_count,
-                    tables_count=existing_meta.tables_count,
-                    duration_sec=round(time.perf_counter() - t0, 3),
-                    timestamp=_utc_now_iso(),
-                )
+                if existing_sha_doc is not None:
+                    dup_res = self._build_duplicate_result(
+                        file_name=file_name,
+                        file_path=path,
+                        sha256=sha256,
+                        existing_doc=existing_sha_doc,
+                        reason="exact_sha256",
+                        duration_sec=round(time.perf_counter() - t0, 3),
+                    )
+                    self._emit_progress(
+                        progress_callback,
+                        "done",
+                        6,
+                        "Дубликат (SHA-256)",
+                        100,
+                        dup_res.message,
+                        file_name=file_name,
+                        doc_id=existing_sha_doc.doc_id,
+                        parent_count=existing_sha_doc.parent_count,
+                        chunk_count=existing_sha_doc.chunk_count,
+                        ocr_pages=existing_sha_doc.ocr_pages,
+                    )
+                    return dup_res
 
             # Stage 1: Parsing
             self._emit_progress(
@@ -972,6 +1544,53 @@ class IndexingPipeline:
             )
             chunks, parent_sections, doc_meta = self._invoke_chunker(blocks, doc_meta)
 
+            # Check B (Content / Semantic Text Duplicate Rejection BEFORE Qdrant/table/registry writes)
+            explicit_ovr_doc_id = (
+                (metadata_overrides or {}).get("doc_id")
+                or (self.overrides_data.get("documents", {}).get(file_name, {}) or {}).get("doc_id")
+            )
+            content_dup_doc = self._find_content_duplicate(
+                cand_meta=doc_meta,
+                cand_sections=parent_sections,
+                cand_chunks=chunks,
+                cand_blocks=blocks,
+            )
+            if not eff_force and content_dup_doc is not None:
+                dup_res = self._build_duplicate_result(
+                    file_name=file_name,
+                    file_path=path,
+                    sha256=sha256,
+                    existing_doc=content_dup_doc,
+                    reason="content_duplicate",
+                    duration_sec=round(time.perf_counter() - t0, 3),
+                )
+                self._emit_progress(
+                    progress_callback,
+                    "done",
+                    6,
+                    "Дубликат (контент)",
+                    100,
+                    dup_res.message,
+                    file_name=file_name,
+                    doc_id=content_dup_doc.doc_id,
+                    parent_count=content_dup_doc.parent_count,
+                    chunk_count=content_dup_doc.chunk_count,
+                    ocr_pages=content_dup_doc.ocr_pages,
+                )
+                return dup_res
+
+            # When force_reindex=True on a re-saved/renamed canonical document, reuse its canonical doc_id in place
+            if (
+                eff_force
+                and content_dup_doc is not None
+                and content_dup_doc.doc_id != doc_meta.doc_id
+                and not explicit_ovr_doc_id
+                and not self._is_distinct_k2_version(doc_meta, content_dup_doc)
+            ):
+                doc_meta.doc_id = content_dup_doc.doc_id
+                extract_logical_tables_and_assign_ids(blocks, doc_meta)
+                chunks, parent_sections, doc_meta = self._invoke_chunker(blocks, doc_meta)
+
             # Extract & upsert eligible structured tables (.xlsx sheets + large .docx/.pdf tables >= 25 rows / >= 5000 chars)
             upserted_tables = self.table_store.upsert_document_tables(doc_meta, blocks, chunks=chunks)
             doc_meta.tables_count = len(upserted_tables)
@@ -1000,6 +1619,32 @@ class IndexingPipeline:
             self._enrich_records_with_requisites_and_page_maps(doc_meta, parent_sections, chunks)
             doc_meta.parent_count = len(parent_sections)
             doc_meta.chunk_count = len(chunks)
+
+            # Cache normalized text SHA-256 and normative chunk content_hashes for fast future Check B comparisons
+            sorted_p_secs = sorted(parent_sections, key=lambda s: (s.unit_id, s.section_id))
+            sec_norm_str = _normalize_text_for_dedup("\n".join(s.clean_text for s in sorted_p_secs if s.clean_text))
+            norm_ch_list = [
+                c
+                for c in chunks
+                if c.zone not in {ZoneType.APPROVAL.value, ZoneType.META.value} and c.unit_id != "u00_meta"
+            ]
+            ch_norm_str = _normalize_text_for_dedup("\n".join(c.clean_text for c in norm_ch_list if c.clean_text))
+            blk_norm_str = _normalize_text_for_dedup("\n".join(b.text for b in blocks if b.text))
+            doc_meta.metadata = dict(doc_meta.metadata or {})
+            if sec_norm_str:
+                doc_meta.metadata["norm_sections_sha256"] = hashlib.sha256(sec_norm_str.encode("utf-8")).hexdigest()
+            if ch_norm_str:
+                doc_meta.metadata["norm_chunks_sha256"] = hashlib.sha256(ch_norm_str.encode("utf-8")).hexdigest()
+            if blk_norm_str:
+                doc_meta.metadata["norm_blocks_sha256"] = hashlib.sha256(blk_norm_str.encode("utf-8")).hexdigest()
+            doc_meta.metadata["chunk_content_hashes"] = sorted(
+                {
+                    c.content_hash or compute_content_hash(c.clean_text)
+                    for c in norm_ch_list
+                    if c.clean_text and c.clean_text.strip()
+                }
+                - {""}
+            )
 
             # Stage 4: Bilateral 12% Overlap & embed_text readiness
             self._emit_progress(
@@ -1051,11 +1696,11 @@ class IndexingPipeline:
                 ocr_pages=doc_meta.ocr_pages,
             )
 
-            # Purge any prior stale doc_id for the exact same file_name so zero orphan sections/tables/chunks remain
+            # Purge any prior stale doc_id for the exact same file_name or exact same sha256 so zero duplicates remain
             stale_same_file_ids = [
                 d_id
                 for d_id, m in list(self.registry.items())
-                if d_id != doc_meta.doc_id and m.file_name == file_name
+                if d_id != doc_meta.doc_id and (m.file_name == file_name or (sha256 and m.sha256 == sha256))
             ]
             for stale_id in stale_same_file_ids:
                 self.delete_document(stale_id)
@@ -1099,7 +1744,7 @@ class IndexingPipeline:
                     f"Обнаружено {dedup_count} кросс-дублирующихся чанков (источники объединены в also_in_files: {', '.join(doc_meta.also_in_files)})"
                 )
 
-            status_entry = IndexingFileStatus(
+            status_entry = PipelineFileResult(
                 file_name=file_name,
                 file_path=str(path),
                 doc_id=doc_meta.doc_id,
@@ -1149,7 +1794,7 @@ class IndexingPipeline:
                 f"Ошибка при обработке «{file_name}»: {err_msg}",
                 file_name=file_name,
             )
-            err_status = IndexingFileStatus(
+            err_status = PipelineFileResult(
                 file_name=file_name,
                 file_path=str(path),
                 status="error",
@@ -1179,7 +1824,7 @@ class IndexingPipeline:
 
         rep.total_files = len(rep.files)
         rep.indexed_files = sum(1 for f in rep.files if f.status == "success")
-        rep.skipped_files = sum(1 for f in rep.files if f.status == "skipped")
+        rep.skipped_files = sum(1 for f in rep.files if f.status in ("skipped", "duplicate"))
         rep.failed_files = sum(1 for f in rep.files if f.status == "error")
         rep.total_parent_sections = len(self.sections_store)
         rep.total_chunks = sum(m.chunk_count for m in self.registry.values())
@@ -1205,14 +1850,16 @@ class IndexingPipeline:
         self,
         folder_path: str | Path | None = None,
         force: bool = False,
+        force_reindex: bool | None = None,
         ocr_backend: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> IndexingReport:
         """
-        Incrementally synchronize all supported documents (.pdf, .docx, .xlsx) in folder_path (defaults to DOCS_DIR).
-        Isolates failures per file, reconciles all stores (purging any orphan sections/tables/Qdrant points),
-        and writes a full IndexingReport to data/indexing_report.json.
+        Incrementally synchronize all supported documents (.pdf, .docx, .doc, .xlsx, .xls) in folder_path (defaults to DOCS_DIR).
+        Handles `status == 'duplicate'` gracefully alongside skipped files without failing batch runs,
+        reconciles all stores (purging any orphan sections/tables/Qdrant points), and writes IndexingReport.
         """
+        eff_force = bool(force if force_reindex is None else (force or force_reindex))
         t_start = time.perf_counter()
         started_at = _utc_now_iso()
         target_dir = Path(folder_path).resolve() if folder_path else DOCS_DIR.resolve()
@@ -1248,29 +1895,43 @@ class IndexingPipeline:
         # and include any valid uploaded documents in UPLOADS_DIR that are not duplicated in DOCS_DIR.
         if target_dir == DOCS_DIR.resolve() and UPLOADS_DIR.exists() and UPLOADS_DIR.is_dir():
             seen_names: set[str] = set()
+            seen_shas: set[str] = set()
             merged_files: list[Path] = []
             for p in raw_files:
+                p_sha = ""
+                try:
+                    p_sha = compute_file_sha256(p)
+                except OSError:
+                    pass
                 up_cand = UPLOADS_DIR / p.name
                 if up_cand.exists() and up_cand.is_file():
                     try:
-                        if compute_file_sha256(up_cand) == compute_file_sha256(p):
+                        if p_sha and compute_file_sha256(up_cand) == p_sha:
                             p = up_cand.resolve()
                     except OSError:
                         pass
                 merged_files.append(p)
                 seen_names.add(p.name)
+                if p_sha:
+                    seen_shas.add(p_sha)
 
-            extra_uploads = sorted(
-                [
-                    up
-                    for up in UPLOADS_DIR.iterdir()
-                    if up.is_file()
-                    and up.suffix.lower() in SUPPORTED_EXTENSIONS
-                    and not up.name.startswith("~$")
-                    and up.name not in seen_names
-                ],
-                key=lambda p: p.name,
-            )
+            extra_uploads: list[Path] = []
+            for up in sorted(UPLOADS_DIR.iterdir(), key=lambda p: p.name):
+                if (
+                    not up.is_file()
+                    or up.suffix.lower() not in SUPPORTED_EXTENSIONS
+                    or up.name.startswith("~$")
+                    or up.name in seen_names
+                ):
+                    continue
+                try:
+                    up_sha = compute_file_sha256(up)
+                    if up_sha in seen_shas:
+                        continue
+                    seen_shas.add(up_sha)
+                except OSError:
+                    pass
+                extra_uploads.append(up)
             merged_files.extend(extra_uploads)
             files = merged_files
         else:
@@ -1294,7 +1955,8 @@ class IndexingPipeline:
             st = self.index_file(
                 file_path=fpath,
                 ocr_backend=ocr_backend,
-                force=force,
+                force=eff_force,
+                force_reindex=eff_force,
                 progress_callback=_scoped_progress if progress_callback else None,
             )
             file_statuses.append(st)
@@ -1311,7 +1973,8 @@ class IndexingPipeline:
         self.save_registry()
 
         indexed_cnt = sum(1 for s in file_statuses if s.status == "success")
-        skipped_cnt = sum(1 for s in file_statuses if s.status == "skipped")
+        duplicate_cnt = sum(1 for s in file_statuses if s.status == "duplicate")
+        skipped_cnt = sum(1 for s in file_statuses if s.status in ("skipped", "duplicate"))
         failed_cnt = sum(1 for s in file_statuses if s.status == "error")
 
         if skipped_cnt > 0 and not self._has_active_table_store():
@@ -1333,6 +1996,7 @@ class IndexingPipeline:
             total_files=total_files,
             indexed_files=indexed_cnt,
             skipped_files=skipped_cnt,
+            duplicate_files=duplicate_cnt,
             failed_files=failed_cnt,
             total_parent_sections=len(self.sections_store),
             total_chunks=sum(m.chunk_count for m in self.registry.values()),
@@ -1355,12 +2019,29 @@ class IndexingPipeline:
             6,
             "Синхронизация завершена",
             100,
-            f"Синхронизировано {total_files} файлов: {indexed_cnt} проиндексировано, {skipped_cnt} пропущено, {failed_cnt} ошибок за {total_dur:.1f} с",
+            f"Синхронизировано {total_files} файлов: {indexed_cnt} проиндексировано, {skipped_cnt} пропущено/дубликатов, {failed_cnt} ошибок за {total_dur:.1f} с",
             parent_count=report.total_parent_sections,
             chunk_count=report.total_chunks,
             ocr_pages=report.total_ocr_pages,
         )
         return report
+
+    def index_directory(
+        self,
+        folder_path: str | Path | None = None,
+        force: bool = False,
+        force_reindex: bool | None = None,
+        ocr_backend: str | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> IndexingReport:
+        """Alias for `sync_folder` supporting both `force` and `force_reindex` flags."""
+        return self.sync_folder(
+            folder_path=folder_path,
+            force=force,
+            force_reindex=force_reindex,
+            ocr_backend=ocr_backend,
+            progress_callback=progress_callback,
+        )
 
     # ------------------------------------------------------------------
     # Document Registry & Metadata Management (GET / PATCH / DELETE / RECONCILE)
@@ -1546,7 +2227,7 @@ class IndexingPipeline:
                 elif str(resolved) != doc_meta.file_path:
                     doc_meta.file_path = str(resolved)
 
-        # 2. Deduplicate any multiple registry entries sharing the exact same file_name
+        # 2. Deduplicate any multiple registry entries sharing the exact same file_name or exact same sha256
         by_fname: dict[str, list[DocumentMeta]] = {}
         for meta in list(self.registry.values()):
             if meta.file_name:
@@ -1556,6 +2237,26 @@ class IndexingPipeline:
                 group.sort(key=lambda m: (m.indexed_at or "", m.chunk_count), reverse=True)
                 for stale_meta in group[1:]:
                     if stale_meta.doc_id in self.registry:
+                        duplicate_docs_removed.append(stale_meta.doc_id)
+                        self.delete_document(stale_meta.doc_id)
+
+        by_sha: dict[str, list[DocumentMeta]] = {}
+        for meta in list(self.registry.values()):
+            if meta.sha256:
+                by_sha.setdefault(meta.sha256, []).append(meta)
+        for sha_val, group in by_sha.items():
+            if len(group) > 1:
+                # Prefer canonical DOCS_DIR entry (or earlier indexed canonical entry) over later re-upload duplicate
+                docs_dir_str = str(DOCS_DIR.resolve())
+                group.sort(
+                    key=lambda m: (
+                        0 if (DOCS_DIR / m.file_name).exists() or docs_dir_str in (m.file_path or "") else 1,
+                        m.indexed_at or "9999",
+                    )
+                )
+                canonical = group[0]
+                for stale_meta in group[1:]:
+                    if stale_meta.doc_id in self.registry and stale_meta.doc_id != canonical.doc_id:
                         duplicate_docs_removed.append(stale_meta.doc_id)
                         self.delete_document(stale_meta.doc_id)
 

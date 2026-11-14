@@ -114,7 +114,10 @@ RERANKER_SYSTEM_PROMPT = """Ты — строгий ИИ-верификатор 
 2. СТРОГИЙ ОТСЕВ ШУМА И ЛОЖНЫХ СОВПАДЕНИЙ:
    - Если документ попал в выдачу только из-за случайного совпадения общих слов («новый», «приказ», «заявка», «студент», «корпус», «документ», «отчет», «сутки»/«круглосуточно»), но регулирует ДРУГУЮ процедуру или предметную область (например, внутреннее заимствование средств проектов вместо поселения в общежитие; эксплуатация ЦОД вместо командировочных суточных; бронирование зала или финансовая структура при вопросе про парковку вертолетов или отчисление за неуспеваемость) — ставь `score` от `0.00` до `0.20` и `"verdict": "irrelevant"`!
    - ВАЖНО ДЛЯ СТРУКТУРИРОВАННЫХ ТАБЛИЦ (`mode=tool_query`): если фрагмент привязан к SQL-таблице (`table_id`), которая по названию документа и составу столбцов является именно тем реестром/сметой, где нужно выполнить фильтрацию/подсчет/извлечение формул на следующем шаге, ставь `score >= 0.78` (`"essential"`), даже если в коротком превью видны не все строки таблицы.
-   - ВАЖНО ДЛЯ ГРАФА РЕДАКЦИЙ (`amends` / `amended_by` / `superseded_by`): если базовый приказ релевантен вопросу, его изменяющий акт (или справочный шаблон с актуальными формулами/кодами) также оценивай как релевантный (`>= 0.55`).
+   - ВАЖНО ДЛЯ АКТУАЛЬНОСТИ РЕДАКЦИЙ И КРИТЕРИЯ K2 (`status`, `doc_date`, `edition_date`, `version_note`, `supersedes`, `superseded_by`, `amends`, `amended_by`):
+     * Если вопрос стандартный (про действующий/текущий порядок, БЕЗ маркеров вроде «в старой редакции», «предыдущая редакция», «до отмены», «действовавший ранее», «утративший силу», «сравни редакции» и БЕЗ указания исторического года, относящегося только к отмененному документу): отдавай приоритет действующей редакции (`status=active`, более свежая `edition_date`/`doc_date` — ставь выше оценку, `"essential"`), а утратившую силу редакцию (`status=superseded`) оценивай существенно ниже действующей замены (`<= 0.58`, `"supporting"` или `"irrelevant"`, если она полностью заменена новой редакцией).
+     * Если пользователь прямо спрашивает про старую/предыдущую/отмененную редакцию, сравнение редакций или конкретный исторический год утратившего силу акта — ставь соответствующему историческому фрагменту (`status=superseded`) высокую оценку (`score >= 0.82`, `"essential"`), а при сравнении редакций оставляй обе редакции как `"essential"`.
+     * Если базовый приказ релевантен вопросу, его частичный изменяющий акт (`amends` / `amended_by` или справочный шаблон с актуальными формулами/кодами) также оценивай как релевантный (`>= 0.55`).
    - ВАЖНО ДЛЯ БЛАНКОВ, АНКЕТ, СОГЛАСИЙ И ПАМЯТОК ПО ДОКУМЕНТАМ: если пользователь спрашивает, какие документы/бумаги/формы нужны для процедуры (например, поселения, оформления, регистрации), то отдельные файлы анкет, форм согласий на обработку персональных данных и перечней документов для паспортного стола / регистрации по месту пребывания обязательно оставляй как релевантные (`score >= 0.65`, `"supporting"` или `"essential"`).
 3. ПРОВЕРКА ПОЛНОТЫ АСПЕКТОВ И ДОЗАПРОС (`needs_followup`):
    - Проверь, все ли части вопроса пользователя закрыты фрагментами с оценкой `>= 0.45`:
@@ -649,10 +652,14 @@ class QueryPipeline:
             ]
             if hit.doc_number:
                 hdr_parts.append(f"№ {hit.doc_number}" + (f" от {hit.doc_date}" if hit.doc_date else ""))
-            elif hit.doc_date:
-                hdr_parts.append(f"дата: {hit.doc_date}")
-            if hit.status and hit.status != DocumentStatus.ACTIVE.value:
-                hdr_parts.append(f"status={hit.status}")
+            ed_date = str(meta.get("edition_date") or "").strip()
+            ed_num = meta.get("edition_number")
+            hdr_parts.append(f"doc_date={hit.doc_date or ed_date or 'б/д'}")
+            if ed_date:
+                hdr_parts.append(f"edition_date={ed_date}")
+            if ed_num not in (None, ""):
+                hdr_parts.append(f"edition_number={ed_num}")
+            hdr_parts.append(f"status={hit.status or DocumentStatus.ACTIVE.value}")
             if hit.unit_title and hit.unit_title != "Основной текст":
                 hdr_parts.append(f"единица: {hit.unit_title}")
             if hit.section_title:
@@ -665,8 +672,15 @@ class QueryPipeline:
                 hdr_parts.append(f"amends={','.join(hit.amends)}")
             if hit.amended_by:
                 hdr_parts.append(f"amended_by={','.join(hit.amended_by)}")
+            if hit.supersedes:
+                hdr_parts.append(f"supersedes={','.join(hit.supersedes)}")
             if hit.superseded_by:
                 hdr_parts.append(f"superseded_by={','.join(hit.superseded_by)}")
+            if hit.version_note:
+                short_vnote = re.sub(r"\s+", " ", hit.version_note.strip())
+                if len(short_vnote) > 200:
+                    short_vnote = short_vnote[:200].rstrip() + "…"
+                hdr_parts.append(f"version_note={short_vnote}")
             if hit.also_in_files:
                 hdr_parts.append(f"also_in={','.join(hit.also_in_files)}")
 
@@ -1357,15 +1371,53 @@ class QueryPipeline:
             if ac.file_name:
                 active_file_names.add(ac.file_name)
 
-        # Re-sort hits_out by rerank score descending (keeping co-surfaced edition peers right after top hits)
-        hits_out.sort(
-            key=lambda h: (
-                float((h.metadata or {}).get("rerank_score", h.score)),
-                h.rrf_score,
-                h.dense_score,
-            ),
-            reverse=True,
-        )
+        # Re-sort hits_out with K2 actuality & temporal-intent calibration:
+        # - On current-actuality queries, superseded docs never outrank their active replacement and
+        #   close rerank-score ties among active docs break in favor of newer edition_date/doc_date.
+        # - On historical queries, superseded editions keep full priority without penalty.
+        detect_hist_fn = getattr(svc, "detect_temporal_edition_intent", None)
+        is_hist_query = False
+        if callable(detect_hist_fn) and not self._is_mock_object(detect_hist_fn):
+            try:
+                t_info = detect_hist_fn(raw_query)
+                is_hist_query = bool(isinstance(t_info, dict) and t_info.get("is_historical"))
+            except Exception:
+                is_hist_query = False
+
+        kept_active_ids = {
+            h.doc_id for h in hits_out if h.doc_id and (h.status or DocumentStatus.ACTIVE.value) == DocumentStatus.ACTIVE.value
+        }
+        kept_active_nums = {
+            h.doc_number.strip().lower()
+            for h in hits_out
+            if h.doc_number and (h.status or DocumentStatus.ACTIVE.value) == DocumentStatus.ACTIVE.value
+        }
+        kept_active_families = {
+            str((h.metadata or {}).get("version_family") or "").strip()
+            for h in hits_out
+            if (h.status or DocumentStatus.ACTIVE.value) == DocumentStatus.ACTIVE.value
+            and str((h.metadata or {}).get("version_family") or "").strip()
+        }
+
+        def _hit_sort_key(h: SearchHit) -> tuple[float, int, str, float, float]:
+            raw_sc = float((h.metadata or {}).get("rerank_score", h.score))
+            h_status = h.status or DocumentStatus.ACTIVE.value
+            h_vf = str((h.metadata or {}).get("version_family") or "").strip()
+            eff_date = str((h.metadata or {}).get("edition_date") or h.doc_date or "")
+            if not is_hist_query and h_status == DocumentStatus.SUPERSEDED.value:
+                has_active_peer = (
+                    bool(set(h.superseded_by or []).intersection(kept_active_ids))
+                    or any(ref.strip().lower() in kept_active_nums for ref in (h.superseded_by or []))
+                    or (bool(h_vf) and h_vf in kept_active_families)
+                )
+                adj_sc = raw_sc * (0.65 if has_active_peer else 0.78)
+                return (round(adj_sc, 3), 0, eff_date, h.rrf_score, h.dense_score)
+            # Round primary score to 0.02-step bucket only across same-actuality ties via secondary date key
+            is_act = 1 if h_status == DocumentStatus.ACTIVE.value else 0
+            bucket_sc = round(raw_sc * 50.0) / 50.0 if not is_hist_query else round(raw_sc, 4)
+            return (bucket_sc, is_act if not is_hist_query else 1, eff_date if not is_hist_query else "", raw_sc, h.rrf_score)
+
+        hits_out.sort(key=_hit_sort_key, reverse=True)
 
         # 2. Adaptive Table Routing & Strict Pruning of Unrelated Tables
         linked_tables: list[TablePassport] = []

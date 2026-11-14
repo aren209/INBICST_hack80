@@ -16,6 +16,8 @@
       try {
         var t = localStorage.getItem("theme");
         if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+        var f = localStorage.getItem("mipt_debug_font");
+        if (f === "minsk") document.documentElement.dataset.font = "minsk";
       } catch (e) {}
     })();
   </script>
@@ -82,6 +84,18 @@
               <path d="M8 5v14M11.5 9.5h5M11.5 13h3.5" />
             </svg>
             <span class="hide-sm">База знаний</span>
+          </button>
+
+          <button
+            class="nav-btn font-debug-btn"
+            id="fontDebugBtn"
+            type="button"
+            aria-pressed="false"
+            aria-label="Переключить отладочный шрифт (сейчас Golos Text)"
+            title="Временная отладка шрифта: Golos Text / Minsk"
+          >
+            <span class="font-debug-tag" aria-hidden="true">DBG</span>
+            <span class="font-debug-label" id="fontDebugLabel"><span class="hide-sm">Шрифт: </span><span id="fontDebugValue">Golos</span></span>
           </button>
 
           <button class="icon-btn" id="themeBtn" type="button" aria-label="Переключить тему оформления" title="Сменить тему оформления">
@@ -231,7 +245,7 @@
               </div>
             </div>
 
-            <div class="ledger-frame">
+            <div class="ledger-frame" id="ledger">
               <div class="ledger-head" aria-hidden="true">
                 <span>Формат</span>
                 <span>Наименование документа</span>

@@ -35,7 +35,7 @@ import zipfile
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
 import olefile
@@ -47,7 +47,13 @@ from src.config import CLAUSE_NUMBER_RE, DOCS_DIR, OCR_CACHE_DIR, SUPPORTED_EXTE
 from src.indexing.pipeline import IndexingPipeline, get_pipeline
 from src.indexing.table_store import get_table_store
 from src.ingestion.parsers import parse_document
+from src.retrieval.docx_preview import (
+    compute_bytes_sha256,
+    ensure_word_preview_pdf,
+    render_preview_pdf_page_png,
+)
 from src.retrieval.quote_verifier import clean_clause
+from src.retrieval.rag_agent import TECH_ERROR_STUB_RU
 from src.retrieval.search_service import get_search_service
 from src.schemas import (
     AgentAskRequest,
@@ -145,7 +151,7 @@ class TaskState:
     def __init__(self, task_id: str, task_type: str):
         self.task_id = task_id
         self.task_type = task_type
-        self.status = "pending"  # pending, running, completed, failed
+        self.status = "pending"  # pending, running, completed, duplicate, failed
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.started_at: Optional[str] = None
         self.completed_at: Optional[str] = None
@@ -161,6 +167,9 @@ class TaskState:
         self.chunk_count = 0
         self.tables_count = 0
         self.ocr_pages = 0
+        self.duplicate_of: Optional[str] = None
+        self.existing_title: Optional[str] = None
+        self.existing_file_name: Optional[str] = None
         self.events: list[dict[str, Any]] = []
         self.result: Any = None
         self.error: Optional[str] = None
@@ -231,6 +240,9 @@ class TaskState:
             "chunk_count": self.chunk_count,
             "tables_count": self.tables_count,
             "ocr_pages": self.ocr_pages,
+            "duplicate_of": self.duplicate_of,
+            "existing_title": self.existing_title,
+            "existing_file_name": self.existing_file_name,
             "events": self.events[-50:],
             "result": self.result,
             "error": self.error,
@@ -277,6 +289,7 @@ class UploadUrlRequest(BaseModel):
     applicable_years: Optional[str] = ""
     version_note: Optional[str] = ""
     ocr_backend: Optional[str] = None
+    force: bool = False
     force_reindex: bool = False
     async_task: bool = True
 
@@ -317,6 +330,52 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _technical_error_shield_middleware(request: Request, call_next):
+    """Catch any unhandled server exception so tracebacks never leak to clients."""
+    try:
+        return await call_next(request)
+    except HTTPException as http_exc:
+        if http_exc.status_code in {500, 502, 503, 504}:
+            return JSONResponse(
+                status_code=http_exc.status_code,
+                content={"detail": TECH_ERROR_STUB_RU, "error_type": "technical_error"},
+            )
+        raise
+    except Exception as exc:
+        logger.exception("Unhandled exception during %s %s: %s", request.method, request.url.path, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": TECH_ERROR_STUB_RU, "error_type": "technical_error"},
+        )
+
+
+@app.exception_handler(HTTPException)
+async def _custom_http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Sanitize 500/502/503/504 HTTPExceptions with TECH_ERROR_STUB_RU while keeping 4xx validation intact."""
+    if exc.status_code in {500, 502, 503, 504}:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": TECH_ERROR_STUB_RU, "error_type": "technical_error"},
+            headers=getattr(exc, "headers", None) or None,
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None) or None,
+    )
+
+
+@app.exception_handler(Exception)
+async def _global_unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Global fallback exception handler returning only TECH_ERROR_STUB_RU."""
+    logger.exception("Unhandled application exception on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": TECH_ERROR_STUB_RU, "error_type": "technical_error"},
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -369,6 +428,252 @@ async def get_health():
 
 
 # -----------------------------------------------------------------------------
+# Duplicate Detection & Shared Upload Indexing Task Runner
+# -----------------------------------------------------------------------------
+
+
+def _find_duplicate_by_sha256(pipeline: Any, file_sha256: str) -> Optional[Any]:
+    """Check `pipeline.registry` (and `get_documents()` fallback) for an already indexed document matching `file_sha256`."""
+    if not file_sha256:
+        return None
+    registry = getattr(pipeline, "registry", None)
+    candidates: list[Any] = []
+    if isinstance(registry, dict) and registry:
+        candidates = list(registry.values())
+    else:
+        get_docs_fn = getattr(pipeline, "get_documents", None)
+        if callable(get_docs_fn):
+            try:
+                candidates = list(get_docs_fn() or [])
+            except Exception:
+                candidates = []
+
+    for doc in candidates:
+        doc_sha = str(getattr(doc, "sha256", "") or (doc.get("sha256") if isinstance(doc, dict) else "") or "").strip()
+        if not doc_sha or doc_sha != file_sha256:
+            continue
+        doc_status = str(
+            getattr(doc, "status", "") or (doc.get("status") if isinstance(doc, dict) else "") or ""
+        ).lower()
+        if doc_status == "error":
+            continue
+        return doc
+    return None
+
+
+def _build_duplicate_409_response(existing: Any) -> JSONResponse:
+    """Build standard HTTP 409 Conflict JSON payload when an uploaded/downloaded file matches an existing document."""
+    if isinstance(existing, dict):
+        existing_doc_id = str(existing.get("doc_id") or "")
+        existing_file_name = str(existing.get("file_name") or existing_doc_id)
+        existing_title = str(existing.get("title") or existing_file_name)
+    else:
+        existing_doc_id = str(getattr(existing, "doc_id", "") or "")
+        existing_file_name = str(getattr(existing, "file_name", "") or existing_doc_id)
+        existing_title = str(getattr(existing, "title", "") or existing_file_name)
+
+    detail_msg = f"Дубликат документа: в базе уже загружен «{existing_title}» ({existing_file_name})"
+    return JSONResponse(
+        status_code=409,
+        content={
+            "status": "duplicate",
+            "detail": detail_msg,
+            "duplicate_of": existing_doc_id,
+            "existing_title": existing_title,
+            "existing_file_name": existing_file_name,
+        },
+    )
+
+
+def _unlink_uploaded_duplicate_safely(file_path: Path) -> None:
+    """Remove a newly uploaded duplicate file from `UPLOADS_DIR` without touching `DOCS_DIR`."""
+    try:
+        resolved = file_path.resolve()
+        uploads_root = UPLOADS_DIR.resolve()
+        if resolved.is_file() and (resolved.parent == uploads_root or uploads_root in resolved.parents):
+            resolved.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Failed to unlink duplicate upload %s: %s", file_path, exc)
+
+
+def _invoke_pipeline_index_file(
+    pipeline: Any,
+    file_path: Path,
+    metadata_overrides: Optional[dict[str, Any]],
+    ocr_backend: Optional[str],
+    effective_force: bool,
+    progress_callback: Any,
+) -> dict[str, Any]:
+    """Call `pipeline.index_file` adapting `force` / `force_reindex` kwargs and normalizing dict vs Pydantic output."""
+    idx_fn = getattr(pipeline, "index_file")
+    kwargs: dict[str, Any] = {
+        "file_path": file_path,
+        "metadata_overrides": metadata_overrides if metadata_overrides else None,
+        "ocr_backend": ocr_backend,
+        "progress_callback": progress_callback,
+    }
+    try:
+        sig = inspect.signature(idx_fn)
+        params = sig.parameters
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        if "force" in params:
+            kwargs["force"] = effective_force
+        if "force_reindex" in params:
+            kwargs["force_reindex"] = effective_force
+        if "force" not in kwargs and "force_reindex" not in kwargs and has_var_kw:
+            kwargs["force"] = effective_force
+    except (TypeError, ValueError):
+        kwargs["force"] = effective_force
+
+    raw_res = idx_fn(**kwargs)
+    if hasattr(raw_res, "model_dump"):
+        return dict(raw_res.model_dump())
+    if isinstance(raw_res, dict):
+        return dict(raw_res)
+    return {"status": str(getattr(raw_res, "status", "success")), "file_name": file_path.name}
+
+
+def _run_index_task(
+    task: TaskState,
+    pipeline: Any,
+    saved_paths: list[Path],
+    metadata_overrides: Optional[dict[str, Any]],
+    clean_ocr_backend: Optional[str],
+    effective_force: bool,
+) -> None:
+    """Execute background indexing for uploaded/URL-downloaded files with content-duplicate (`status == 'duplicate'`) cleanup."""
+    task.status = "running"
+    task.started_at = datetime.now(timezone.utc).isoformat()
+    total_files = len(saved_paths)
+    file_statuses: list[dict[str, Any]] = []
+    dup_entries: list[dict[str, Any]] = []
+
+    try:
+        for idx, file_path in enumerate(saved_paths, start=1):
+            task.file_name = file_path.name
+
+            def _file_progress(ev: dict[str, Any], _idx: int = idx, _tot: int = total_files):
+                overall_pct = int(((_idx - 1) + (ev.get("percent", 0) / 100.0)) / max(1, _tot) * 100)
+                patched = dict(ev)
+                patched["percent"] = max(
+                    1,
+                    min(99 if ev.get("stage") != "done" or _idx < _tot else 100, overall_pct),
+                )
+                patched["message"] = f"[{_idx}/{_tot}] {ev.get('message', '')}"
+                task.emit_event(patched)
+
+            st_dict = _invoke_pipeline_index_file(
+                pipeline=pipeline,
+                file_path=file_path,
+                metadata_overrides=metadata_overrides,
+                ocr_backend=clean_ocr_backend,
+                effective_force=effective_force,
+                progress_callback=_file_progress,
+            )
+
+            if st_dict.get("status") == "duplicate":
+                _unlink_uploaded_duplicate_safely(file_path)
+                dup_of = str(st_dict.get("duplicate_of") or st_dict.get("doc_id") or "")
+                ex_fname = str(st_dict.get("existing_file_name") or "")
+                ex_title = str(st_dict.get("existing_title") or ex_fname or dup_of)
+                dup_msg = str(
+                    st_dict.get("message")
+                    or st_dict.get("detail")
+                    or (
+                        f"Дубликат документа: в базе уже загружен «{ex_title}» ({ex_fname})"
+                        if ex_fname
+                        else f"Дубликат документа: в базе уже загружен «{ex_title}»"
+                    )
+                )
+                st_dict.setdefault("file_name", file_path.name)
+                st_dict["duplicate_of"] = dup_of
+                st_dict["existing_title"] = ex_title
+                st_dict["existing_file_name"] = ex_fname
+                st_dict["message"] = dup_msg
+                st_dict["detail"] = dup_msg
+                dup_entries.append(st_dict)
+
+            file_statuses.append(st_dict)
+
+        task.completed_at = datetime.now(timezone.utc).isoformat()
+        task.percent = 100
+
+        if dup_entries and len(dup_entries) == total_files:
+            first_dup = dup_entries[0]
+            task.status = "duplicate"
+            task.duplicate_of = first_dup["duplicate_of"]
+            task.existing_title = first_dup["existing_title"]
+            task.existing_file_name = first_dup["existing_file_name"]
+            task.message = first_dup["message"]
+            task.result = {
+                "status": "duplicate",
+                "files": file_statuses,
+                "total_files": total_files,
+                "duplicate_of": task.duplicate_of,
+                "existing_title": task.existing_title,
+                "existing_file_name": task.existing_file_name,
+                "message": task.message,
+            }
+            task.emit_event(
+                {
+                    "stage": "done",
+                    "status": "duplicate",
+                    "stage_index": 6,
+                    "total_stages": 6,
+                    "stage_label": "Дубликат отклонён",
+                    "percent": 100,
+                    "message": task.message,
+                    "file_name": first_dup.get("file_name", ""),
+                    "duplicate_of": task.duplicate_of,
+                    "existing_title": task.existing_title,
+                    "existing_file_name": task.existing_file_name,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        else:
+            task.status = "completed"
+            if dup_entries:
+                first_dup = dup_entries[0]
+                task.duplicate_of = first_dup["duplicate_of"]
+                task.existing_title = first_dup["existing_title"]
+                task.existing_file_name = first_dup["existing_file_name"]
+            task.result = {"files": file_statuses, "total_files": total_files}
+            done_msg = (
+                f"Обработано файлов: {total_files} (отклонено дубликатов: {len(dup_entries)})"
+                if dup_entries
+                else f"Успешно обработано файлов: {total_files}"
+            )
+            task.emit_event(
+                {
+                    "stage": "done",
+                    "stage_index": 6,
+                    "total_stages": 6,
+                    "stage_label": "Завершено",
+                    "percent": 100,
+                    "message": done_msg,
+                    "file_name": "",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+    except Exception as exc:
+        logger.exception("Background upload indexing task failed: %s", exc)
+        task.status = "failed"
+        task.error = TECH_ERROR_STUB_RU
+        task.completed_at = datetime.now(timezone.utc).isoformat()
+        task.emit_event(
+            {
+                "stage": "error",
+                "stage_index": task.stage_index,
+                "total_stages": 6,
+                "stage_label": "Ошибка",
+                "percent": task.percent,
+                "message": TECH_ERROR_STUB_RU,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+
+# -----------------------------------------------------------------------------
 # Document Upload Endpoint
 # -----------------------------------------------------------------------------
 
@@ -382,12 +687,16 @@ async def upload_documents(
     version_note: Optional[str] = Form(""),
     ocr_backend: Optional[str] = Form(None),
     force_reindex: bool = Form(False),
+    force: bool = Query(default=False, description="Bypass duplicate check and force re-index"),
     async_task: bool = Form(True),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="Не передано ни одного файла для загрузки")
 
-    saved_paths: list[Path] = []
+    effective_force = bool(force or force_reindex)
+    pipeline = get_pipeline()
+
+    staged_uploads: list[tuple[str, bytes]] = []
     for upload in files:
         if not upload.filename:
             continue
@@ -399,13 +708,23 @@ async def upload_documents(
                 status_code=400,
                 detail=f"Неподдерживаемый формат файла '{safe_filename}'. Допустимые форматы: {allowed_str}",
             )
-        dest_path = UPLOADS_DIR / safe_filename
         content = await upload.read()
+        if not effective_force:
+            file_sha256 = compute_bytes_sha256(content)
+            existing_doc = _find_duplicate_by_sha256(pipeline, file_sha256)
+            if existing_doc is not None:
+                return _build_duplicate_409_response(existing_doc)
+        staged_uploads.append((safe_filename, content))
+
+    if not staged_uploads:
+        raise HTTPException(status_code=400, detail="Имена файлов некорректны")
+
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+    for safe_filename, content in staged_uploads:
+        dest_path = UPLOADS_DIR / safe_filename
         dest_path.write_bytes(content)
         saved_paths.append(dest_path)
-
-    if not saved_paths:
-        raise HTTPException(status_code=400, detail="Имена файлов некорректны")
 
     metadata_overrides: dict[str, Any] = {}
     if status and status.strip():
@@ -422,62 +741,16 @@ async def upload_documents(
     clean_ocr_backend = ocr_backend.strip() if ocr_backend and ocr_backend.strip() else None
 
     task = _get_or_create_task(task_type="upload")
-    pipeline = get_pipeline()
 
     def _run_upload_indexing():
-        task.status = "running"
-        task.started_at = datetime.now(timezone.utc).isoformat()
-        total_files = len(saved_paths)
-        file_statuses: list[dict[str, Any]] = []
-
-        try:
-            for idx, file_path in enumerate(saved_paths, start=1):
-                task.file_name = file_path.name
-
-                def _file_progress(ev: dict[str, Any], _idx: int = idx, _tot: int = total_files):
-                    overall_pct = int(((_idx - 1) + (ev.get("percent", 0) / 100.0)) / max(1, _tot) * 100)
-                    patched = dict(ev)
-                    patched["percent"] = max(1, min(99 if ev.get("stage") != "done" or _idx < _tot else 100, overall_pct))
-                    patched["message"] = f"[{_idx}/{_tot}] {ev.get('message', '')}"
-                    task.emit_event(patched)
-
-                st = pipeline.index_file(
-                    file_path=file_path,
-                    metadata_overrides=metadata_overrides if metadata_overrides else None,
-                    ocr_backend=clean_ocr_backend,
-                    force=force_reindex,
-                    progress_callback=_file_progress,
-                )
-                file_statuses.append(st.model_dump())
-
-            task.status = "completed"
-            task.completed_at = datetime.now(timezone.utc).isoformat()
-            task.percent = 100
-            task.result = {"files": file_statuses, "total_files": total_files}
-            task.emit_event({
-                "stage": "done",
-                "stage_index": 6,
-                "total_stages": 6,
-                "stage_label": "Завершено",
-                "percent": 100,
-                "message": f"Успешно обработано файлов: {total_files}",
-                "file_name": "",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-        except Exception as exc:
-            logger.exception("Upload indexing failed: %s", exc)
-            task.status = "failed"
-            task.error = str(exc)
-            task.completed_at = datetime.now(timezone.utc).isoformat()
-            task.emit_event({
-                "stage": "error",
-                "stage_index": task.stage_index,
-                "total_stages": 6,
-                "stage_label": "Ошибка",
-                "percent": task.percent,
-                "message": f"Ошибка обработки: {exc}",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+        _run_index_task(
+            task=task,
+            pipeline=pipeline,
+            saved_paths=saved_paths,
+            metadata_overrides=metadata_overrides,
+            clean_ocr_backend=clean_ocr_backend,
+            effective_force=effective_force,
+        )
 
     if async_task:
         asyncio.create_task(asyncio.to_thread(_run_upload_indexing))
@@ -489,12 +762,23 @@ async def upload_documents(
         }
     else:
         await asyncio.to_thread(_run_upload_indexing)
-        return {
+        resp_payload: dict[str, Any] = {
             "task_id": task.task_id,
             "status": task.status,
             "result": task.result,
             "error": task.error,
         }
+        if task.status == "duplicate":
+            resp_payload.update(
+                {
+                    "message": task.message,
+                    "detail": task.message,
+                    "duplicate_of": task.duplicate_of,
+                    "existing_title": task.existing_title,
+                    "existing_file_name": task.existing_file_name,
+                }
+            )
+        return resp_payload
 
 
 # -----------------------------------------------------------------------------
@@ -1055,7 +1339,10 @@ def _download_document_from_url(
 
 
 @app.post("/api/documents/upload-url", summary="Download document(s) by URL and index into knowledge base")
-async def upload_documents_by_url(req: UploadUrlRequest):
+async def upload_documents_by_url(
+    req: UploadUrlRequest,
+    force: bool = Query(default=False, description="Bypass duplicate check and force re-index"),
+):
     raw_urls: list[str] = []
     if req.url and req.url.strip():
         raw_urls.append(req.url.strip())
@@ -1069,15 +1356,17 @@ async def upload_documents_by_url(req: UploadUrlRequest):
     if not unique_urls:
         raise HTTPException(status_code=400, detail="Не указана ссылка на документ")
 
+    effective_force = bool(force or req.force or req.force_reindex)
+    pipeline = get_pipeline()
+
     explicit_fn = (
         req.filename.strip()
         if (len(unique_urls) == 1 and req.filename and req.filename.strip())
         else None
     )
 
-    def _download_all_urls() -> list[Path]:
-        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        paths: list[Path] = []
+    def _download_all_urls() -> tuple[list[Path], Optional[Any]]:
+        staged_downloads: list[tuple[str, bytes]] = []
         used_names: set[str] = set()
         with _create_url_download_client() as dl_client:
             for u in unique_urls:
@@ -1086,6 +1375,11 @@ async def upload_documents_by_url(req: UploadUrlRequest):
                     explicit_filename=explicit_fn,
                     client=dl_client,
                 )
+                if not effective_force:
+                    file_sha256 = compute_bytes_sha256(content_bytes)
+                    existing_doc = _find_duplicate_by_sha256(pipeline, file_sha256)
+                    if existing_doc is not None:
+                        return [], existing_doc
                 if safe_name in used_names:
                     base_stem = Path(safe_name).stem
                     ext_part = Path(safe_name).suffix
@@ -1094,12 +1388,19 @@ async def upload_documents_by_url(req: UploadUrlRequest):
                         counter += 1
                     safe_name = f"{base_stem}_{counter}{ext_part}"
                 used_names.add(safe_name)
-                dest_path = UPLOADS_DIR / safe_name
-                dest_path.write_bytes(content_bytes)
-                paths.append(dest_path)
-        return paths
+                staged_downloads.append((safe_name, content_bytes))
 
-    saved_paths = await asyncio.to_thread(_download_all_urls)
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        paths: list[Path] = []
+        for safe_name, content_bytes in staged_downloads:
+            dest_path = UPLOADS_DIR / safe_name
+            dest_path.write_bytes(content_bytes)
+            paths.append(dest_path)
+        return paths, None
+
+    saved_paths, dup_existing = await asyncio.to_thread(_download_all_urls)
+    if dup_existing is not None:
+        return _build_duplicate_409_response(dup_existing)
 
     metadata_overrides: dict[str, Any] = {}
     if req.status and req.status.strip():
@@ -1116,69 +1417,16 @@ async def upload_documents_by_url(req: UploadUrlRequest):
     clean_ocr_backend = req.ocr_backend.strip() if req.ocr_backend and req.ocr_backend.strip() else None
 
     task = _get_or_create_task(task_type="upload_url")
-    pipeline = get_pipeline()
 
     def _run_url_upload_indexing():
-        task.status = "running"
-        task.started_at = datetime.now(timezone.utc).isoformat()
-        total_files = len(saved_paths)
-        file_statuses: list[dict[str, Any]] = []
-
-        try:
-            for idx, file_path in enumerate(saved_paths, start=1):
-                task.file_name = file_path.name
-
-                def _file_progress(ev: dict[str, Any], _idx: int = idx, _tot: int = total_files):
-                    overall_pct = int(((_idx - 1) + (ev.get("percent", 0) / 100.0)) / max(1, _tot) * 100)
-                    patched = dict(ev)
-                    patched["percent"] = max(
-                        1,
-                        min(99 if ev.get("stage") != "done" or _idx < _tot else 100, overall_pct),
-                    )
-                    patched["message"] = f"[{_idx}/{_tot}] {ev.get('message', '')}"
-                    task.emit_event(patched)
-
-                st = pipeline.index_file(
-                    file_path=file_path,
-                    metadata_overrides=metadata_overrides if metadata_overrides else None,
-                    ocr_backend=clean_ocr_backend,
-                    force=req.force_reindex,
-                    progress_callback=_file_progress,
-                )
-                file_statuses.append(st.model_dump())
-
-            task.status = "completed"
-            task.completed_at = datetime.now(timezone.utc).isoformat()
-            task.percent = 100
-            task.result = {"files": file_statuses, "total_files": total_files}
-            task.emit_event(
-                {
-                    "stage": "done",
-                    "stage_index": 6,
-                    "total_stages": 6,
-                    "stage_label": "Завершено",
-                    "percent": 100,
-                    "message": f"Успешно обработано файлов: {total_files}",
-                    "file_name": "",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-        except Exception as exc:
-            logger.exception("URL upload indexing failed: %s", exc)
-            task.status = "failed"
-            task.error = str(exc)
-            task.completed_at = datetime.now(timezone.utc).isoformat()
-            task.emit_event(
-                {
-                    "stage": "error",
-                    "stage_index": task.stage_index,
-                    "total_stages": 6,
-                    "stage_label": "Ошибка",
-                    "percent": task.percent,
-                    "message": f"Ошибка обработки: {exc}",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            )
+        _run_index_task(
+            task=task,
+            pipeline=pipeline,
+            saved_paths=saved_paths,
+            metadata_overrides=metadata_overrides,
+            clean_ocr_backend=clean_ocr_backend,
+            effective_force=effective_force,
+        )
 
     if req.async_task:
         asyncio.create_task(asyncio.to_thread(_run_url_upload_indexing))
@@ -1190,13 +1438,24 @@ async def upload_documents_by_url(req: UploadUrlRequest):
         }
     else:
         await asyncio.to_thread(_run_url_upload_indexing)
-        return {
+        resp_payload: dict[str, Any] = {
             "task_id": task.task_id,
             "status": task.status,
             "files": [p.name for p in saved_paths],
             "result": task.result,
             "error": task.error,
         }
+        if task.status == "duplicate":
+            resp_payload.update(
+                {
+                    "message": task.message,
+                    "detail": task.message,
+                    "duplicate_of": task.duplicate_of,
+                    "existing_title": task.existing_title,
+                    "existing_file_name": task.existing_file_name,
+                }
+            )
+        return resp_payload
 
 
 # -----------------------------------------------------------------------------
@@ -1320,14 +1579,14 @@ async def stream_task_events(task_id: str):
             initial_payload = task.to_dict()
             yield f"data: {json.dumps(initial_payload, ensure_ascii=False)}\n\n"
 
-            if task.status in ("completed", "failed"):
+            if task.status in ("completed", "failed", "duplicate"):
                 return
 
             while True:
                 try:
                     ev = await asyncio.wait_for(q.get(), timeout=15.0)
                     yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-                    if ev.get("stage") in ("done", "error") or task.status in ("completed", "failed"):
+                    if ev.get("stage") in ("done", "error") or task.status in ("completed", "failed", "duplicate"):
                         break
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"
@@ -2015,6 +2274,10 @@ def _build_document_view_sync(
                 doc_number=doc_meta.doc_number,
                 doc_date=doc_meta.doc_date,
                 format="pdf",
+                file_format="pdf",
+                has_page_images=True,
+                preview_pdf_url=f"/api/documents/{encoded_doc_id}/preview.pdf",
+                preview_pages_total=total_pages,
                 total_pages=total_pages,
                 target_page=target_page,
                 matched_quote_on_page=matched_quote_on_page,
@@ -2152,6 +2415,10 @@ def _build_document_view_sync(
             doc_number=doc_meta.doc_number,
             doc_date=doc_meta.doc_date,
             format=fmt,
+            file_format=fmt,
+            has_page_images=False,
+            preview_pdf_url=None,
+            preview_pages_total=0,
             total_pages=total_pages,
             target_page=target_page,
             matched_quote_on_page=matched_quote_on_page,
@@ -2159,7 +2426,8 @@ def _build_document_view_sync(
             pages=pages_out,
         )
 
-    # 3. Word Documents (.docx / .doc): structured archival pages grouped by `page_number` 1..N
+    # 3. Word Documents (.docx / .doc): high-fidelity cached A4 PDF preview + structured blocks metadata
+    word_fmt = fmt if fmt in {"docx", "doc"} else "docx"
     pages_blocks_map: dict[int, list[DocumentViewerBlock]] = {}
     if target_path is not None:
         parsed_blocks, _ = parse_document(target_path)
@@ -2221,6 +2489,89 @@ def _build_document_view_sync(
                         )
                     )
 
+    if target_path is not None:
+        preview_pdf_path = ensure_word_preview_pdf(target_path, sha256=doc_meta.sha256)
+        pdf_doc = fitz.open(str(preview_pdf_path))
+        try:
+            preview_pages_total = max(1, len(pdf_doc))
+            pages_out = []
+            for p_num in range(1, preview_pages_total + 1):
+                p_rect = pdf_doc[p_num - 1].rect
+                pages_out.append(
+                    DocumentViewerPage(
+                        page_number=p_num,
+                        label=f"Стр. {p_num}",
+                        image_url=f"/api/documents/{encoded_doc_id}/pages/{p_num}.png",
+                        width=round(float(p_rect.width), 1),
+                        height=round(float(p_rect.height), 1),
+                        highlights=[],
+                        blocks=list(pages_blocks_map.get(p_num, [])),
+                    )
+                )
+            # Attach any overflow parser blocks beyond `preview_pages_total` onto the last visual sheet
+            for extra_p in sorted(k for k in pages_blocks_map if k > preview_pages_total):
+                pages_out[-1].blocks.extend(pages_blocks_map[extra_p])
+
+            clamped_hint_page = max(1, min(preview_pages_total, int(page))) if page is not None else None
+            target_page = clamped_hint_page if clamped_hint_page is not None else 1
+            matched_quote_on_page = False
+            search_order = _priority_page_order(preview_pages_total, clamped_hint_page)
+
+            if quote_segments:
+                for cand_p in search_order:
+                    hl = _find_pdf_quote_highlights_on_page(pdf_doc[cand_p - 1], quote_segments)
+                    if hl:
+                        pages_out[cand_p - 1].highlights = hl
+                        target_page = cand_p
+                        matched_quote_on_page = True
+                        break
+
+            if not matched_quote_on_page and cl_clean:
+                for cand_p in search_order:
+                    cl_hl = _find_pdf_clause_highlights_on_page(pdf_doc[cand_p - 1], cl_clean)
+                    if cl_hl:
+                        pages_out[cand_p - 1].highlights = cl_hl
+                        target_page = cand_p
+                        break
+
+            # Secondary block-level check if quote text spans across formatting boundaries
+            if not matched_quote_on_page and (quote_segments or cl_clean):
+                clause_matched_page: Optional[int] = None
+                for cand_p in search_order:
+                    p_obj = pages_out[cand_p - 1]
+                    for blk in p_obj.blocks:
+                        mq, mcl = _block_matches_quote_or_clause(blk, quote_segments, cl_clean)
+                        if mq:
+                            target_page = cand_p
+                            matched_quote_on_page = True
+                            break
+                        if mcl and clause_matched_page is None:
+                            clause_matched_page = cand_p
+                    if matched_quote_on_page:
+                        break
+                if not matched_quote_on_page and clause_matched_page is not None and not pages_out[target_page - 1].highlights:
+                    target_page = clause_matched_page
+
+            return DocumentViewerResponse(
+                doc_id=doc_id,
+                file_name=doc_meta.file_name,
+                title=doc_meta.title or doc_meta.file_name,
+                doc_number=doc_meta.doc_number,
+                doc_date=doc_meta.doc_date,
+                format=word_fmt,
+                file_format=word_fmt,
+                has_page_images=True,
+                preview_pdf_url=f"/api/documents/{encoded_doc_id}/preview.pdf",
+                preview_pages_total=preview_pages_total,
+                total_pages=preview_pages_total,
+                target_page=target_page,
+                matched_quote_on_page=matched_quote_on_page,
+                download_url=download_url,
+                pages=pages_out,
+            )
+        finally:
+            pdf_doc.close()
+
     max_page_num = max(pages_blocks_map.keys(), default=1)
     pages_out = []
     for p_no in range(1, max_page_num + 1):
@@ -2240,20 +2591,19 @@ def _build_document_view_sync(
     search_order = _priority_page_order(total_pages, page)
     target_page = max(1, min(total_pages, int(page))) if page is not None else 1
     matched_quote_on_page = False
-    clause_matched_page: Optional[int] = None
+    clause_matched_page_fb: Optional[int] = None
 
     if quote_segments or cl_clean:
         for cand_p in search_order:
             p_obj = pages_out[cand_p - 1]
-            # Check individual blocks first, then whole-page text (in case quote spans two adjacent clauses/blocks)
             for blk in p_obj.blocks:
                 mq, mcl = _block_matches_quote_or_clause(blk, quote_segments, cl_clean)
                 if mq:
                     target_page = cand_p
                     matched_quote_on_page = True
                     break
-                if mcl and clause_matched_page is None:
-                    clause_matched_page = cand_p
+                if mcl and clause_matched_page_fb is None:
+                    clause_matched_page_fb = cand_p
             if matched_quote_on_page:
                 break
             if quote_segments:
@@ -2269,8 +2619,8 @@ def _build_document_view_sync(
                     matched_quote_on_page = True
                     break
 
-    if not matched_quote_on_page and clause_matched_page is not None:
-        target_page = clause_matched_page
+    if not matched_quote_on_page and clause_matched_page_fb is not None:
+        target_page = clause_matched_page_fb
 
     return DocumentViewerResponse(
         doc_id=doc_id,
@@ -2278,7 +2628,11 @@ def _build_document_view_sync(
         title=doc_meta.title or doc_meta.file_name,
         doc_number=doc_meta.doc_number,
         doc_date=doc_meta.doc_date,
-        format=fmt or "docx",
+        format=word_fmt,
+        file_format=word_fmt,
+        has_page_images=False,
+        preview_pdf_url=None,
+        preview_pages_total=0,
         total_pages=total_pages,
         target_page=target_page,
         matched_quote_on_page=matched_quote_on_page,
@@ -2306,8 +2660,48 @@ async def get_document_file(doc_id: str):
 
 
 @app.get(
+    "/api/documents/{doc_id}/preview.pdf",
+    summary="Serve inline A4 PDF preview for pdf, docx, and doc documents",
+)
+async def get_document_preview_pdf(doc_id: str):
+    pipeline = get_pipeline()
+    doc_meta, target_path = _resolve_document_file(pipeline, doc_id, require_disk_file=True)
+    assert target_path is not None
+
+    fmt = (doc_meta.file_format or target_path.suffix.lstrip(".")).lower()
+    if fmt == "pdf" or target_path.suffix.lower() == ".pdf":
+        pdf_path = target_path
+    elif fmt in {"docx", "doc"} or target_path.suffix.lower() in {".docx", ".doc"}:
+        try:
+            pdf_path = await asyncio.to_thread(
+                ensure_word_preview_pdf,
+                target_path,
+                doc_meta.sha256,
+            )
+        except Exception as exc:
+            logger.exception("Failed generating A4 preview PDF for '%s': %s", doc_id, exc)
+            raise HTTPException(status_code=500, detail=TECH_ERROR_STUB_RU)
+    else:
+        raise HTTPException(
+            status_code=404,
+            detail=f"PDF-предпросмотр недоступен для документа '{doc_id}' (формат: {fmt})",
+        )
+
+    base_stem = Path(doc_meta.file_name or target_path.name).stem or doc_id
+    encoded_pdf_name = urllib.parse.quote(f"{base_stem}.pdf")
+    return FileResponse(
+        path=pdf_path,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{encoded_pdf_name}",
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
+
+
+@app.get(
     "/api/documents/{doc_id}/pages/{page_number}.png",
-    summary="Render 1-based PDF page to PNG image via PyMuPDF",
+    summary="Render 1-based page of PDF, DOCX, or DOC document to PNG image via PyMuPDF",
 )
 async def get_document_page_png(
     doc_id: str,
@@ -2322,30 +2716,28 @@ async def get_document_page_png(
     doc_meta, target_path = _resolve_document_file(pipeline, doc_id, require_disk_file=True)
     assert target_path is not None
 
-    if target_path.suffix.lower() != ".pdf" and (doc_meta.file_format or "").lower() != "pdf":
+    ext_low = target_path.suffix.lower()
+    fmt = (doc_meta.file_format or ext_low.lstrip(".")).lower()
+
+    if fmt not in {"pdf", "docx", "doc"} and ext_low not in {".pdf", ".docx", ".doc"}:
         raise HTTPException(
             status_code=404,
-            detail=f"Документ '{doc_id}' не является PDF-файлом (формат: {doc_meta.file_format})",
+            detail=f"Постраничный рендеринг недоступен для документа '{doc_id}' (формат: {fmt})",
         )
 
     def _render_png() -> bytes:
-        pdf_doc = fitz.open(str(target_path))
-        try:
-            if page_number > len(pdf_doc):
-                raise IndexError(f"Страница {page_number} выходит за пределы документа ({len(pdf_doc)} стр.)")
-            fitz_page = pdf_doc[page_number - 1]
-            pix = fitz_page.get_pixmap(dpi=clamped_dpi, alpha=False)
-            return pix.tobytes("png")
-        finally:
-            pdf_doc.close()
+        if fmt == "pdf" or ext_low == ".pdf":
+            return render_preview_pdf_page_png(target_path, page_number=page_number, dpi=clamped_dpi)
+        preview_pdf_path = ensure_word_preview_pdf(target_path, sha256=doc_meta.sha256)
+        return render_preview_pdf_page_png(preview_pdf_path, page_number=page_number, dpi=clamped_dpi)
 
     try:
         png_bytes = await asyncio.to_thread(_render_png)
     except IndexError as idx_exc:
         raise HTTPException(status_code=404, detail=str(idx_exc))
     except Exception as exc:
-        logger.exception("Failed rendering PDF page %d for '%s': %s", page_number, doc_id, exc)
-        raise HTTPException(status_code=500, detail=f"Ошибка рендеринга страницы PDF: {exc}")
+        logger.exception("Failed rendering page %d for '%s': %s", page_number, doc_id, exc)
+        raise HTTPException(status_code=500, detail=TECH_ERROR_STUB_RU)
 
     return Response(
         content=png_bytes,
@@ -2721,12 +3113,16 @@ async def get_query_presets():
 
 @app.post("/api/search", response_model=SearchResponse, summary="Execute Hybrid RRF Search with Adaptive Table Linking")
 async def execute_search(query_req: SearchQuery) -> SearchResponse:
+    if not (query_req.query or "").strip():
+        raise HTTPException(status_code=400, detail="Пустой поисковый запрос: введите текст вопроса")
     search_svc = get_search_service()
     try:
         return await asyncio.to_thread(search_svc.search, query_req)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Search execution failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Ошибка выполнения поиска: {exc}")
+        raise HTTPException(status_code=500, detail=TECH_ERROR_STUB_RU)
 
 
 @app.post(
@@ -2735,6 +3131,8 @@ async def execute_search(query_req: SearchQuery) -> SearchResponse:
     summary="Build self-contained stateless RAG context package (multi-aspect RRF + structural expansion + SQLite table hydration)",
 )
 async def build_chatbot_context_endpoint(req: ChatbotContextRequest) -> ChatbotContextResponse:
+    if not (req.query or "").strip():
+        raise HTTPException(status_code=400, detail="Пустой поисковый запрос: введите текст вопроса")
     search_svc = get_search_service()
     build_fn = getattr(search_svc, "build_chatbot_context", None)
     if not callable(build_fn):
@@ -2750,7 +3148,7 @@ async def build_chatbot_context_endpoint(req: ChatbotContextRequest) -> ChatbotC
         raise
     except Exception as exc:
         logger.exception("Chatbot context build failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Ошибка сборки контекста чат-бота: {exc}")
+        raise HTTPException(status_code=500, detail=TECH_ERROR_STUB_RU)
 
 
 @app.post("/api/documents/reconcile", summary="Reconcile document_registry.json, sections_store.json, tables_store.db, and Qdrant")
@@ -2760,7 +3158,7 @@ async def reconcile_stores_endpoint():
         return await asyncio.to_thread(pipeline.reconcile_stores, True)
     except Exception as exc:
         logger.exception("Store reconciliation failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Ошибка сверки хранилищ: {exc}")
+        raise HTTPException(status_code=500, detail=TECH_ERROR_STUB_RU)
 
 
 @app.post(
@@ -2769,6 +3167,8 @@ async def reconcile_stores_endpoint():
     summary="Execute Autonomous Table-Aware RAG Agent with LLM Tool Calling over SQLite Tables",
 )
 async def execute_agent_ask(req: AgentAskRequest) -> AgentAskResponse:
+    if not (req.query or "").strip():
+        raise HTTPException(status_code=400, detail="Пустой поисковый запрос: введите текст вопроса")
     try:
         agent = _resolve_rag_agent()
         ask_fn = getattr(agent, "ask")
@@ -2781,7 +3181,7 @@ async def execute_agent_ask(req: AgentAskRequest) -> AgentAskResponse:
         raise
     except Exception as exc:
         logger.exception("RAG Agent ask failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Ошибка генерации ответа ИИ-агентом: {exc}")
+        raise HTTPException(status_code=500, detail=TECH_ERROR_STUB_RU)
 
 
 def _sse(event: str, data: Any) -> str:
@@ -2798,6 +3198,9 @@ async def execute_agent_ask_stream(req: AgentAskRequest, request: Request):
     events into an asyncio queue; when the client disconnects (or presses «Стоп»), a stop flag is
     set, the generator closes the upstream LLM stream and the worker exits.
     """
+    if not (req.query or "").strip():
+        raise HTTPException(status_code=400, detail="Пустой поисковый запрос: введите текст вопроса")
+
     agent = _resolve_rag_agent()
     if not hasattr(agent, "ask_stream"):
         raise HTTPException(status_code=404, detail="Потоковый режим недоступен")
@@ -2813,17 +3216,43 @@ async def execute_agent_ask_stream(req: AgentAskRequest, request: Request):
             pass
 
     def _worker() -> None:
-        gen = agent.ask_stream(req, should_stop=stop_event.is_set)
+        gen = None
         try:
-            for item in gen:
+            gen = agent.ask_stream(req, should_stop=stop_event.is_set)
+            for ev_name, ev_payload in gen:
                 if stop_event.is_set():
                     break
-                _push(item)
-        except Exception as exc:  # pragma: no cover - surfaced to client as SSE error
+                if ev_name == "error":
+                    _push(
+                        (
+                            "error",
+                            {
+                                "error": TECH_ERROR_STUB_RU,
+                                "message": TECH_ERROR_STUB_RU,
+                                "error_type": "technical_error",
+                            },
+                        )
+                    )
+                else:
+                    _push((ev_name, ev_payload))
+        except Exception as exc:  # pragma: no cover - surfaced to client as sanitized SSE error
             logger.exception("RAG Agent stream failed: %s", exc)
-            _push(("error", {"message": f"Ошибка генерации ответа: {exc}"}))
+            _push(
+                (
+                    "error",
+                    {
+                        "error": TECH_ERROR_STUB_RU,
+                        "message": TECH_ERROR_STUB_RU,
+                        "error_type": "technical_error",
+                    },
+                )
+            )
         finally:
-            gen.close()
+            if gen is not None and hasattr(gen, "close"):
+                try:
+                    gen.close()
+                except Exception:
+                    pass
             if stop_event.is_set():
                 logger.warning("RAG stream aborted by client (disconnect / «Стоп») — upstream LLM stream closed")
             _push(None)

@@ -649,11 +649,23 @@ class DocumentViewerResponse(BaseModel):
     doc_number: str = ""
     doc_date: str = ""
     format: str = ""
+    file_format: str = ""
+    has_page_images: bool = False
+    preview_pdf_url: str | None = None
+    preview_pages_total: int = 0
     total_pages: int = 1
     target_page: int = 1
     matched_quote_on_page: bool = False
     download_url: str = ""
     pages: list[DocumentViewerPage] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _sync_viewer_format_fields(self) -> DocumentViewerResponse:
+        if self.format and not self.file_format:
+            self.file_format = self.format
+        elif self.file_format and not self.format:
+            self.format = self.file_format
+        return self
 
 
 class IndexingFileStatus(BaseModel):
@@ -677,6 +689,10 @@ class IndexingFileStatus(BaseModel):
     duration_sec: float = 0.0
     warnings: list[str] = Field(default_factory=list)
     error_message: str | None = None
+    duplicate_of: str | None = None
+    existing_title: str | None = None
+    existing_file_name: str | None = None
+    message: str | None = None
     timestamp: str = ""
 
 

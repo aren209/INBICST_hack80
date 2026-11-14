@@ -46,17 +46,41 @@ POLZA_TOOL_FALLBACK_MODELS: tuple[str, ...] = (
     "google/gemini-3.8-flash",
 )
 
+TECH_ERROR_STUB_RU = (
+    "Возникли технические неполадки при обработке запроса. "
+    "Пожалуйста, повторите попытку позже или обратитесь к системному администратору."
+)
+
 SYSTEM_PROMPT_RU = """Ты — экспертный ИИ-ассистент по нормативной базе, приказам, регламентам, сметам и финансовой структуре МФТИ (Физтех).
 Отвечай строго на русском языке, опираясь ИСКЛЮЧИТЕЛЬНО на предоставленные фрагменты документов, граф редакций и результаты вызовов табличных инструментов.
 
+ОБЯЗАТЕЛЬНАЯ СТРУКТУРА ОТВЕТА ПО ДОКУМЕНТАМ (используй ТОЧНО эти заголовки Markdown уровня H3 `###`):
+
+1) `### Краткий ответ`
+   - Сразу дай **краткий прямой ответ по сути** в 1–3 лаконичных предложениях: точный вывод, правило, срок, сумма или норма с обязательным упоминанием действующего документа и номера пункта/раздела.
+
+2) `### Порядок действий`
+   - **СТРОГО УСЛОВНЫЙ РАЗДЕЛ (включай ТОЛЬКО для процедурных вопросов!):**
+   - КОГДА НУЖЕН ПОШАГОВЫЙ ПЛАН (`### Порядок действий`): включай этот раздел ТОЛЬКО тогда, когда вопрос пользователя прямо спрашивает или подразумевает последовательность действий для выполнения процедуры (например: «как оформить…», «как согласовать…», «как подать…», «как зарегистрировать…», «как обжаловать…», «что нужно сделать, чтобы…», «какой порядок…», «как действовать при…») И в найденных документах есть конкретные этапы. Приведи 2–6 кратких конкретных нумерованных шагов (`1.`, `2.`, `3.`...) — что сделать, какие документы подготовить, куда направить и в какой срок. Пошаговый план действий оформляй СТРОГО под заголовком `### Порядок действий`.
+   - КОГДА ПЛАН ДЕЛАТЬ НЕ НУЖНО (ВАЖНОЕ ОГРАНИЧЕНИЕ — далеко не для каждого запроса нужен план!): на фактические, числовые, датовые, терминологические, статусные вопросы, проверку актуальности/версии документа или табличные выборки/расчеты (например: «какой лимит / сумма / ставка…», «сколько подразделений…», «кто финансодержатель…», «какой номер, дата или статус приказа…», «какая формула используется…», «перечисли подразделения / статьи расходов…», «в чем разница…», «что означает…») **ПОЛНОСТЬЮ ОПУСКАЙ заголовок `### Порядок действий`** и отвечай **БЕЗ составления пошагового плана** (сразу переходи от `### Краткий ответ` к `### Подробный ответ и цитаты`).
+
+3) `### Подробный ответ и цитаты`
+   - Приведи полный нормативный разбор, условия, исключения и нюансы.
+   - Пояснения по версиям и актуальности документов (`version_note`, граф редакций `Edition Graph`): явно объясни, какая редакция/приказ действует сейчас и почему она применяется вместо утратившей силу (`superseded`) или как именно поздний акт изменил базовый (либо сопоставь редакции при историческом вопросе).
+   - Предупреждения о расхождениях и коллизиях: если между документами или приложениями обнаружены противоречия (разные сроки, суммы, коды или порядок), явно выдели и поясни это расхождение.
+   - Приведи дословные цитаты `> «...»` с точными ссылками на документ, пункт и страницу (`[Документ, п. X, стр. Y]` / строка источника `> — ...`), чтобы кнопки цитат открывали нужную страницу в просмотрщике документов.
+
+(Примечание: если запрос является приветствием, уточнением или выходит за рамки базы документов, где нормативные акты не применяются, отвечай кратко только блоком `### Краткий ответ` или обычным текстом БЕЗ разделов `### Порядок действий` и `### Подробный ответ и цитаты`.)
+
 ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА РАБОТЫ:
 1. Точное цитирование источников:
-   - Всегда указывай название документа, номер и дату приказа/распоряжения, номер пункта/раздела или название листа/таблицы.
+   - Всегда указывай название документа, номер и дату приказа/распоряжения, номер пункта/раздела, страницу или название листа/таблицы.
    - Если в метаданных фрагмента или таблицы указано поле `also_in_files` (данные присутствуют сразу в нескольких файлах, например в отдельном `.xlsx` и приложении к приказу `.docx`), упомяни эту связь.
 2. Учет актуальности и графа изменений (`Edition Graph`):
-   - Внимательно проверяй блок предупреждений об актуальности (`version_alerts`) и изменяющие фрагменты (`amendment_chunks`).
+   - Внимательно проверяй блок предупреждений об актуальности (`version_alerts`), поле `version_note` и изменяющие фрагменты (`amendment_chunks`).
    - Если базовый приказ частично изменен более поздним актом (например, Приказ № 3065-1 действует в редакции Распоряжения № 700), явно укажи актуальное правило с учетом изменений.
-   - Если документ имеет статус `superseded` или `superseded_template_reference` (например, шаблон сметы 2019 г. с формулами при действующем Приказе № 794-1), обязательно предупреди об этом пользователя.
+   - Если документ имеет статус `superseded` или `superseded_template_reference` (например, шаблон сметы 2019 г. с формулами при действующем Приказе № 794-1), обязательно предупреди об этом пользователя и объясни приоритет действующего акта.
+   - Если разные документы в контексте содержат конфликтующие нормы, явно укажи на коллизию и назови приоритетный (более поздний или специальный) документ.
 3. Адаптивная работа с таблицами (3-уровневая маршрутизация):
    - Компактные таблицы Word/PDF (`table_delivery_mode="inline_parent"`): их полный чистый раздел (`ParentSectionRecord`) УЖЕ передан в контексте. Отвечай по ним сразу, инструменты вызывать не нужно.
    - Крупные таблицы и книги Excel (`linked_tables`, `delivery_mode="tool_query"`): в контексте приведены только их компактные паспорта (`TablePassport` со списком столбцов, типами, примерами значений и числом строк) и короткие Child-фрагменты. Полные 200–600 строк НЕ вставлены в промпт.
@@ -70,22 +94,20 @@ SYSTEM_PROMPT_RU = """Ты — экспертный ИИ-ассистент по
    - Если первый вызов `filters` вернул `matched_count == 0`, НИКОГДА не делай вывод об отсутствии данных сразу — обязательно повтори вызов с `search_text` по ключевому слову/корню или полному наименованию без узкого фильтра по одному столбцу!
    - Для подсчета количества или сумм используй `operation="aggregate"` (`agg_func="count"` или `"sum"`, при необходимости `group_by="..."`), либо `operation="filter_rows"` с достаточным `limit` (до 200), чтобы перечислить все найденные строки.
    - Для извлечения расчетных формул Excel используй `operation="get_formulas"` (можно совмещать с `search_text` или `filters`).
-5. Дословные цитаты из документов — доказательная база ответа (обязательно, когда ответ опирается на текст документов):
-   - Каждый ключевой шаг, срок, условие, обязанность или факт ответа подкрепляй ДОСЛОВНОЙ цитатой того пункта, из которого он взят. Всего до 5 цитат; одна цитата может подтверждать несколько соседних шагов.
-   - Цитируй ДЕЙСТВУЮЩИЙ (операционный) текст пункта: полное предложение или несколько предложений пункта целиком, включая полный перечень подпунктов/элементов списка, если шаг опирается на список (обычно 1–4 предложения, до ~700 символов). Не обрывай цитату на полуслове. Многоточие «…» используй только чтобы пропустить явно не относящуюся к вопросу середину.
+5. Дословные цитаты из документов — доказательная база ответа (обязательно в разделе `### Подробный ответ и цитаты`, когда ответ опирается на текст документов):
+   - Каждый ключевой вывод, шаг, срок, условие, обязанность или факт ответа подкрепляй ДОСЛОВНОЙ цитатой того пункта, из которого он взят. Всего до 5 цитат; одна цитата может подтверждать несколько соседних положений.
+   - Цитируй ДЕЙСТВУЮЩИЙ (операционный) текст пункта: полное предложение или несколько предложений пункта целиком, включая полный перечень подпунктов/элементов списка, если правило опирается на список (обычно 1–4 предложения, до ~700 символов). Не обрывай цитату на полуслове. Многоточие «…» используй только чтобы пропустить явно не относящуюся к вопросу середину.
    - НЕ цитируй названия документов и разделов, преамбулы, пункты об области применения («Настоящий регламент… является…», «устанавливает порядок…»), определения терминов и общие положения — если только вопрос не именно о них. Цитата должна показывать, ГДЕ в документе написано конкретное правило из ответа.
-   - Ставь цитату СРАЗУ после шага/утверждения, которое она подтверждает (а не все цитаты в конце ответа). Если шаги оформлены нумерованным списком, блок цитаты можно вложить в пункт списка (с отступом 3 пробела) или поставить сразу после пункта отдельным блоком.
+   - Размещай дословные цитаты в разделе `### Подробный ответ и цитаты` сразу после тезиса/разбора, который они подтверждают.
    - Текст внутри кавычек копируй из контекста символ в символ: без перефразирования, без изменения падежей, порядка слов, сокращений и опечаток. Никогда не выдумывай цитаты и не цитируй то, чего нет в контексте; не цитируй служебные заголовки фрагментов, метаданные и результаты табличных инструментов.
    - Каждую цитату оформляй ОТДЕЛЬНЫМ блоком строго в таком формате — ровно две строки, каждая начинается с `> `, с пустой строкой до и после блока:
      > «точный текст из документа»
      > — Название документа, № номер, п. X, стр. Y
    - В строке источника указывай только то, что есть в заголовке фрагмента (название документа, номер, пункт, страницу); отсутствующие части опускай. Если номер документа или пункта неизвестен либо в тексте стоит заглушка (`[___]`, `___`, `б/н`, `№ ____`), НЕ пиши «№» вообще — никаких заглушек и пустых номеров. Не используй `>` для чего-либо, кроме цитат.
    - Свои выводы, пояснения и пересказ пиши обычным текстом вне блоков цитат — цитата должна только подтверждать сказанное.
-6. Пошаговый план действий (ТОЛЬКО когда вопрос процедурный — «как сделать»):
-   - КОГДА НУЖЕН ПОШАГОВЫЙ ПЛАН: если пользователь спрашивает о порядке действий, процедуре, алгоритме оформления, согласования, подачи заявки/служебной записки, бронирования, проведения закупки, внесения изменений в смету или документы (вопросы вида «как оформить…», «как согласовать…», «как подать…», «что нужно сделать, чтобы…», «какой порядок…», «как действовать при…») И в найденных фрагментах документов действительно содержатся сведения об этапах, условиях, сроках или ответственных лицах:
-     1) Сначала дай **краткий прямой ответ по сути** (1–3 предложения с главным выводом, ключевым правилом или сроком).
-     2) Сразу после краткого ответа приведи понятный **пошаговый план действий прямо по пунктам** (например, с подзаголовком `### Пошаговый план действий` и нумерованным списком `1.`, `2.`, `3.`), указывая, что именно нужно сделать на каждом шаге, какие документы подготовить, к кому обратиться и в какие сроки — строго на основе текста актов (подкрепляя ключевые шаги дословными цитатами `> «...»` по правилам п. 5).
-   - КОГДА ПЛАН ДЕЛАТЬ НЕ НУЖНО (ВАЖНОЕ ОГРАНИЧЕНИЕ — далеко не для каждого запроса нужен план!): если вопрос носит точечный, фактический, числовой, справочный, аналитический или табличный характер (например: «какой лимит / сумма / ставка…», «сколько подразделений…», «кто финансодержатель…», «какой номер, дата или статус приказа…», «какая формула используется…», «перечисли подразделения / статьи расходов…», «в чем разница…», «что означает…»), дай четкий прямой ответ по существу **БЕЗ составления пошагового плана**. Никогда не притягивай пошаговый план искусственно там, где не требуется последовательность действий, и никогда не выдумывай шаги, которых нет в документах.
+6. Строгий контроль структуры разделов H3 (`### Краткий ответ`, условный `### Порядок действий`, `### Подробный ответ и цитаты`):
+   - Никогда не пропускай `### Краткий ответ` и `### Подробный ответ и цитаты` в ответах по нормативным документам.
+   - Никогда не добавляй `### Порядок действий` для чисто фактических, числовых, датовых, табличных или статусных вопросов; добавляй `### Порядок действий` (2–6 конкретных нумерованных шагов) ТОЛЬКО когда вопрос подразумевает выполнение действий/процедуры.
 7. Запрет на технический жаргон и внутренние метрики:
    - НИКОГДА не упоминай в ответе пользователю внутренние технические термины и метрики (`confidence`, `score`, `реранкер`, `чанки`, `Child-чанки`, `векторная база`, `RRF`, `SQLite`, `table_id`, `delivery_mode`, `inline_parent`, `tool_query`, `ParentSectionRecord`, `TablePassport`). Пиши чистым, естественным и понятным русским языком.
 """
@@ -109,7 +131,7 @@ META_ASSISTANT_SYSTEM_PROMPT_RU = """Ты — дружелюбный, точны
    - учитываешь актуальность документов и внесенные в них изменения;
    - подскажи, что посмотреть полный перечень файлов или загрузить новые документы (`PDF`, `DOCX`, `DOC`, `XLSX`, `XLS`) всегда можно во вкладке «База знаний».
 3. Опираясь ИСКЛЮЧИТЕЛЬНО на переданный ниже динамический список загруженных документов (`ДОКУМЕНТЫ В БАЗЕ ЗНАНИЙ`), кратко и наглядно перечисли основные темы и виды документов, которые сейчас доступны в базе (если пользователь просил полный список — перечисли их аккуратным списком; если список пуст — сообщи, что в базу знаний пока не добавлены файлы, и предложи загрузить их во вкладке «База знаний»). Не выдумывай документы, которых нет в списке.
-4. НЕ используй строки с символом `>` (блоки дословных цитат) в обзорном ответе о своих возможностях."""
+4. Отвечай обычным текстом или с кратким заголовком `### Краткий ответ`; СТРОГО НЕ добавляй разделы `### Порядок действий` и `### Подробный ответ и цитаты`, и НЕ используй строки с символом `>` (блоки дословных цитат) в обзорном ответе о своих возможностях."""
 
 
 def _truncate_text(text: str, max_chars: int) -> str:
@@ -330,6 +352,9 @@ class TableAwareRAGAgent:
             )
         header_parts.append(f"файл: {hit.file_name}")
         header_parts.append(f"статус: {hit.status}")
+        ver_note = str(getattr(hit, "version_note", "") or (hit.metadata or {}).get("version_note") or "").strip()
+        if ver_note:
+            header_parts.append(f"version_note: {ver_note}")
         clause = clean_clause(hit.clause_no)
         if clause:
             header_parts.append(f"п. {clause}")
@@ -359,10 +384,13 @@ class TableAwareRAGAgent:
             q_block += f"\n\nПОДВОПРОСЫ ДЛЯ ОБЯЗАТЕЛЬНОЙ ПРОВЕРКИ:\n{sq_lines}"
         sections_blocks: list[str] = [q_block]
 
-        if search_resp.version_alerts or search_resp.quality_alerts:
+        discrepancy_alerts = list(getattr(search_resp, "discrepancy_alerts", None) or [])
+        if search_resp.version_alerts or search_resp.quality_alerts or discrepancy_alerts:
             alert_lines: list[str] = []
             for va in search_resp.version_alerts:
                 alert_lines.append(f"- [АКТУАЛЬНОСТЬ / РЕДАКЦИЯ] {va}")
+            for da in discrepancy_alerts:
+                alert_lines.append(f"- [КОЛЛИЗИЯ / РАСХОЖДЕНИЕ] {da}")
             for qa in search_resp.quality_alerts:
                 alert_lines.append(f"- [КАЧЕСТВО ИСТОЧНИКА] {qa}")
             sections_blocks.append("ВАЖНЫЕ ПРЕДУПРЕЖДЕНИЯ ПО СТАТУСУ И РЕДАКЦИЯМ ДОКУМЕНТОВ:\n" + "\n".join(alert_lines))
@@ -487,9 +515,11 @@ class TableAwareRAGAgent:
 
         if search_resp.hits or search_resp.amendment_chunks:
             sections_blocks.append(
-                "НАПОМИНАНИЕ ПО ОФОРМЛЕНИЮ: подкрепи каждый ключевой шаг/факт ответа дословной цитатой "
-                "действующего пункта (полные предложения пункта, а не заголовок или общие положения) "
-                "в формате блока `> «…»` + `> — источник` сразу после соответствующего шага; "
+                "НАПОМИНАНИЕ ПО СТРУКТУРЕ И ОФОРМЛЕНИЮ: используй ТОЧНЫЕ заголовки `### Краткий ответ`, "
+                "`### Порядок действий` (ТОЛЬКО если вопрос процедурный — «как подать / оформить / согласовать»; "
+                "на фактические, числовые, датовые, статусные и табличные вопросы ПОЛНОСТЬЮ ОПУСКАЙ `### Порядок действий`!) "
+                "и `### Подробный ответ и цитаты`. В разделе `### Подробный ответ и цитаты` подкрепи ключевые выводы "
+                "дословными цитатами действующих пунктов в формате блока `> «…»` + `> — источник`; "
                 "не пиши заглушки номеров вроде `№ [___]`."
             )
         user_prompt = "\n\n==============================\n\n".join(sections_blocks)
@@ -615,6 +645,22 @@ class TableAwareRAGAgent:
         q_norm = query.lower().replace("ё", "е")
         parts: list[str] = []
 
+        top_hit = search_resp.hits[0] if search_resp.hits else None
+        parts.append("### Краткий ответ")
+        if top_hit is not None:
+            top_cite = f"{top_hit.title or top_hit.file_name}"
+            if top_hit.doc_number:
+                top_cite += f" (№ {top_hit.doc_number})"
+            if top_hit.clause_no:
+                top_cite += f", п. {top_hit.clause_no}"
+            parts.append(
+                f"По вашему запросу найдены релевантные положения в документе **{top_cite}**: "
+                f"{_truncate_text(top_hit.clean_text.strip(), 260)}"
+            )
+        else:
+            parts.append("Ниже приведены найденные сведения из базы знаний.")
+
+        parts.append("### Подробный ответ и цитаты")
         if search_resp.version_alerts:
             parts.append("**Предупреждения об актуальности и редакциях:**")
             for va in search_resp.version_alerts:
@@ -1138,90 +1184,8 @@ class TableAwareRAGAgent:
         model_used = ""
         step_counter = 0
 
-        # Step 3: Autonomous LLM Tool Calling loop (with deterministic fallback if offline)
-        try:
-            max_rounds = req.max_tool_rounds if tools_enabled else 0
-            pinned_model = req.model
-
-            for _round_idx in range(max_rounds + 1):
-                allow_tools_now = tools_enabled and (_round_idx < max_rounds)
-                resp, resolved_model = self._call_chat_completion(
-                    messages=messages,
-                    allow_tools=allow_tools_now,
-                    requested_model=pinned_model,
-                )
-                model_used = resolved_model
-                if pinned_model is None and not self._has_custom_client:
-                    pinned_model = resolved_model
-
-                choices = list(getattr(resp, "choices", None) or [])
-                if not choices:
-                    break
-                msg = choices[0].message
-                msg_content = str(getattr(msg, "content", None) or "").strip()
-                raw_tool_calls = getattr(msg, "tool_calls", None)
-                tool_calls_list = list(raw_tool_calls) if raw_tool_calls else []
-
-                if not tool_calls_list or not allow_tools_now:
-                    final_answer = msg_content
-                    break
-
-                # Append assistant tool-call turn in clean OpenAI message format
-                serialized_tcs: list[dict[str, Any]] = []
-                for tc_idx, tc in enumerate(tool_calls_list, start=1):
-                    tc_id = str(getattr(tc, "id", None) or f"call_{step_counter + tc_idx}")
-                    fn_obj = getattr(tc, "function", None)
-                    fn_name = str(getattr(fn_obj, "name", "") or "")
-                    fn_args_raw = getattr(fn_obj, "arguments", "{}")
-                    fn_args_str = (
-                        fn_args_raw
-                        if isinstance(fn_args_raw, str)
-                        else json.dumps(fn_args_raw or {}, ensure_ascii=False)
-                    )
-                    serialized_tcs.append(
-                        {
-                            "id": tc_id,
-                            "type": "function",
-                            "function": {
-                                "name": fn_name,
-                                "arguments": fn_args_str,
-                            },
-                        }
-                    )
-
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": msg_content or None,
-                        "tool_calls": serialized_tcs,
-                    }
-                )
-
-                # Execute each requested tool call against StructuredTableStore
-                assert active_store is not None
-                step_counter = self._execute_tool_calls(
-                    active_store=active_store,
-                    serialized_tcs=serialized_tcs,
-                    step_counter=step_counter,
-                    traces=traces,
-                    messages=messages,
-                    seen_linked_ids=seen_linked_ids,
-                    final_linked_tables=final_linked_tables,
-                )
-
-            if not final_answer:
-                final_answer = self._synthesize_fallback_answer(
-                    query=raw_query,
-                    search_resp=search_resp,
-                    active_store=active_store,
-                    enable_table_tools=req.enable_table_tools,
-                    traces=traces,
-                )
-                if not model_used:
-                    model_used = "deterministic-fallback"
-
-        except Exception as llm_exc:
-            logger.warning("Falling back to deterministic RAG synthesizer due to LLM error: %s", llm_exc)
+        # Step 3: Autonomous LLM Tool Calling loop (offline mode uses deterministic synthesizer; upstream LLM crash returns sysadmin stub)
+        if self.client is None:
             final_answer = self._synthesize_fallback_answer(
                 query=raw_query,
                 search_resp=search_resp,
@@ -1230,6 +1194,102 @@ class TableAwareRAGAgent:
                 traces=traces,
             )
             model_used = "deterministic-fallback"
+        else:
+            try:
+                max_rounds = req.max_tool_rounds if tools_enabled else 0
+                pinned_model = req.model
+
+                for _round_idx in range(max_rounds + 1):
+                    allow_tools_now = tools_enabled and (_round_idx < max_rounds)
+                    resp, resolved_model = self._call_chat_completion(
+                        messages=messages,
+                        allow_tools=allow_tools_now,
+                        requested_model=pinned_model,
+                    )
+                    model_used = resolved_model
+                    if pinned_model is None and not self._has_custom_client:
+                        pinned_model = resolved_model
+
+                    choices = list(getattr(resp, "choices", None) or [])
+                    if not choices:
+                        break
+                    msg = choices[0].message
+                    msg_content = str(getattr(msg, "content", None) or "").strip()
+                    raw_tool_calls = getattr(msg, "tool_calls", None)
+                    tool_calls_list = list(raw_tool_calls) if raw_tool_calls else []
+
+                    if not tool_calls_list or not allow_tools_now:
+                        final_answer = msg_content
+                        break
+
+                    # Append assistant tool-call turn in clean OpenAI message format
+                    serialized_tcs: list[dict[str, Any]] = []
+                    for tc_idx, tc in enumerate(tool_calls_list, start=1):
+                        tc_id = str(getattr(tc, "id", None) or f"call_{step_counter + tc_idx}")
+                        fn_obj = getattr(tc, "function", None)
+                        fn_name = str(getattr(fn_obj, "name", "") or "")
+                        fn_args_raw = getattr(fn_obj, "arguments", "{}")
+                        fn_args_str = (
+                            fn_args_raw
+                            if isinstance(fn_args_raw, str)
+                            else json.dumps(fn_args_raw or {}, ensure_ascii=False)
+                        )
+                        serialized_tcs.append(
+                            {
+                                "id": tc_id,
+                                "type": "function",
+                                "function": {
+                                    "name": fn_name,
+                                    "arguments": fn_args_str,
+                                },
+                            }
+                        )
+
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": msg_content or None,
+                            "tool_calls": serialized_tcs,
+                        }
+                    )
+
+                    # Execute each requested tool call against StructuredTableStore
+                    assert active_store is not None
+                    step_counter = self._execute_tool_calls(
+                        active_store=active_store,
+                        serialized_tcs=serialized_tcs,
+                        step_counter=step_counter,
+                        traces=traces,
+                        messages=messages,
+                        seen_linked_ids=seen_linked_ids,
+                        final_linked_tables=final_linked_tables,
+                    )
+
+                if not final_answer:
+                    final_answer = self._synthesize_fallback_answer(
+                        query=raw_query,
+                        search_resp=search_resp,
+                        active_store=active_store,
+                        enable_table_tools=req.enable_table_tools,
+                        traces=traces,
+                    )
+                    if not model_used:
+                        model_used = "deterministic-fallback"
+
+            except Exception as llm_exc:
+                logger.exception("Upstream LLM failure during RAG answer generation: %s", llm_exc)
+                return AgentAskResponse(
+                    query=raw_query,
+                    answer=TECH_ERROR_STUB_RU,
+                    model_used="technical_error_fallback",
+                    used_table_tools=bool(traces),
+                    tool_calls=traces,
+                    search_response=search_resp,
+                    linked_tables=final_linked_tables,
+                    latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                    quotes=[],
+                    pipeline_trace=pipeline_trace,
+                )
 
         return AgentAskResponse(
             query=raw_query,
@@ -1350,45 +1410,60 @@ class TableAwareRAGAgent:
                 },
             )
 
-        if self._should_use_query_pipeline(req):
-            run_res = None
-            for ev_kind, payload in self.query_pipeline.run_stream(
-                query=raw_query,
-                top_k=req.top_k,
-                status_filter=req.status_filter,
-                year_filter=req.year_filter,
-                requested_model=req.model,
-                should_stop=stop,
-            ):
-                if ev_kind == "status":
-                    yield ("status", payload)
-                elif ev_kind == "result":
-                    run_res = payload
-                if stop():
-                    return
-            assert run_res is not None
-            search_resp = run_res.search_response
-            pipeline_trace = run_res.trace
-        elif is_meta_assistant_query(raw_query):
-            search_resp = SearchResponse(
-                query=raw_query,
-                query_intent="meta_assistant",
-                hits=[],
-                is_out_of_scope=False,
-                confidence_score=1.0,
+        def _error_event() -> tuple[str, dict[str, Any]]:
+            return (
+                "error",
+                {
+                    "error": TECH_ERROR_STUB_RU,
+                    "message": TECH_ERROR_STUB_RU,
+                    "error_type": "technical_error",
+                },
             )
-        else:
-            search_resp = self.search_service.search(
-                SearchQuery(
+
+        try:
+            if self._should_use_query_pipeline(req):
+                run_res = None
+                for ev_kind, payload in self.query_pipeline.run_stream(
                     query=raw_query,
                     top_k=req.top_k,
                     status_filter=req.status_filter,
                     year_filter=req.year_filter,
-                    include_parent=True,
-                    include_amendments=True,
-                    include_superseded=True,
+                    requested_model=req.model,
+                    should_stop=stop,
+                ):
+                    if ev_kind == "status":
+                        yield ("status", payload)
+                    elif ev_kind == "result":
+                        run_res = payload
+                    if stop():
+                        return
+                assert run_res is not None
+                search_resp = run_res.search_response
+                pipeline_trace = run_res.trace
+            elif is_meta_assistant_query(raw_query):
+                search_resp = SearchResponse(
+                    query=raw_query,
+                    query_intent="meta_assistant",
+                    hits=[],
+                    is_out_of_scope=False,
+                    confidence_score=1.0,
                 )
-            )
+            else:
+                search_resp = self.search_service.search(
+                    SearchQuery(
+                        query=raw_query,
+                        top_k=req.top_k,
+                        status_filter=req.status_filter,
+                        year_filter=req.year_filter,
+                        include_parent=True,
+                        include_amendments=True,
+                        include_superseded=True,
+                    )
+                )
+        except Exception as retr_exc:
+            logger.exception("Technical failure during streaming retrieval: %s", retr_exc)
+            yield _error_event()
+            return
 
         if stop():
             return
@@ -1505,6 +1580,19 @@ class TableAwareRAGAgent:
             full_answer = "".join(answer_parts) + extra_text
             return ("quotes", {"quotes": self._verify_answer_quotes(full_answer, search_resp, messages)})
 
+        if self.client is None:
+            fallback = self._synthesize_fallback_answer(
+                query=raw_query,
+                search_resp=search_resp,
+                active_store=active_store,
+                enable_table_tools=req.enable_table_tools,
+                traces=traces,
+            )
+            yield ("token", {"text": fallback})
+            yield _quotes_event(fallback)
+            yield _done("deterministic-fallback", traces)
+            return
+
         try:
             max_rounds = req.max_tool_rounds if tools_enabled else 0
             pinned_model = req.model
@@ -1597,21 +1685,8 @@ class TableAwareRAGAgent:
                     return
 
         except Exception as llm_exc:
-            if emitted_any:
-                logger.warning("LLM stream failed mid-answer: %s", llm_exc)
-                yield ("error", {"message": f"Генерация прервана: {type(llm_exc).__name__}"})
-                return
-            logger.warning("Falling back to deterministic RAG synthesizer (stream) due to LLM error: %s", llm_exc)
-            fallback = self._synthesize_fallback_answer(
-                query=raw_query,
-                search_resp=search_resp,
-                active_store=active_store,
-                enable_table_tools=req.enable_table_tools,
-                traces=traces,
-            )
-            yield ("token", {"text": fallback})
-            yield _quotes_event(fallback)
-            yield _done("deterministic-fallback", traces)
+            logger.exception("Upstream LLM stream failed: %s", llm_exc)
+            yield _error_event()
             return
 
         if not emitted_any:

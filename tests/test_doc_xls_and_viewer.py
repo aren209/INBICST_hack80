@@ -665,7 +665,8 @@ class TestDocumentViewerAndQuoteDocId:
         assert "max-age=3600" in r_png.headers.get("cache-control", "")
 
         assert client.get(f"/api/documents/{st_pdf.doc_id}/pages/99.png").status_code == 404
-        assert client.get(f"/api/documents/{st_doc.doc_id}/pages/1.png").status_code == 404
+        assert client.get(f"/api/documents/{st_doc.doc_id}/pages/1.png").status_code == 200
+        assert client.get(f"/api/documents/{st_xls.doc_id}/pages/1.png").status_code == 404
 
         # 4) /api/documents/{pdf_id}/view resolves quote on page 2 even when page=1 was passed!
         r_view_pdf = client.get(

@@ -45,6 +45,114 @@ from src.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# K2 Actuality Calibration: default score multiplier for superseded documents on current-actuality queries
+K2_SUPERSEDED_SCORE_PENALTY: float = 0.65
+
+_HISTORICAL_EDITION_INTENT_RE = re.compile(
+    r"(?:"
+    r"\bв\s+стар(?:ой|ых|ую)\s+редакци[а-я]*\b"
+    r"|\b(?:стар(?:ая|ой|ую|ые|ых)|предыдущ(?:ая|ей|ую|ие|их)|прежн(?:яя|ей|юю|ие|их)"
+    r"|прошл(?:ая|ой|ую|ые|ых)|первоначальн(?:ая|ой|ую|ые|ых)|исходн(?:ая|ой|ую)|ранн(?:яя|ей|юю|ие|их))"
+    r"\s+(?:редакци[а-я]*|верси[а-я]*)\b"
+    r"|\bдо\s+(?:отмены|изменений|внесения\s+изменений|обновления|новой\s+редакции|принятия\s+нов[а-я]+)\b"
+    r"|\bранее\s+действовавш[а-я]*\b"
+    r"|\bдействовавш[а-я]+\s+(?:ранее|прежде|до\b|в\s+(?:19|20)\d{2})\b"
+    r"|\bутративш[а-я]+\s+(?:силу|актуальность)\b"
+    r"|\bотмененн[а-я]+\s+(?:приказ[а-я]*|распоряжени[а-я]*|регламент[а-я]*|положени[а-я]*|поряд[а-я]*|правил[а-я]*|редакци[а-я]*|верси[а-я]*|акт[а-я]*|документ[а-я]*)\b"
+    r"|\b(?:сравн[а-я]+|отличи[а-я]*|разниц[а-я]*|изменил[а-я]*)\b.*\b(?:редакци[а-я]*|верси[а-я]*)\b"
+    r"|\b(?:редакци[а-я]*|верси[а-я]*)\b.*\b(?:сравн[а-я]+|отличи[а-я]*|разниц[а-я]*)\b"
+    r"|\bкак\s+(?:было|регулировал[а-я]*|действовал[а-я]*)\s+(?:раньше|ранее|прежде|до\s+изменений|до\s+отмены)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_HISTORICAL_COMPARISON_RE = re.compile(
+    r"\b(?:сравн[а-я]+|отличи[а-я]*|отлича[а-я]+|разниц[а-я]*|что\s+изменил[а-я]*|как\s+изменил[а-я]*)\b",
+    re.IGNORECASE,
+)
+
+_QUERY_YEAR_CONTEXT_RE = re.compile(
+    r"(?:"
+    r"\b(?:в|за|на|от|до|по\s+состоянию\s+на|редакци[а-я]*\s*(?:от\s*)?|верси[а-я]*\s*(?:от\s*)?)"
+    r"\s*(?:\d{1,2}[./-]\d{1,2}[./-])?((?:19|20)\d{2})\b"
+    r"|\b((?:19|20)\d{2})\s*(?:год[ауеом]*|г\.|г\b)"
+    r")",
+    re.IGNORECASE,
+)
+
+_QUERY_EDITION_NUM_RE = re.compile(
+    r"\b(?:редакци[а-я]*|верси[а-я]*|ред\.|вер\.)\s*(?:№|n|#)?\s*(\d{1,3})\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_doc_years_set(doc_meta_or_dict: Any) -> set[int]:
+    """Extract all 4-digit years associated with a document (`doc_date`, `edition_date`, `applicable_years`)."""
+    years: set[int] = set()
+    if doc_meta_or_dict is None:
+        return years
+    if isinstance(doc_meta_or_dict, dict):
+        d_date = str(doc_meta_or_dict.get("doc_date") or "")
+        ed_date = str(
+            doc_meta_or_dict.get("edition_date")
+            or (doc_meta_or_dict.get("metadata") or {}).get("edition_date")
+            or ""
+        )
+        app_years = doc_meta_or_dict.get("applicable_years") or []
+    else:
+        d_date = str(getattr(doc_meta_or_dict, "doc_date", "") or "")
+        md = getattr(doc_meta_or_dict, "metadata", None) or {}
+        ed_date = str(getattr(doc_meta_or_dict, "edition_date", None) or md.get("edition_date") or "")
+        app_years = getattr(doc_meta_or_dict, "applicable_years", None) or []
+
+    for ds in (d_date, ed_date):
+        m_iso = re.match(r"^((?:19|20)\d{2})", ds.strip())
+        if m_iso:
+            years.add(int(m_iso.group(1)))
+        else:
+            m_ru = re.search(r"\b((?:19|20)\d{2})\b", ds)
+            if m_ru:
+                years.add(int(m_ru.group(1)))
+    for y in app_years:
+        try:
+            yi = int(y)
+            if 1990 <= yi <= 2100:
+                years.add(yi)
+        except (TypeError, ValueError):
+            pass
+    return years
+
+
+def _compute_active_recency_bonus(effective_date: str, edition_number: int | str | None = None) -> float:
+    """
+    Compute a subtle date/edition recency tie-breaker bonus (`0.0 .. 0.025`) for `active` documents
+    so newer `edition_date`/`doc_date` or higher `edition_number` ranks ahead when relevance is close.
+    """
+    bonus = 0.0
+    ds = (effective_date or "").strip()
+    year, month, day = 0, 1, 1
+    m_iso = re.match(r"^((?:19|20)\d{2})(?:-(\d{1,2})(?:-(\d{1,2}))?)?", ds)
+    if m_iso:
+        year = int(m_iso.group(1))
+        month = int(m_iso.group(2) or 1)
+        day = int(m_iso.group(3) or 1)
+    else:
+        m_ru = re.match(r"^(\d{1,2})[./-](\d{1,2})[./-]((?:19|20)\d{2})", ds)
+        if m_ru:
+            day = int(m_ru.group(1))
+            month = int(m_ru.group(2))
+            year = int(m_ru.group(3))
+    if 2015 <= year <= 2040:
+        days_since_2015 = max(0, (year - 2015) * 372 + max(1, min(12, month)) * 31 + max(1, min(31, day)))
+        bonus += min(0.021, (days_since_2015 / (15.0 * 372.0)) * 0.021)
+
+    if edition_number is not None and str(edition_number).strip() != "":
+        m_num = re.search(r"\d+", str(edition_number))
+        if m_num:
+            bonus += min(0.004, int(m_num.group(0)) * 0.0008)
+
+    return round(min(0.025, bonus), 5)
+
 # Generic administrative/question lemmas that appear in almost any Russian question (e.g. "правила оформления ипотеки")
 # and therefore must NOT count by themselves as MIPT domain lexical evidence.
 GENERIC_QUERY_LEMMAS: frozenset[str] = frozenset(
@@ -913,9 +1021,13 @@ class SearchService:
     def _should_exempt_superseded(query_norm: str, doc_meta_or_payload: dict[str, Any]) -> bool:
         """
         Check if a superseded / superseded_template_reference document should be exempt from score demotion:
-        - Query explicitly mentions the old order number or old year
+        - Query contains explicit historical/old-edition intent phrases
+        - Query explicitly mentions the old order number or old year matching the document
         - Or document is 'superseded_template_reference' and query asks about formulas / KVR / KOSGU / rates / smeta
         """
+        if _HISTORICAL_EDITION_INTENT_RE.search(query_norm or ""):
+            return True
+
         doc_num = str(doc_meta_or_payload.get("doc_number", "") or "")
         core_num = _core_doc_number(doc_num).lower()
         if core_num and core_num in query_norm:
@@ -945,6 +1057,140 @@ class SearchService:
                 return True
 
         return False
+
+    def detect_temporal_edition_intent(self, query: str) -> dict[str, Any]:
+        """
+        Detect K2 temporal / edition intent on a user query:
+        - Explicit old-edition phrases («в старой редакции», «предыдущая редакция», «до отмены», «действовавший ранее»,
+          «утративший силу», «сравни редакции»);
+        - Or an explicit historical year / edition number («в 2020 году», «редакция № 1») that matches a `superseded`
+          document's `doc_date`/`edition_date`/`applicable_years`/`edition_number` and NOT its `active` replacement.
+        """
+        q_norm = (query or "").lower().replace("ё", "е").strip()
+        explicit_old_phrase = bool(_HISTORICAL_EDITION_INTENT_RE.search(q_norm))
+        is_comparison = bool(_HISTORICAL_COMPARISON_RE.search(q_norm))
+
+        req_years_set: set[int] = set()
+        for m_yr in _QUERY_YEAR_CONTEXT_RE.finditer(q_norm):
+            y_str = m_yr.group(1) or m_yr.group(2)
+            if y_str and y_str.isdigit():
+                req_years_set.add(int(y_str))
+        requested_years = sorted(req_years_set)
+
+        req_ed_nums: set[int] = set()
+        for m_ed in _QUERY_EDITION_NUM_RE.finditer(q_norm):
+            if m_ed.group(1) and m_ed.group(1).isdigit():
+                req_ed_nums.add(int(m_ed.group(1)))
+        requested_edition_numbers = sorted(req_ed_nums)
+
+        matched_superseded_doc_ids: list[str] = []
+        registry = getattr(self.pipeline, "registry", None) or {}
+        if (requested_years or requested_edition_numbers) and registry:
+            q_topic_lemmas = {
+                tok
+                for tok in tokenize_bm25(q_norm)
+                if len(tok) >= 3 and tok not in GENERIC_QUERY_LEMMAS and not tok.isdigit()
+            }
+            year_or_ed_candidates: list[tuple[str, bool]] = []
+            for d_id, d_meta in registry.items():
+                if d_meta.status not in {
+                    DocumentStatus.SUPERSEDED.value,
+                    DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value,
+                }:
+                    continue
+
+                sup_years = _extract_doc_years_set(d_meta)
+                d_md = d_meta.metadata or {}
+                sup_ed_raw = getattr(d_meta, "edition_number", None)
+                if sup_ed_raw is None:
+                    sup_ed_raw = d_md.get("edition_number")
+                sup_ed_int: int | None = None
+                if sup_ed_raw is not None and re.search(r"\d+", str(sup_ed_raw)):
+                    sup_ed_int = int(re.search(r"\d+", str(sup_ed_raw)).group(0))  # type: ignore[union-attr]
+
+                # Gather active replacement documents (`superseded_by` or active peers in same `version_family`)
+                repl_docs: list[DocumentMeta] = []
+                if hasattr(self.pipeline, "_find_matching_docs"):
+                    for ref in (d_meta.superseded_by or []):
+                        repl_docs.extend(self.pipeline._find_matching_docs(ref))
+                v_fam = str(getattr(d_meta, "version_family", None) or d_md.get("version_family") or "")
+                if v_fam:
+                    for peer_meta in registry.values():
+                        peer_vf = str(
+                            getattr(peer_meta, "version_family", None)
+                            or (peer_meta.metadata or {}).get("version_family")
+                            or ""
+                        )
+                        if (
+                            peer_meta.doc_id != d_id
+                            and peer_vf == v_fam
+                            and peer_meta.status == DocumentStatus.ACTIVE.value
+                            and all(r.doc_id != peer_meta.doc_id for r in repl_docs)
+                        ):
+                            repl_docs.append(peer_meta)
+
+                active_repl_years: set[int] = set()
+                active_repl_eds: set[int] = set()
+                for r_doc in repl_docs:
+                    if r_doc.status == DocumentStatus.ACTIVE.value:
+                        active_repl_years.update(_extract_doc_years_set(r_doc))
+                        r_ed = getattr(r_doc, "edition_number", None)
+                        if r_ed is None:
+                            r_ed = (r_doc.metadata or {}).get("edition_number")
+                        if r_ed is not None and re.search(r"\d+", str(r_ed)):
+                            active_repl_eds.add(int(re.search(r"\d+", str(r_ed)).group(0)))  # type: ignore[union-attr]
+
+                year_exclusive_hit = bool(
+                    requested_years
+                    and sup_years.intersection(requested_years)
+                    and not active_repl_years.intersection(requested_years)
+                )
+                ed_exclusive_hit = bool(
+                    requested_edition_numbers
+                    and sup_ed_int is not None
+                    and sup_ed_int in requested_edition_numbers
+                    and sup_ed_int not in active_repl_eds
+                )
+                if not (year_exclusive_hit or ed_exclusive_hit):
+                    continue
+
+                doc_probe_text = " ".join(
+                    filter(
+                        None,
+                        [
+                            d_meta.title,
+                            d_meta.file_name,
+                            v_fam.split("::", 1)[-1] if v_fam else "",
+                            " ".join(getattr(d_meta, "topics", None) or []),
+                        ],
+                    )
+                )
+                doc_lemmas = set(tokenize_bm25(doc_probe_text))
+                has_topic_overlap = (not q_topic_lemmas) or bool(q_topic_lemmas.intersection(doc_lemmas))
+                year_or_ed_candidates.append((d_id, has_topic_overlap))
+
+            topic_matched = [d_id for d_id, has_ov in year_or_ed_candidates if has_ov]
+            if topic_matched:
+                matched_superseded_doc_ids = topic_matched
+            elif year_or_ed_candidates and not any(
+                bool(
+                    requested_years
+                    and _extract_doc_years_set(m).intersection(requested_years)
+                    and q_topic_lemmas.intersection(set(tokenize_bm25(f"{m.title} {m.file_name}")))
+                )
+                for m in registry.values()
+                if m.status == DocumentStatus.ACTIVE.value
+            ):
+                matched_superseded_doc_ids = [d_id for d_id, _ in year_or_ed_candidates]
+
+        return {
+            "is_historical": bool(explicit_old_phrase or matched_superseded_doc_ids),
+            "explicit_old_phrase": explicit_old_phrase,
+            "is_comparison": is_comparison,
+            "requested_years": requested_years,
+            "requested_edition_numbers": requested_edition_numbers,
+            "matched_superseded_doc_ids": matched_superseded_doc_ids,
+        }
 
     @staticmethod
     def decompose_complex_query(query: str, max_sub_queries: int = 4) -> list[str]:
@@ -1095,6 +1341,31 @@ class SearchService:
             embed_text=embed_text,
         )
 
+        reg_md = (reg_meta.metadata or {}) if reg_meta is not None else {}
+        edition_date = str(
+            (getattr(reg_meta, "edition_date", None) if reg_meta is not None else None)
+            or reg_md.get("edition_date")
+            or payload.get("edition_date")
+            or raw_meta.get("edition_date")
+            or ""
+        ).strip()
+        edition_number = (
+            getattr(reg_meta, "edition_number", None) if reg_meta is not None else None
+        )
+        if edition_number in (None, ""):
+            edition_number = reg_md.get("edition_number")
+        if edition_number in (None, ""):
+            edition_number = payload.get("edition_number")
+        if edition_number in (None, ""):
+            edition_number = raw_meta.get("edition_number")
+        version_family = str(
+            (getattr(reg_meta, "version_family", None) if reg_meta is not None else None)
+            or reg_md.get("version_family")
+            or payload.get("version_family")
+            or raw_meta.get("version_family")
+            or ""
+        ).strip()
+
         # Compute lexical overlap bonus on chunk text
         chunk_tokens = set(tokenize_bm25(f"{title} {doc_number} {edo_number} {clean_text}"))
         matched_q_tokens = query_tokens_set.intersection(chunk_tokens)
@@ -1107,22 +1378,65 @@ class SearchService:
         # Direct doc_number / edo_number match bonus when user query mentions this document's number
         core_num = _core_doc_number(doc_number).lower()
         core_edo = _core_doc_number(edo_number).lower()
-        if (core_num and core_num in query_norm) or (core_edo and core_edo in query_norm):
+        explicit_doc_num_match = bool((core_num and core_num in query_norm) or (core_edo and core_edo in query_norm))
+        if explicit_doc_num_match:
             combined_score = min(1.0, combined_score + 0.06)
 
-        # Apply slight score demotion for superseded documents unless exempted
+        # K2 Actuality & Temporal-Intent Calibration:
+        # - Default (current actuality queries): apply K2_SUPERSEDED_SCORE_PENALTY (0.65) to superseded documents
+        #   and add a subtle date/edition recency bonus to active documents so newer editions win close ties.
+        # - Historical / old-edition queries: lift superseded penalty and boost matching historical editions.
+        temporal_intent = self.detect_temporal_edition_intent(query_norm)
+        doc_years = _extract_doc_years_set(
+            {"doc_date": doc_date, "edition_date": edition_date, "applicable_years": applicable_years}
+        )
+        matches_req_year = bool(
+            temporal_intent["requested_years"] and doc_years.intersection(temporal_intent["requested_years"])
+        )
+        matches_req_ed = bool(
+            temporal_intent["requested_edition_numbers"]
+            and edition_number is not None
+            and re.search(r"\d+", str(edition_number))
+            and int(re.search(r"\d+", str(edition_number)).group(0)) in temporal_intent["requested_edition_numbers"]  # type: ignore[union-attr]
+        )
+
         meta_probe = {
             "doc_number": doc_number,
             "applicable_years": applicable_years,
             "status": status,
         }
-        if status == DocumentStatus.SUPERSEDED.value and not self._should_exempt_superseded(query_norm, meta_probe):
-            combined_score *= SUPERSEDED_SCORE_PENALTY
-        elif (
-            status == DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value
-            and not self._should_exempt_superseded(query_norm, meta_probe)
-        ):
-            combined_score *= 0.90
+        if not temporal_intent["is_historical"] and not explicit_doc_num_match:
+            if status == DocumentStatus.SUPERSEDED.value and not self._should_exempt_superseded(query_norm, meta_probe):
+                combined_score *= K2_SUPERSEDED_SCORE_PENALTY
+            elif (
+                status == DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value
+                and not self._should_exempt_superseded(query_norm, meta_probe)
+            ):
+                combined_score *= 0.90
+            elif status == DocumentStatus.ACTIVE.value:
+                recency_bonus = _compute_active_recency_bonus(
+                    edition_date or doc_date or edo_date,
+                    edition_number=edition_number,
+                )
+                combined_score = min(1.0, combined_score + recency_bonus)
+        else:
+            if status in {DocumentStatus.SUPERSEDED.value, DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value}:
+                if (
+                    doc_id in temporal_intent["matched_superseded_doc_ids"]
+                    or matches_req_year
+                    or matches_req_ed
+                    or explicit_doc_num_match
+                ):
+                    combined_score = min(1.0, combined_score + 0.085)
+                elif temporal_intent["explicit_old_phrase"]:
+                    combined_score = min(1.0, combined_score + 0.065)
+            elif status == DocumentStatus.ACTIVE.value:
+                if matches_req_year or matches_req_ed or temporal_intent["is_comparison"]:
+                    recency_bonus = _compute_active_recency_bonus(
+                        edition_date or doc_date or edo_date,
+                        edition_number=edition_number,
+                    )
+                    combined_score = min(1.0, combined_score + recency_bonus)
 
         section_id = str(payload.get("section_id", "") or "")
         parent_sec: ParentSectionRecord | None = None
@@ -1173,6 +1487,12 @@ class SearchService:
             hit_meta["edo_date"] = edo_date
         if is_edo_stamp:
             hit_meta["is_edo_stamp"] = True
+        if edition_date:
+            hit_meta["edition_date"] = edition_date
+        if edition_number not in (None, ""):
+            hit_meta["edition_number"] = edition_number
+        if version_family:
+            hit_meta["version_family"] = version_family
         for m_key in ("sheet_name", "form_title", "table_headers", "table_ids", "slice_index", "slices_total"):
             m_val = raw_meta.get(m_key) if m_key in raw_meta else payload.get(m_key)
             if m_val not in (None, "", []):
@@ -1581,6 +1901,8 @@ class SearchService:
                             present_doc_ids.add(ref_hit.doc_id)
 
         # Case B: Superseded / `superseded_template_reference` document matched, ensure its active replacement is surfaced
+        temporal_intent = self.detect_temporal_edition_intent(query_norm)
+        is_historical = bool(temporal_intent["is_historical"])
         for hit in list(hits):
             if hit.status in {
                 DocumentStatus.SUPERSEDED.value,
@@ -1605,8 +1927,48 @@ class SearchService:
                             query_tokens_set=query_tokens_set,
                             include_parent=include_parent,
                         )
-                        hits = self._insert_co_surfaced_hit(hits, act_hit, top_k=top_k, insert_front=True)
+                        hits = self._insert_co_surfaced_hit(
+                            hits, act_hit, top_k=top_k, insert_front=(not is_historical)
+                        )
                         present_doc_ids.add(act_hit.doc_id)
+
+        # Case C: Historical / old-edition query where ONLY the active edition matched so far -> co-surface superseded predecessor(s)
+        if is_historical:
+            req_years = set(temporal_intent["requested_years"] or [])
+            for hit in list(hits):
+                if hit.status == DocumentStatus.ACTIVE.value and hit.supersedes:
+                    pred_docs = [
+                        m_doc for ref in hit.supersedes for m_doc in self.pipeline._find_matching_docs(ref)
+                    ]
+                    if req_years:
+                        yr_filtered = [d for d in pred_docs if _extract_doc_years_set(d).intersection(req_years)]
+                        if yr_filtered:
+                            pred_docs = yr_filtered
+                    pred_ids = [d.doc_id for d in pred_docs if d.doc_id and d.doc_id not in present_doc_ids]
+                    if pred_ids:
+                        raw_old_pts = self.qdrant.hybrid_search(
+                            query_dense=query_dense,
+                            query_sparse=query_sparse,
+                            top_k=2,
+                            doc_id_filter=pred_ids,
+                            exclude_zones=NON_ANSWER_ZONES,
+                        )
+                        if raw_old_pts:
+                            old_hit = self._raw_point_to_hit(
+                                raw_old_pts[0],
+                                query_norm=query_norm,
+                                query_tokens_set=query_tokens_set,
+                                include_parent=include_parent,
+                            )
+                            put_old_front = bool(
+                                not temporal_intent["is_comparison"]
+                                and (temporal_intent["explicit_old_phrase"] or bool(req_years))
+                                and old_hit.score >= (hits[0].score - 0.04 if hits else 0.0)
+                            )
+                            hits = self._insert_co_surfaced_hit(
+                                hits, old_hit, top_k=top_k, insert_front=put_old_front
+                            )
+                            present_doc_ids.add(old_hit.doc_id)
 
         return hits[:top_k], amendment_chunks[:5]
 
@@ -1676,8 +2038,13 @@ class SearchService:
         base_meta = self.pipeline.registry.get(doc_id)
         if base_meta is None:
             return []
+        base_vf = str(
+            getattr(base_meta, "version_family", None)
+            or (base_meta.metadata or {}).get("version_family")
+            or ""
+        ).strip()
         base_lemmas = self._title_topic_lemmas(base_meta.title, base_meta.file_name)
-        if not base_lemmas:
+        if not base_lemmas and not base_vf:
             return []
 
         siblings: list[DocumentMeta] = []
@@ -1687,8 +2054,16 @@ class SearchService:
             # Skip exact cross-file duplicates already linked via also_in_files
             if cand_meta.file_name and cand_meta.file_name in base_meta.also_in_files:
                 continue
+            cand_vf = str(
+                getattr(cand_meta, "version_family", None)
+                or (cand_meta.metadata or {}).get("version_family")
+                or ""
+            ).strip()
+            if base_vf and cand_vf and base_vf == cand_vf:
+                siblings.append(cand_meta)
+                continue
             cand_lemmas = self._title_topic_lemmas(cand_meta.title, cand_meta.file_name)
-            if not cand_lemmas:
+            if not cand_lemmas or not base_lemmas:
                 continue
             inter = base_lemmas.intersection(cand_lemmas)
             if not inter:
@@ -1731,16 +2106,18 @@ class SearchService:
             if h.version_note and h.version_note not in version_alerts:
                 version_alerts.append(h.version_note)
             if h.amended_by:
+                num_badge = f" (№ {h.doc_number})" if h.doc_number else (f" (от {h.doc_date})" if h.doc_date else "")
                 alert = (
-                    f"Документ «{h.title}» (№ {h.doc_number}) действует с учетом изменений: "
+                    f"Документ «{h.title}»{num_badge} действует с учетом изменений: "
                     f"№ {', '.join(h.amended_by)}."
                 )
                 if alert not in version_alerts and not any(h.doc_number and h.doc_number in va for va in version_alerts):
                     version_alerts.append(alert)
             if h.superseded_by:
+                num_badge = f" (№ {h.doc_number})" if h.doc_number else (f" (от {h.doc_date})" if h.doc_date else "")
                 alert = (
-                    f"Документ «{h.title}» (№ {h.doc_number}) заменен / отменен актом: "
-                    f"№ {', '.join(h.superseded_by)} (текущий статус: {h.status})."
+                    f"Документ «{h.title}»{num_badge} заменен / отменен актом: "
+                    f"{', '.join(h.superseded_by)} (текущий статус: {h.status})."
                 )
                 if alert not in version_alerts and not any(h.doc_number and h.doc_number in va for va in version_alerts):
                     version_alerts.append(alert)
@@ -3291,8 +3668,9 @@ class SearchService:
         )
         query_tokens_set = set(raw_query_tokens) | set(expanded_tokens)
 
+        temporal_intent = self.detect_temporal_edition_intent(raw_query)
         eff_status_filter = req.status_filter
-        if not req.include_superseded and not eff_status_filter:
+        if not req.include_superseded and not eff_status_filter and not temporal_intent["is_historical"]:
             eff_status_filter = [
                 DocumentStatus.ACTIVE.value,
                 DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value,

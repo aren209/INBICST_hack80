@@ -18,6 +18,7 @@ env/
 data/qdrant_storage/
 qdrant_storage/
 data/embed_cache/
+data/preview_cache/
 data/uploads/
 data/index/
 *.log

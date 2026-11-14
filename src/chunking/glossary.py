@@ -427,12 +427,83 @@ SUPERSEDES_PHRASE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Unnumbered / title+date repeal clause (e.g. "Признать утратившим силу регламент поселения ... № б/н от 07.05.2024 г.")
+UNNUMBERED_SUPERSEDES_PHRASE_RE = re.compile(
+    r"(?:признать\s+утративши[ми]+\s+силу|считать\s+утративши[ми]+\s+силу|отменить\s+действие)"
+    r"\s+((?:регламент[а-яё]*|положени[а-яё]*|поряд[а-яё]*|инструкци[а-яё]*|правил[а-яё]*)"
+    r"[^.;\n]{12,180})",
+    re.IGNORECASE,
+)
+
 AMENDS_PHRASE_RE = re.compile(
     r"(?:внести\s+изменения\s+в|во\s+изменение\s+приказа|изменить\s+редакцию|"
     r"дополнить\s+приказ|о\s+внесении\s+изменений\s+в)"
     r"[^.;\n]{0,140}?\b(?:приказ[ауом]?|распоряжени[еяюем]+|регламент[ауом]?|положени[еяюем]+|поряд[окауом]+|инструкци[юией]+)"
     r"[^.;\n]{0,80}?(?<!приложени[еяй]\s)(?:№|N)\s*(\d{1,5}(?:-[0-9А-Яа-яA-Za-z]+)?)",
     re.IGNORECASE,
+)
+
+# Edition / revision extraction regexes (Criterion K2)
+EDITION_DATE_RE = re.compile(
+    r"(?:в\s+ред(?:акции|\.)?(?:\s*(?:№|N|#)?\s*\d+(?:\.\d+)?)?(?:\s+(?:приказа|распоряжения|протокола|решения)[^\n,;()]{0,50}?)?\s+от|"
+    r"(?:редакци[яиейю]|ред\.|верси[яиейю]|вер\.)(?:\s*(?:№|N|#)?\s*\d+(?:\.\d+)?)?\s+от|"
+    r"с\s+изменени(?:ями|ем)(?:\s+и\s+дополнени(?:ями|ем))?(?:\s*,?\s*внесенн[а-яё]+[^\n,;()]{0,45}?)?\s+от|"
+    r"в\s+новой\s+редакции\s+от)\s*"
+    r"(?:[«\"']?(\d{1,2})[»\"']?\s+([а-яё]+)\s+(\d{4})|(\d{1,2}\.\d{1,2}\.\d{4}|\d{4}-\d{2}-\d{2}))",
+    re.IGNORECASE,
+)
+
+EDITION_YEAR_RE = re.compile(
+    r"(?:в\s+ред(?:акции|\.)|редакци[яиейю])\s+((?:19|20)\d{2})\s*(?:г(?:\.|ода)?)?\b",
+    re.IGNORECASE,
+)
+
+EDITION_NUMBER_RE = re.compile(
+    r"(?:редакци[яиейю]|ред\.|верси[яиейю]|вер\.|\bver\.?|\bv\.?)\s*(?:№|N|#)?\s*"
+    r"(\d{1,3}(?:\.\d{1,2})?)(?!\.\d{2,4})\b",
+    re.IGNORECASE,
+)
+
+FILENAME_VERSION_TAG_RE = re.compile(
+    r"(?:^|[\s_.\-(])(?:v|ver|версия|редакция|ред)[\s_.\-]*(\d{1,2}(?:\.\d{1,2})?)(?=$|[\s_.\-)])",
+    re.IGNORECASE,
+)
+
+NEW_EDITION_MARKER_RE = re.compile(
+    r"(?:\b(?:новая\s+редакция|в\s+новой\s+редакции|новой\s+редакции|актуальная\s+редакция)\b|"
+    r"\bнов(?:ый|ая|ое)\s*$)",
+    re.IGNORECASE,
+)
+
+PARTIAL_AMENDMENT_TITLE_RE = re.compile(
+    r"^\s*(?:(?:приказ|распоряжение)\b[^;\n]{0,75}?\s+)?(?:о\s+внесении\s+изменений\s+в|об\s+изменении|во\s+изменение)\b",
+    re.IGNORECASE,
+)
+
+ANNUAL_TARGET_YEAR_RE = re.compile(
+    r"\b(?:на\s+(?:плановый\s+период\s+)?|по\s+фин[.\s]*структуре\s+|бюджет[а-яё]*\s+на\s+)"
+    r"((?:19|20)\d{2})(?:\s*[-–/и,]\s*((?:19|20)\d{2}))?\s*(?:учебн[а-яё]+\s+)?(?:гг?\.?|год[ауеыов]*)?",
+    re.IGNORECASE,
+)
+
+_ORDER_PREAMBLE_START_RE = re.compile(
+    r"^\s*(?:В\s+целях|С\s+целью|На\s+основании|В\s+связи\s+с|Во\s+исполнение|В\s+соответствии\s+с|Руководствуясь|"
+    r"ПРИКАЗЫВАЮ|РАСПОРЯЖАЮСЬ|ОБЯЗЫВАЮ|ПОСТАНОВЛЯЮ)\b",
+    re.IGNORECASE,
+)
+
+_ACT_LEADING_NOUN_CANON_MAP: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^регламент[аеуом]*\b"), "регламент"),
+    (re.compile(r"^положени[еяюийм]*\b"), "положение"),
+    (re.compile(r"^поряд(?:ок|ка|ке|ку|ком)\b"), "порядок"),
+    (re.compile(r"^инструкци[яиюейм]*\b"), "инструкция"),
+    (re.compile(r"^правил[аоамх]*\b"), "правила"),
+    (re.compile(r"^стандарт[аеуом]*\b"), "стандарт"),
+    (re.compile(r"^методик[аиеуой]*\b"), "методика"),
+    (re.compile(r"^политик[аиеуой]*\b"), "политика"),
+    (re.compile(r"^переч(?:ень|ня|ню|нем)\b"), "перечень"),
+    (re.compile(r"^тариф[аыове]*\b"), "тарифы"),
+    (re.compile(r"^план[ауеом]*\b"), "план"),
 )
 
 
@@ -618,6 +689,371 @@ def _slugify_doc_id(file_name: str, doc_number: str = "", doc_date: str = "") ->
             return f"doc_{clean_num_ascii}_{year_part}".rstrip("_")
     digest = hashlib.sha1(file_name.encode("utf-8")).hexdigest()[:10]
     return f"doc_{digest}"
+
+
+def edition_sort_tuple(edition_number: Any) -> tuple[int, int]:
+    """Convert `edition_number` (int, '2.1', 'новая', or None) into a total-order tuple."""
+    if edition_number is None or edition_number == "":
+        return (0, 0)
+    if isinstance(edition_number, bool):
+        return (1, 0) if edition_number else (0, 0)
+    if isinstance(edition_number, int):
+        return (edition_number, 0)
+    if isinstance(edition_number, float):
+        major = int(edition_number)
+        minor = int(round((edition_number - major) * 100))
+        return (major, minor)
+    s = str(edition_number).strip().lower().replace("ё", "е")
+    if not s:
+        return (0, 0)
+    if s in {"новая", "актуальная", "новый", "new"}:
+        # Beats unnumbered (0, 0) and edition 1 (1, 0), yields to explicit edition >= 2
+        return (1, 50)
+    m = re.match(r"^(\d{1,3})(?:\.(\d{1,3}))?$", s)
+    if m:
+        return (int(m.group(1)), int(m.group(2) or 0))
+    return (0, 0)
+
+
+def extract_edition_metadata(
+    title: str = "",
+    header_text: str = "",
+    full_text: str = "",
+    file_name: str = "",
+) -> dict[str, Any]:
+    """
+    Extract explicit K2 edition/revision metadata from title, filename, and header/opening text:
+    - `edition_date` (ISO `YYYY-MM-DD`, or `""`)
+    - `edition_number` (`int` e.g. `2`, `str` e.g. `"2.1"` / `"новая"`, or `None`)
+    Filters out external act citation lines (`в соответствии с ... в ред. от ...`) so cited federal
+    laws never pollute the document's own edition date.
+    """
+    norm_fname = _normalize_filename_for_requisites(file_name) if file_name else ""
+    safe_body_lines: list[str] = []
+    for raw_ln in (full_text or "")[:2800].splitlines():
+        ln = raw_ln.strip()
+        if not ln:
+            continue
+        if _HEADER_BODY_STOP_RE.match(ln):
+            break
+        if _EXTERNAL_ACT_CITATION_LINE_RE.search(ln):
+            continue
+        safe_body_lines.append(ln)
+
+    probes = [p for p in (title, norm_fname, header_text, "\n".join(safe_body_lines)) if p]
+    edition_date = ""
+    edition_number: int | str | None = None
+    has_new_marker = False
+
+    for probe in probes:
+        if not edition_date:
+            m_ed_dt = EDITION_DATE_RE.search(probe)
+            if m_ed_dt:
+                cand_dt = _parse_flex_date_groups(
+                    m_ed_dt.group(1), m_ed_dt.group(2), m_ed_dt.group(3), m_ed_dt.group(4)
+                )
+                if cand_dt:
+                    edition_date = cand_dt
+
+        if edition_number is None:
+            for m_num in EDITION_NUMBER_RE.finditer(probe):
+                raw_n = m_num.group(1)
+                major_s = raw_n.split(".", 1)[0]
+                if major_s.isdigit() and 1 <= int(major_s) < 1900:
+                    edition_number = int(raw_n) if "." not in raw_n else raw_n
+                    break
+
+        if not has_new_marker and NEW_EDITION_MARKER_RE.search(probe):
+            has_new_marker = True
+
+    if edition_number is None and file_name:
+        stem = re.sub(r"\.(?:pdf|docx?|xlsx?|txt|md)$", "", Path(file_name).name, flags=re.IGNORECASE)
+        m_fv = FILENAME_VERSION_TAG_RE.search(stem)
+        if m_fv:
+            raw_v = m_fv.group(1)
+            major_s = raw_v.split(".", 1)[0]
+            if major_s.isdigit() and 1 <= int(major_s) < 100:
+                edition_number = int(raw_v) if "." not in raw_v else raw_v
+
+    if not edition_date:
+        for probe in (title, norm_fname, header_text):
+            if not probe:
+                continue
+            m_yr = EDITION_YEAR_RE.search(probe)
+            if m_yr:
+                edition_date = f"{int(m_yr.group(1)):04d}-01-01"
+                break
+
+    if edition_number is None and has_new_marker:
+        edition_number = "новая"
+
+    return {
+        "edition_date": edition_date,
+        "edition_number": edition_number,
+        "is_new_edition": has_new_marker,
+    }
+
+
+def extract_target_plan_years(title: str = "", header_text: str = "") -> list[int]:
+    """
+    Extract explicit target planning years from phrases like 'на 2026 год', 'на 2026-2028 гг.',
+    'по Фин.структуре 2026г.' so distinct annual plans with disjoint target years stay active.
+    """
+    years: list[int] = []
+    for probe in (title, header_text):
+        if not probe:
+            continue
+        for m in ANNUAL_TARGET_YEAR_RE.finditer(probe):
+            y1 = int(m.group(1))
+            if 2015 <= y1 <= 2035 and y1 not in years:
+                years.append(y1)
+            if m.group(2):
+                y2 = int(m.group(2))
+                if 2015 <= y2 <= 2035:
+                    for y in range(min(y1, y2), max(y1, y2) + 1):
+                        if y not in years:
+                            years.append(y)
+    years.sort()
+    return years
+
+
+def _extract_formal_header_subject(full_text: str) -> str:
+    """
+    Extract the formal subject line from the top of a Russian normative document:
+    - For Orders/Dispositions: the 'О ...' / 'Об утверждении ...' heading between 'ПРИКАЗ № ...' and 'В целях ...'/'ПРИКАЗЫВАЮ:'
+    - For standalone Regulations/Provisions/Instructions: the 'Регламент ...' / 'Положение ...' heading before '1. Общие положения'.
+    """
+    if not full_text:
+        return ""
+    lines = [ln.strip() for ln in full_text[:2600].splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    # 1. Check Order / Disposition formal subject after ПРИКАЗ / РАСПОРЯЖЕНИЕ + date/number
+    for idx, ln in enumerate(lines[:18]):
+        if re.match(r"^(?:ПРИКАЗ|РАСПОРЯЖЕНИЕ)\b", ln, re.IGNORECASE):
+            subj_lines: list[str] = []
+            inline_tail = re.sub(
+                r"^(?:ПРИКАЗ|РАСПОРЯЖЕНИЕ)(?:\s+(?:от\s+)?(?:\d{1,2}\.\d{1,2}\.\d{2,4}|\d{4}-\d{2}-\d{2}|[«\"]?\d{1,2}[»\"]?\s+[а-яё]+\s+\d{4})(?:\s*г\.?)?|\s+(?:№|N)\s*[0-9А-ЯЁа-яёA-Za-z\-/]+)+",
+                "",
+                ln,
+                flags=re.IGNORECASE,
+            ).strip(" -—:,.")
+            if not inline_tail or inline_tail.lower() == ln.lower():
+                inline_tail = re.sub(r"^(?:ПРИКАЗ|РАСПОРЯЖЕНИЕ)\b", "", ln, flags=re.IGNORECASE).strip(" -—:,.")
+            if len(inline_tail) >= 12 and re.search(r"[а-яёА-ЯЁ]{4,}", inline_tail):
+                subj_lines.append(ln)
+            for sub_ln in lines[idx + 1 : idx + 10]:
+                if _ORDER_PREAMBLE_START_RE.match(sub_ln) or _HEADER_BODY_STOP_RE.match(sub_ln):
+                    break
+                # Skip date / number / city lines right under ПРИКАЗ
+                if re.match(
+                    r"^(?:от\s+|№|N|\d{1,2}\.\d{1,2}\.\d{4}|[«\"]?\d{1,2}[»\"]?\s+[а-яё]+\s+\d{4}|г\.\s*[А-ЯЁа-яё\-]+$)",
+                    sub_ln,
+                    re.IGNORECASE,
+                ):
+                    if not subj_lines:
+                        continue
+                if re.match(r"^(?:№|N)\s*[0-9А-ЯЁа-яёA-Za-z\-/]+$", sub_ln, re.IGNORECASE) and not subj_lines:
+                    continue
+                subj_lines.append(sub_ln)
+                if len(" ".join(subj_lines)) >= 160:
+                    break
+            if subj_lines:
+                return " ".join(subj_lines)
+
+    # 2. Check standalone Regulation / Provision / Instruction / Rules title before '1. Общие положения' / '1.1'
+    act_start_re = re.compile(
+        r"^(?:РЕГЛАМЕНТ|ПОЛОЖЕНИЕ|ПОРЯДОК|ИНСТРУКЦИЯ|ПРАВИЛА)\b",
+        re.IGNORECASE,
+    )
+    for idx, ln in enumerate(lines[:28]):
+        if ln.startswith("[") or re.match(r"^(?:СОГЛАСОВАНО|УТВЕРЖД|Приложение)\b", ln, re.IGNORECASE):
+            continue
+        if _HEADER_BODY_STOP_RE.match(ln):
+            if idx + 1 < len(lines) and re.match(r"^\[Стр\.\s*1\]", lines[idx + 1]):
+                continue
+            break
+        if act_start_re.match(ln):
+            subj_lines = [ln]
+            for sub_ln in lines[idx + 1 : idx + 6]:
+                if _HEADER_BODY_STOP_RE.match(sub_ln) or _ORDER_PREAMBLE_START_RE.match(sub_ln):
+                    break
+                if sub_ln.startswith("[") or re.match(r"^\d+\.\d*", sub_ln):
+                    break
+                subj_lines.append(sub_ln)
+                if len(" ".join(subj_lines)) >= 160:
+                    break
+            cand = " ".join(subj_lines).strip()
+            if len(cand) > len("регламент") + 4:
+                return cand
+
+    return ""
+
+
+def _normalize_subject_for_version_family(raw_subject: str) -> str:
+    """
+    Strip dates, document numbers, edition/version tags, institutional boilerplate, and approval wrappers
+    ('Приказ об утверждении ...', 'О введении в действие ...'), canonicalizing the leading regulatory noun.
+    Returns `""` if the cleaned subject is `< 18` chars or lacks substantive words.
+    """
+    if not raw_subject:
+        return ""
+    s = raw_subject.lower().replace("ё", "е")
+    s = re.sub(r"\.(?:pdf|docx?|xlsx?|txt|md)\b", " ", s)
+    s = re.sub(r"[_«»\"'“”„]", " ", s)
+
+    # Strip parenthetical edition/revision/approval markers while keeping domain acronyms like (ПУМС), (ЦОД), (ФЛС)
+    s = re.sub(
+        r"\((?:в\s+ред|ред\.|редакц|верси|вер\.|v\.?\s*\d|с\s+изм|утв\.|утратил|действ|нов[а-я]+\s+ред|приказ|распоряжен|протокол)[^)]*\)",
+        " ",
+        s,
+    )
+
+    # Preserve code stem in ИОТ-056-2021 -> иот-056 while stripping the edition year
+    s = re.sub(r"\b(иот\s*[-–]?\s*\d+)\s*[-–]\s*(?:19|20)\d{2}\b", r"\1", s)
+
+    # Strip explicit edition/version phrases
+    s = re.sub(
+        r"\b(?:в\s+новой\s+редакции|новая\s+редакция|новой\s+редакции|актуальная\s+редакция|"
+        r"старая\s+редакция|предыдущая\s+редакция)\b",
+        " ",
+        s,
+    )
+    s = re.sub(
+        r"\b(?:в\s+ред(?:акции|\.)?|редакци[яиейю]|ред\.|верси[яиейю]|вер\.|ver\.?)\s*"
+        r"(?:приказа\s+|распоряжения\s+)?(?:от\s*)?"
+        r"(?:\d{1,2}\.\d{1,2}\.\d{2,4}|\d{4}-\d{2}-\d{2}|(?:№|n|#)?\s*\d{1,3}(?:\.\d{1,2})?)?"
+        r"(?:\s*г(?:\.|ода)?)?",
+        " ",
+        s,
+    )
+    s = re.sub(
+        r"\bс\s+изменениями(?:\s+и\s+дополнениями)?(?:\s+от\s*(?:\d{1,2}\.\d{1,2}\.\d{2,4}|\d{4}-\d{2}-\d{2}))?",
+        " ",
+        s,
+    )
+    s = re.sub(r"(?:^|\s)v\.?\s*\d{1,2}(?:\.\d{1,2})?\b", " ", s)
+
+    # Strip document numbers, dates, and year qualifiers
+    s = re.sub(r"(?:№|n|no)\s*(?:б/н|[0-9][0-9а-яa-z\-/]*)", " ", s)
+    s = re.sub(
+        r"\bот\s+(?:\d{1,2}\s+[а-я]+\s+\d{4}|\d{1,2}\.\d{1,2}\.\d{2,4}|\d{4}-\d{2}-\d{2})(?:\s*г(?:\.|ода)?)?",
+        " ",
+        s,
+    )
+    s = re.sub(r"\b(?:\d{1,2}\.\d{1,2}\.\d{2,4}|\d{4}-\d{2}-\d{2})(?:\s*г(?:\.|ода)?)?\b", " ", s)
+    s = re.sub(
+        r"\bна\s+(?:плановый\s+период\s+)?(?:19|20)\d{2}(?:\s*[-–/и,]\s*(?:19|20)\d{2})*\s*(?:учебн[а-я]+\s+)?(?:гг?\.?|год[ауеыов]*)\b",
+        " ",
+        s,
+    )
+    s = re.sub(r"\b(?:19|20)\d{2}(?:\s*[-–/]\s*(?:19|20)\d{2})?\s*(?:гг?\.?|год[ауеыов]*)?\b", " ", s)
+
+    # Strip institutional boilerplate and bare edition adjectives
+    s = re.sub(r"\bминистерств[а-я\s]+российской\s+федерации\b", " ", s)
+    s = re.sub(
+        r"\bфедеральн[а-я]+\s+государственн[а-я]+\s+автономн[а-я]+\s+образовательн[а-я]+\s+учреждени[а-я]+(?:\s+высшего\s+образования)?\b",
+        " ",
+        s,
+    )
+    s = re.sub(
+        r"\bмосковск[а-я]+\s+физико[\s\-]*техническ[а-я]+\s+институт[а-я]*(?:\s*\(национальн[а-я\s]+университет\))?\b",
+        " ",
+        s,
+    )
+    s = re.sub(r"\bфгаоу\s+во\b", " ", s)
+    s = re.sub(r"\b(?:в\s+|для\s+)?(?:мфти|физтех[аеу]?)\b", " ", s)
+    s = re.sub(r"\b(?:нов(?:ый|ая|ое|ые)|стар(?:ый|ая|ое|ые)|утративш[а-я]+\s+силу)\b", " ", s)
+
+    # Collapse punctuation (keep hyphens inside compound words like финансово-лицевой or иот-056)
+    s = re.sub(r"[^\w\s\-]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip(" -")
+
+    # Iteratively strip leading order/approval wrappers so 'Приказ об утверждении Положения о Х' == 'Положение о Х'
+    changed = True
+    while changed and s:
+        prev = s
+        s = re.sub(r"^(?:приказ|распоряжение)(?:\s+и)?\s+", "", s).strip()
+        s = re.sub(
+            r"^(?:об\s+утверждении\s+и\s+введении\s+в\s+действие|о\s+введении\s+в\s+действие|"
+            r"об\s+утверждении|об\s+актуализации|о\s+принятии)\s+",
+            "",
+            s,
+        ).strip()
+        s = re.sub(r"^(?:новой\s+редакции|редакции)\s+", "", s).strip()
+        s = re.sub(r"^(?:о|об)\s+", "", s).strip()
+        changed = s != prev
+
+    # Canonicalize leading regulatory noun inflection (genitive/prepositional -> nominative)
+    for pat, canon_noun in _ACT_LEADING_NOUN_CANON_MAP:
+        if pat.search(s):
+            s = pat.sub(canon_noun, s, count=1)
+            break
+
+    s = re.sub(r"\s+", " ", s).strip(" -")
+    if len(s) < 18:
+        return ""
+    substantive_words = [
+        w
+        for w in s.split()
+        if len(w) >= 3
+        and w not in {"приказ", "распоряжение", "документ", "регламент", "положение", "порядок", "инструкция", "правила"}
+    ]
+    if len(substantive_words) < 2:
+        return ""
+    return s
+
+
+def compute_version_family(
+    doc_type: str = "",
+    title: str = "",
+    header_text: str = "",
+    full_text: str = "",
+    file_name: str = "",
+) -> str:
+    """
+    Compute a canonical K2 `version_family` key for automatic multi-version reconciliation.
+    - Returns `""` for overly short/generic titles (`< 18` chars normalized subject) so bare 'Приказ' orders never collide.
+    - Separates standalone forms/templates (`form::...`) and partial amendments (`amendment::...`) from normative acts (`normative::...`).
+    """
+    norm_fname = _normalize_filename_for_requisites(file_name) if file_name else ""
+    base_title = (title or norm_fname or "").strip()
+    formal_subj = _extract_formal_header_subject(full_text or header_text)
+
+    dt_lower = (doc_type or "").strip().lower().replace("ё", "е")
+    probe_head = (formal_subj or base_title).strip().lower().replace("ё", "е")
+
+    # Classify namespace so forms/annexes and partial-amendment orders never falsely supersede full regulations
+    if any(k in dt_lower for k in ("анкета", "согласие", "смета", "приложение")) or probe_head.startswith("приложение"):
+        namespace = "form"
+    elif (
+        (PARTIAL_AMENDMENT_TITLE_RE.match(base_title) or PARTIAL_AMENDMENT_TITLE_RE.match(formal_subj))
+        and "новой редакции" not in probe_head
+        and not SUPERSEDES_PHRASE_RE.search((full_text or "")[:6000])
+        and not UNNUMBERED_SUPERSEDES_PHRASE_RE.search((full_text or "")[:6000])
+    ):
+        namespace = "amendment"
+    else:
+        namespace = "normative"
+
+    subj_title = _normalize_subject_for_version_family(base_title)
+    subj_header = _normalize_subject_for_version_family(formal_subj)
+
+    if not subj_title:
+        chosen = subj_header
+    elif not subj_header:
+        chosen = subj_title
+    elif re.search(r"[а-я]", subj_header) and not re.search(r"[а-я]", subj_title):
+        chosen = subj_header
+    elif subj_header.startswith(subj_title) or subj_title in subj_header:
+        chosen = subj_header
+    else:
+        chosen = subj_title
+
+    if not chosen or len(chosen) < 18:
+        return ""
+    return f"{namespace}::{chosen}"
 
 
 class GlossaryManager:
@@ -1028,20 +1464,32 @@ class GlossaryManager:
     # -----------------------------------------------------------------------
     # Document Requisites & Edition Graph Relation Extractor
     # -----------------------------------------------------------------------
+    extract_edition_metadata = staticmethod(extract_edition_metadata)
+    compute_version_family = staticmethod(compute_version_family)
+    extract_target_plan_years = staticmethod(extract_target_plan_years)
+    edition_sort_tuple = staticmethod(edition_sort_tuple)
+
     def extract_relations_from_text(self, text: str, self_doc_number: str = "") -> dict[str, list[str]]:
-        """Extract automatic 'supersedes' and 'amends' order numbers from normative text."""
+        """Extract automatic 'supersedes', 'amends', and unnumbered repealed-act subjects from normative text."""
         if not text:
-            return {"supersedes": [], "amends": []}
+            return {"supersedes": [], "amends": [], "repealed_subjects": []}
 
         # Inspect only normative part before ЛИСТ СОГЛАСОВАНИЯ or first 15,000 chars
         head_text = text[:15000]
         supersedes: list[str] = []
         amends: list[str] = []
+        repealed_subjects: list[str] = []
 
         for m in SUPERSEDES_PHRASE_RE.finditer(head_text):
             num = m.group(1).strip()
             if num and num != self_doc_number and num not in supersedes:
                 supersedes.append(num)
+
+        for m_un in UNNUMBERED_SUPERSEDES_PHRASE_RE.finditer(head_text):
+            raw_clause = m_un.group(1).strip()
+            norm_subj = _normalize_subject_for_version_family(raw_clause)
+            if norm_subj and norm_subj not in repealed_subjects:
+                repealed_subjects.append(norm_subj)
 
         for m in AMENDS_PHRASE_RE.finditer(head_text):
             num = m.group(1).strip()
@@ -1050,7 +1498,7 @@ class GlossaryManager:
             if num and num != self_doc_number and num not in supersedes and num not in amends:
                 amends.append(num)
 
-        return {"supersedes": supersedes, "amends": amends}
+        return {"supersedes": supersedes, "amends": amends, "repealed_subjects": repealed_subjects}
 
     def extract_document_meta(
         self,
@@ -1277,6 +1725,40 @@ class GlossaryManager:
         final_quality_warning = str(merged_ov.get("quality_warning") or "")
         final_also_in_files = list(merged_ov.get("also_in_files") or [])
 
+        # Extract K2 edition/revision metadata & canonical version_family
+        edition_info = extract_edition_metadata(
+            title=final_title,
+            header_text=header_zone,
+            full_text=full_text,
+            file_name=clean_fname,
+        )
+        raw_ov_ed_date = str(merged_ov.get("edition_date") or "").strip()
+        final_edition_date = (
+            (_to_iso_date(raw_ov_ed_date) if raw_ov_ed_date else "")
+            or str(edition_info.get("edition_date") or "")
+        )
+        final_edition_number = (
+            merged_ov.get("edition_number")
+            if merged_ov.get("edition_number") not in (None, "")
+            else edition_info.get("edition_number")
+        )
+        final_version_family = str(
+            merged_ov.get("version_family")
+            or compute_version_family(
+                doc_type=final_doc_type,
+                title=final_title,
+                header_text=header_zone,
+                full_text=full_text,
+                file_name=clean_fname,
+            )
+            or ""
+        )
+        target_plan_years = extract_target_plan_years(
+            title=final_title,
+            header_text=_extract_formal_header_subject(full_text) or header_zone,
+        )
+        repealed_subjects = list(auto_rels.get("repealed_subjects") or [])
+
         # Auto-populate version_note for newly uploaded documents with auto-detected relations
         if not final_version_note:
             notes: list[str] = []
@@ -1297,6 +1779,13 @@ class GlossaryManager:
         if order_number:
             doc_metadata["order_number"] = order_number
             doc_metadata["order_date"] = order_date
+        doc_metadata["edition_date"] = final_edition_date
+        doc_metadata["edition_number"] = final_edition_number
+        doc_metadata["version_family"] = final_version_family
+        if target_plan_years:
+            doc_metadata["target_plan_years"] = target_plan_years
+        if repealed_subjects:
+            doc_metadata["repealed_subjects"] = repealed_subjects
 
         doc_meta_obj = DocumentMeta(
             doc_id=final_doc_id,
@@ -1305,6 +1794,9 @@ class GlossaryManager:
             sha256=str(sha256 or ""),
             doc_number=final_doc_number,
             doc_date=final_doc_date,
+            edition_date=final_edition_date,
+            edition_number=final_edition_number,
+            version_family=final_version_family,
             doc_type=final_doc_type,
             title=final_title,
             status=final_status,
@@ -1327,6 +1819,11 @@ class GlossaryManager:
         edo_number = str((doc_meta.metadata or {}).get("edo_number") or getattr(doc_meta, "edo_number", "") or "").strip()
         edo_date = str((doc_meta.metadata or {}).get("edo_date") or getattr(doc_meta, "edo_date", "") or "").strip()
         is_edo_stamp = bool((doc_meta.metadata or {}).get("is_edo_stamp", getattr(doc_meta, "is_edo_stamp", False)))
+        edition_date = str((doc_meta.metadata or {}).get("edition_date") or getattr(doc_meta, "edition_date", "") or "").strip()
+        edition_number = (doc_meta.metadata or {}).get("edition_number")
+        if edition_number is None:
+            edition_number = getattr(doc_meta, "edition_number", None)
+        version_family = str((doc_meta.metadata or {}).get("version_family") or getattr(doc_meta, "version_family", "") or "").strip()
 
         has_meta_Trigger = any(
             [
@@ -1336,6 +1833,8 @@ class GlossaryManager:
                 doc_meta.amended_by,
                 doc_meta.supersedes,
                 doc_meta.amends,
+                edition_date,
+                edition_number not in (None, ""),
                 doc_meta.status in {
                     DocumentStatus.SUPERSEDED.value,
                     DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value,
@@ -1350,6 +1849,13 @@ class GlossaryManager:
             f"ПАСПОРТ РЕДАКЦИИ ДОКУМЕНТА: {doc_meta.title}",
             f"Реквизиты: {doc_meta.doc_type} № {doc_meta.doc_number or 'б/н'} от {doc_meta.doc_date or 'б/д'} | Статус: {status_ru}",
         ]
+        if edition_date or edition_number not in (None, ""):
+            ed_parts: list[str] = []
+            if edition_number not in (None, ""):
+                ed_parts.append(f"№ {edition_number}" if str(edition_number) != "новая" else "новая редакция")
+            if edition_date:
+                ed_parts.append(f"от {edition_date}")
+            lines.append(f"Сведения о редакции: {' '.join(ed_parts)}")
         if edo_number:
             lines.append(f"Регистрация ЭДО: Зарег. в ЭДО {edo_date or 'б/д'} № {edo_number}")
         if doc_meta.applicable_years:
@@ -1418,6 +1924,9 @@ class GlossaryManager:
                 "file_name": doc_meta.file_name,
                 "doc_number": doc_meta.doc_number,
                 "doc_date": doc_meta.doc_date,
+                "edition_date": edition_date,
+                "edition_number": edition_number,
+                "version_family": version_family,
                 "edo_number": edo_number,
                 "edo_date": edo_date,
                 "is_edo_stamp": is_edo_stamp,
