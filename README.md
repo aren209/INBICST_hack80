@@ -46,16 +46,16 @@
 
 ```mermaid
 flowchart TD
-    subgraph Input["Входные документы (доки/ или Drag-and-Drop в Web UI)"]
+    subgraph Input["Входные документы (Web UI Drag-and-Drop или папка доки/)"]
         PDF["PDF (цифровые и сканы)"]
         DOCX["DOCX (приказы, бланки, приложения)"]
         XLSX["XLSX (сметы с формулами, дерево ЦФО)"]
     end
 
-    subgraph Mod1["Модуль 1: Предразбор и Гибридный OCR (src/ingestion/)"]
+    subgraph Mod1["Модуль 1: Предразбор и Локальный Гибридный OCR (src/ingestion/)"]
         P_PDF["PyMuPDF + pdfplumber + pypdfium2\n(анализ покрытия растром >=55% / <600 симв.)"]
         OCR_CACHE["Файловый кэш data/ocr_cache/ (SHA-256)"]
-        VLM["Polza AI Vision: Qwen3-VL-235B\n(маркер [___] против зацикливания)"]
+        VLM["Локальная VLM: PaddlePaddle/PaddleOCR-VL-1.6\n(Markdown-таблицы + защита [___] от зацикливания)"]
         RAPID["Локальный фоллбэк: RapidOCR v3\n(PP-OCRv5 ESLAV, use_cls=False)"]
         P_DOCX["python-docx + lxml\n(CT_P / CT_Tbl, vMerge, word/numbering.xml)"]
         P_XLSX["openpyxl 2-pass\n(значения + [формула: =...], forward-fill ЦФО)"]
@@ -67,21 +67,23 @@ flowchart TD
         STAGE6_7["Стадии 6–7: Билатеральный 12% overlap по словам\n+ обогащенный embed_text (Glossary + 12 ROLE_PATTERNS)"]
     end
 
-    subgraph Mod4["Модуль 4: Индексация и Гибридный поиск (src/indexing/, src/retrieval/)"]
-        DENSE["Dense: baai/bge-m3 (1024d Cosine)\n+ кэш data/embed_cache/"]
+    subgraph Mod4["Модуль 4: Индексация, Гибридный поиск и Qwen3.8-27B 4-bit (src/indexing/, src/retrieval/)"]
+        DENSE["Локальные Dense эмбеддинги: BAAI/bge-m3\n(1024d Cosine, GPU/CPU + data/embed_cache/)"]
         SPARSE["Sparse BM25: razdel + pymorphy3 + CRC32\n(сохранение 3065-1, 16.4%, kmo@mipt.ru)"]
-        QDRANT[("Qdrant Vector DB\n(localhost:6333, RRF Fusion)")]
-        SEARCH["SearchService: RRF + подтягивание ParentSection\n+ добор amends (700 -> 3065-1) + Out-of-Scope детектор"]
+        QDRANT[("Qdrant Vector DB\n(порт 6333, RRF Fusion)")]
+        SQLITE_DB[("SQLite tables_store.db\n(Книги .xlsx и таблицы >= 25 строк)")]
+        SEARCH["SearchService + QueryPipeline:\nRRF + ParentSection + добор amends + Out-of-Scope"]
+        LLM["Локальная LLM: Qwen/Qwen3.8-27B (4-bit INT4, vLLM :8001)\nTableAwareRAGAgent + Tool Calling + Верификация цитат"]
     end
 
     subgraph Web["Веб-приложение и REST API (src/web/ на localhost:8000)"]
-        UI["SPA Интерфейс: Загрузчик / Реестр и Инспектор чанков / RAG Playground"]
+        UI["SPA Интерфейс: Загрузчик / Реестр и Инспектор чанков / Чат-навигатор"]
     end
 
     PDF --> P_PDF
     P_PDF -->|Нужен OCR| OCR_CACHE
     OCR_CACHE -->|Промах кэша| VLM
-    VLM -->|finish_reason=length / ошибка| RAPID
+    VLM -->|Фоллбэк при сбое| RAPID
     DOCX --> P_DOCX
     XLSX --> P_XLSX
 
@@ -95,58 +97,68 @@ flowchart TD
     STAGE5 --> STAGE6_7
     STAGE6_7 --> DENSE
     STAGE6_7 --> SPARSE
+    STAGE6_7 --> SQLITE_DB
     DENSE --> QDRANT
     SPARSE --> QDRANT
     QDRANT <--> SEARCH
     STAGE5 <--> SEARCH
-    SEARCH <--> UI
+    SEARCH <--> LLM
+    SQLITE_DB <-->|query_structured_table| LLM
+    LLM <--> UI
 ```
+
+### Сквозной поток данных (от входа до выхода)
+
+1. **Контур индексации (`Вход: файлы .pdf / .docx / .xlsx` → `Выход: индексы Qdrant + SQLite + Реестр`):**
+   - Пользователь загружает документы через Drag-and-Drop в веб-интерфейсе (`POST /api/documents/upload`) или синхронизирует папку `доки/` (`POST /api/documents/sync-folder`).
+   - Конвейер вычисляет `SHA-256` файла, определяет сканированные и комбинированные страницы PDF (штамп ЭДО поверх скана) и распознает их локальной моделью **`PaddlePaddle/PaddleOCR-VL-1.6`** (с фоллбэком на `RapidOCR v3 PP-OCRv5 ESLAV`), извлекает формулы и значения `.xlsx` в два прохода и автонумерацию `.docx`.
+   - 7-стадийный чанкер `HierarchicalChunkerV3` строит чистые родительские разделы (`ParentSectionRecord` в `sections_store.json`), дочерние чанки с `12%` перекрытием по границам слов и выгружает книги Excel и большие таблицы (`>= 25` строк) в `SQLite tables_store.db`.
+   - Локальный эмбеддер **`BAAI/bge-m3`** (`1024d`) + морфологический `BM25` (`pymorphy3` + `CRC32`) индексируют чанки в **Qdrant**, а граф редакций связывает отменяемые (`supersedes`) и изменяемые (`amends`) акты.
+2. **Контур ответа сотруднику (`Вход: вопрос на естественном языке` → `Выход: структурированный ответ с цитатами и статусом документа`):**
+   - Вопрос поступает в `POST /api/ask` (или `POST /api/search`). `QueryPipeline` нормализует разговорную формулировку, расширяет аббревиатуры по `GlossaryManager` и проверяет релевантность (`Out-of-Scope` детектор).
+   - `SearchService` выполняет гибридный поиск в Qdrant (`Dense + Sparse BM25` со слиянием `Reciprocal Rank Fusion`), подтягивает чистые родительские разделы `ParentSectionRecord`, автоматически добирает изменяющие чанки (`amendment_chunks`) и предупреждения об отмене/изменении (`version_alerts`).
+   - Агент `TableAwareRAGAgent` на базе 4-битной линейно-гибридной модели **`Qwen/Qwen3.8-27B`** (`vLLM` `W4A16`, порт `8001`) при наличии связанных таблиц `delivery_mode="tool_query"` автономно вызывает инструмент `query_structured_table` (`filter_rows`, `aggregate`, `get_formulas`) к `SQLite`, синтезирует пошаговый ответ с указанием подразделений/форм/сроков, проверяет точность цитат и возвращает структурированный `AgentAskResponse` (ответ, статус актуальности источников, проверенные цитаты и трассировка `ToolCallTrace`).
 
 ### Структура репозитория
 
 ```text
 .
 ├── config/
-│   ├── glossary.yaml               # Двусторонний словарь аббревиатур МФТИ, синонимы и 12 ROLE_PATTERNS
-│   └── registry_overrides.yaml     # Граф редакций приказов (supersedes, amends), годы и предупреждения
-├── data/
-│   ├── uploads/                    # Файлы, загруженные через веб-интерфейс
-│   ├── ocr_cache/                  # Кэш распознанных OCR-страниц по SHA-256 изображения
-│   ├── embed_cache/                # Кэш векторов baai/bge-m3 по SHA-256(embed_text)
-│   ├── qdrant_storage/             # Персистентное хранилище Qdrant
-│   ├── tables_store.db             # SQLite-хранилище структурированных таблиц (.xlsx и больших .docx/.pdf)
-│   ├── sections_store.json         # Чистые родительские разделы ParentSectionRecord
-│   ├── document_registry.json      # Реестр документов, SHA-256, метаданные и граф связей
-│   ├── indexing_report.json        # Детальный отчет последнего прогона индексации
-│   ├── verification_results.json   # JSON-отчет базовой валидации поиска (10 сценариев)
-│   └── table_verification_results.json # JSON-отчет валидации таблиц и LLM Tool Calling (5 сценариев)
+│   ├── glossary.yaml               # Доменный словарь аббревиатур, синонимы и 12 ROLE_PATTERNS
+│   └── registry_overrides.yaml     # Опциональные переопределения связей редакций (не запекается в Docker-образ)
+├── scripts/
+│   ├── docker-entrypoint.sh        # Entrypoint контейнера: инициализация пустых томов и ожидание Qdrant
+│   └── start_local_stack.sh        # Скрипт локального запуска Qdrant + vLLM (Qwen3.8-27B INT4) + FastAPI
 ├── src/
-│   ├── config.py                   # Константы, пороги, настройки .env и регулярные выражения
+│   ├── config.py                   # Константы, пороги, настройки .env и выбор локальных бэкендов
 │   ├── schemas.py                  # Модели Pydantic v2 (ParsedBlock, ChunkRecord, TablePassport, AgentAskResponse и др.)
+│   ├── llm/
+│   │   └── local_qwen.py           # Поддержка Qwen/Qwen3.8-27B в 4-битной квантизации (vLLM INT4 и BitsAndBytes NF4)
 │   ├── ingestion/
-│   │   ├── ocr_engine.py           # Гибридный OCR: Qwen3-VL (Polza AI) + RapidOCR v3 PP-OCRv5 ESLAV
+│   │   ├── ocr_engine.py           # Локальный гибридный OCR: PaddlePaddle/PaddleOCR-VL-1.6 + RapidOCR v3 PP-OCRv5 ESLAV
 │   │   └── parsers.py              # Парсеры PDF, DOCX, XLSX в поток типизированных ParsedBlock
 │   ├── chunking/
 │   │   ├── glossary.py             # GlossaryManager + автообучение терминам + ролевые паттерны
 │   │   └── hierarchical_chunker.py # 7-стадийный конечный автомат чанкинга схемы V3
 │   ├── indexing/
-│   │   ├── embedder.py             # Dense (baai/bge-m3) + локальный русский Sparse BM25 (CRC32 + IDF)
+│   │   ├── embedder.py             # Локальный Dense (BAAI/bge-m3, sentence-transformers) + русский Sparse BM25
 │   │   ├── qdrant_store.py         # Работа с Qdrant, гибридный запрос Prefetch + RRF Fusion
 │   │   ├── table_store.py          # SQLite-движок StructuredTableStore и OpenAI-инструменты таблиц
 │   │   └── pipeline.py             # Оркестратор индексации, таблиц, дедупликации и графа редакций
 │   ├── retrieval/
+│   │   ├── query_pipeline.py       # Нормализация запроса, переписывание и оценка уверенности
 │   │   ├── search_service.py       # Гибридный поиск, 3-уровневая маршрутизация таблиц, добор amends, Out-of-Scope
-│   │   └── rag_agent.py            # Автономный ИИ-агент TableAwareRAGAgent с OpenAI Tool Calling
+│   │   └── rag_agent.py            # Автономный ИИ-агент TableAwareRAGAgent + верификация цитат
 │   └── web/
 │       ├── app.py                  # FastAPI сервер на http://localhost:8000
-│       └── static/                 # Русскоязычный SPA-интерфейс (index.html, app.js, styles.css)
-├── tests/
-│   ├── test_chunker_v3.py          # Модульные тесты всех краевых случаев чанкера V3 (61 тест)
-│   └── test_table_hybrid.py        # Тесты 3-уровневой архитектуры таблиц, SQLite и Tool Calling (15 тестов)
+│       └── static/                 # Русскоязычный SPA-интерфейс (чат-навигатор, инспектор, просмотрщик стр.)
+├── tests/                          # Автотесты (200+ модульных и интеграционных тестов pytest)
 ├── verify_retrieval.py             # Скрипт комплексной E2E-проверки гибридного поиска (10 сценариев)
 ├── verify_tables_e2e.py            # Скрипт E2E-проверки SQLite-таблиц и живого LLM Tool Calling (5 сценариев)
-├── Dockerfile                      # Образ python:3.12-slim с предзагрузкой RapidOCR и pymorphy3
-├── docker-compose.yml              # Оркестрация Qdrant (6333) + rag-app (8000)
+├── Dockerfile                      # Чистый образ приложения без предзашитой базы данных и регламентов
+├── .dockerignore                   # Строгое исключение data/, доки/, *.pdf/*.docx/*.xlsx из контекста сборки
+├── docker-compose.yml              # Полный локальный стек: qdrant (6333) + vllm-qwen38 (8001) + rag-app (8000)
+├── .env.example                    # Шаблон переменных окружения для локального и Docker-запуска
 ├── requirements.txt                # Зафиксированные зависимости Python 3.12
 └── README.md                       # Документация проекта
 ```
@@ -243,98 +255,96 @@ flowchart TD
 
 ## 4. Требования к окружению, зависимости и внешние сервисы
 
-### Требования к окружению
-- **ОС:** Linux / macOS / Windows (WSL2)
-- **Python:** `3.12+` (рекомендуется `CPython 3.12`)
-- **Docker и Docker Compose:** `Docker Engine 24.0+` и `docker compose v2` (для контейнерного запуска Qdrant и веб-сервиса)
-- **ОЗУ и диск:** от 2 ГБ свободной ОЗУ и 3 ГБ места на диске
+### Требования к окружению и аппаратным ресурсам
+- **ОС:** Linux (`Ubuntu 22.04+`, `Debian 12+`) или Windows (WSL2)
+- **Python:** `3.12+` (`CPython 3.12`)
+- **Docker и Docker Compose:** `Docker Engine 24.0+`, `docker compose v2` и `NVIDIA Container Toolkit` (`nvidia-ctk`) для проброса GPU в контейнеры `vllm-qwen38` и `rag-app`
+- **GPU (VRAM):** рекомендуется **NVIDIA GPU от `24 ГБ` до `40+ ГБ` VRAM** (`A100 40GB`, `L40S`, `RTX 3090 / 4090`) для одновременного размещения 4-битной `Qwen/Qwen3.8-27B` (~`16.5 ГБ` весов + KV-кэш `vLLM`), `BAAI/bge-m3` (~`2.2 ГБ`) и `PaddlePaddle/PaddleOCR-VL-1.6` (~`1.9 ГБ`)
+- **ОЗУ и диск:** от `16 ГБ` системной ОЗУ и от `35 ГБ` свободного места на диске под кэш весов HuggingFace (`hf_cache`) и Docker-образы
 
-### Локальный стек моделей и инфраструктурные компоненты (100% On-Prem / без внешних облачных API)
-1. **Локальная линейно-гибридная LLM — `Qwen/Qwen3.8-27B` в 4-битной квантизации (`RedHatAI/Qwen3.8-27B-INT4` / `BitsAndBytes NF4`):**
-   - Архитектура `Qwen3_5ForConditionalGeneration` (`16 × [3 × Gated DeltaNet -> 1 × Gated Attention]`).
-   - Обслуживается локально через `vLLM` на `http://localhost:8001/v1` (`Marlin W4A16` + `Triton/FLA GDN` + `--tool-call-parser qwen3_xml` + `--reasoning-parser qwen3`) либо напрямую в процессе через `transformers` + `bitsandbytes` (`LLM_BACKEND=local_bnb_4bit`).
-   - Отвечает за 4-стадийный конвейер переписывания и реранкинга запросов (`QueryPipeline`), автономный `Tool Calling` по SQLite-таблицам и синтез ответов с верификацией цитат (`TableAwareRAGAgent`).
-2. **Локальные плотные эмбеддинги — `BAAI/bge-m3` (`sentence-transformers`, `1024d`, Cosine):**
-   - Работают локально на GPU (`cuda`) или CPU с L2-нормализацией и персистентным `SHA-256` кэшем в `data/embed_cache/`.
-3. **Локальная документная VLM OCR — `PaddlePaddle/PaddleOCR-VL-1.6` + `RapidOCR v3 (PP-OCRv5 ESLAV)`:**
-   - Выполняет высокоточное распознавание русских сканов, штампов ЭДО и сложных таблиц локально на GPU (`bfloat16`) с автоматическим фоллбэком на `RapidOCR v3`.
-4. **Qdrant (`qdrant/qdrant:latest`, порт `6333`)** — векторная СУБД с поддержкой гибридного поиска по Dense (`1024d`) и Sparse (`BM25 + IDF`) векторам со слиянием `Reciprocal Rank Fusion (RRF)`.
+### Перечень сервисов и политика конфиденциальности (100% On-Premise)
+- **Внешние облачные API:** **не требуются (`0` внешних API-вызовов при работе с документами и запросами)**. Все конфиденциальные внутренние регламенты, приказы, таблицы ЦФО и вопросы сотрудников обрабатываются строго в локальном контуре в полном соответствии с требованиями ТЗ. Единственное обращение к внешней сети при первом холодном старте — скачивание открытых весов моделей с `HuggingFace Hub` в персистентный том `hf_cache` (поддерживается полностью офлайн-запуск с предзагруженным кэшем `HF_HUB_OFFLINE=1`).
+- **Инфраструктурные сервисы `docker-compose.yml`:**
+  1. **`vllm-qwen38` (`vllm/vllm-openai:latest`, порт `8001`)** — локальный OpenAI-совместимый сервер линейно-гибридной LLM **`Qwen/Qwen3.8-27B`** в 4-битной квантизации (`RedHatAI/Qwen3.8-27B-INT4`, `Marlin W4A16` + `Triton GDN` + `CUDA Graphs`, контекст `65 536` токенов, `--tool-call-parser qwen3_xml`, `--reasoning-parser qwen3`). Поддерживается также альтернативный внутрипроцессный режим `LLM_BACKEND=local_bnb_4bit` (`BitsAndBytes NF4`).
+  2. **`qdrant` (`qdrant/qdrant:latest`, порт `6333`)** — локальная векторная СУБД для гибридного поиска по Dense (`1024d`) и Sparse (`BM25 + IDF`) векторам со слиянием `Reciprocal Rank Fusion (RRF)`.
+  3. **`rag-app` (`Dockerfile`, порт `8000`)** — веб-приложение FastAPI + SPA-интерфейс + локальные модели **`BAAI/bge-m3`** (`sentence-transformers`, `1024d`) и **`PaddlePaddle/PaddleOCR-VL-1.6`** (`transformers` + фоллбэк `RapidOCR v3 PP-OCRv5 ESLAV`) + встроенное реляционное хранилище `SQLite` (`tables_store.db`).
 
-### Основные зависимости (`requirements.txt`)
-- Веб-сервер и API: `fastapi`, `uvicorn[standard]`, `python-multipart`, `httpx`
-- Типизация и конфигурация: `pydantic>=2.0`, `pydantic-settings`, `python-dotenv`, `pyyaml`
-- Парсинг и гибридный OCR: `PyMuPDF`, `pypdfium2`, `pdfplumber`, `Pillow`, `rapidocr`, `onnxruntime`, `python-docx`, `lxml`, `openpyxl`
-- Русский NLP и поиск: `razdel`, `pymorphy3`, `qdrant-client`, `openai`, `tenacity`
-- Тестирование: `pytest`, `pytest-asyncio`
+### Основные зависимости (`requirements.txt` и системные пакеты `Dockerfile`)
+- **Системные пакеты (внутри `Dockerfile`):** `libreoffice-writer-nogui`, `libreoffice-calc-nogui` (рендеринг визуальных превью `.docx`/`.xlsx`), `fonts-dejavu-core`, `fonts-liberation`, `libgl1`, `libglib2.0-0`, `libgomp1`, `curl`
+- **Локальные ML/NLP и VLM библиотеки:** `torch`, `transformers>=4.51`, `accelerate`, `bitsandbytes`, `sentence-transformers`, `huggingface-hub`, `safetensors`, `einops`, `razdel`, `pymorphy3`
+- **Парсинг и гибридный OCR:** `PyMuPDF`, `pypdfium2`, `pdfplumber`, `Pillow`, `rapidocr`, `onnxruntime`, `python-docx`, `lxml`, `openpyxl`
+- **Веб-сервер, векторный поиск и тестирование:** `fastapi`, `uvicorn[standard]`, `python-multipart`, `httpx`, `pydantic>=2.0`, `pydantic-settings`, `qdrant-client`, `openai`, `tenacity`, `pytest`, `pytest-asyncio`
 
 ---
 
 ## 5. Настройки и переменные окружения (`.env`)
 
-Все настройки загружаются из файла `.env` в корне проекта (шаблон приведен в `.env.example`):
+Конфигурация считывается из переменных окружения и опционального файла `.env` (шаблон — `.env.example`). При запуске через `docker compose` проект стартует **сразу из чистого `git clone` даже без создания `.env`** (`required: false`):
 
 | Переменная | Значение по умолчанию | Описание |
 | :--- | :--- | :--- |
 | `LLM_BACKEND` | `local_vllm` | Локальный режим LLM: `local_vllm` (сервер vLLM INT4) или `local_bnb_4bit` (внутрипроцессный `BitsAndBytes NF4`) |
-| `LOCAL_LLM_BASE_URL` | `http://localhost:8001/v1` | Локальный OpenAI-совместимый адрес сервера `vLLM` |
+| `LOCAL_LLM_BASE_URL` | `http://localhost:8001/v1` | Адрес локального сервера `vLLM` при хостовом запуске |
+| `DOCKER_LLM_BASE_URL` | `http://vllm-qwen38:8001/v1` | Адрес контейнера `vllm-qwen38` внутри сети Docker Compose |
 | `LOCAL_LLM_MODEL` | `Qwen/Qwen3.8-27B` | Линейно-гибридная модель `Qwen/Qwen3.8-27B` (в 4-битной квантизации) |
-| `LOCAL_LLM_HF_QUANTIZED_REPO` | `RedHatAI/Qwen3.8-27B-INT4` | 4-битный репозиторий весов `W4A16` для `vLLM` |
+| `LOCAL_LLM_HF_QUANTIZED_REPO` | `RedHatAI/Qwen3.8-27B-INT4` | Репозиторий 4-битных весов `W4A16` для `vLLM` |
 | `LLM_QUANTIZATION` | `4bit` | Режим квантизации LLM |
+| `VLLM_GPU_MEMORY_UTILIZATION` | `0.68` | Доля VRAM GPU под сервер `vLLM` (оставляет запас под `bge-m3` и `PaddleOCR-VL-1.6`) |
+| `VLLM_MAX_MODEL_LEN` | `65536` | Максимальная длина контекста `vLLM` для многошагового Tool Calling |
 | `EMBEDDING_BACKEND` | `local` | Локальный контур эмбеддингов (`sentence-transformers`) |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | Локальная модель плотных векторов (`1024d`, Cosine) |
+| `EMBEDDING_DEVICE` | `auto` | Устройство эмбеддингов (`auto` / `cuda` / `cpu`) |
 | `OCR_BACKEND` | `paddleocr_vl` | Локальный контур OCR: `paddleocr_vl` (`PaddlePaddle/PaddleOCR-VL-1.6` + фоллбэк `RapidOCR`) или `local_rapidocr` |
 | `OCR_VL_MODEL` | `PaddlePaddle/PaddleOCR-VL-1.6` | Локальная Vision-Language OCR модель для сканов и таблиц |
-| `QDRANT_URL` | `http://localhost:6333` | URL подключения к серверу Qdrant (`http://qdrant:6333` внутри Docker Compose) |
-| `QDRANT_HOST` | `localhost` | Хост Qdrant |
-| `QDRANT_PORT` | `6333` | HTTP-порт Qdrant |
+| `QDRANT_URL` | `http://localhost:6333` | URL Qdrant при хостовом запуске |
+| `DOCKER_QDRANT_URL` | `http://qdrant:6333` | URL контейнера Qdrant внутри сети Docker Compose |
 | `QDRANT_COLLECTION` | `mipt_normative_v3` | Название коллекции в Qdrant |
-| `EMBEDDING_DIM` | `1024` | Размерность dense-векторов |
-| `EMBEDDING_BATCH_SIZE` | `32` | Размер батча при отправке текстов в API эмбеддингов |
-| `DOCS_DIR` | `доки` | Путь к директории с нормативными документами МФТИ |
-| `DATA_DIR` | `data` | Путь к директории кэшей, реестра и хранилища разделов |
-| `CONFIG_DIR` | `config` | Путь к директории с `glossary.yaml` и `registry_overrides.yaml` |
-| `APP_HOST` | `0.0.0.0` | Хост веб-приложения FastAPI |
-| `APP_PORT` | `8000` | Порт веб-приложения FastAPI (`http://localhost:8000`) |
-| `LOG_LEVEL` | `INFO` | Уровень логирования (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `AUTO_SYNC_ON_STARTUP` | `false` | Автоматическая синхронизация примонтированной папки `DOCS_DIR` при старте контейнера |
+| `DOCS_DIR` / `DATA_DIR` / `CONFIG_DIR` | `доки` / `data` / `config` | Рабочие директории документов, индексов и словаря |
+| `APP_HOST` / `APP_PORT` | `0.0.0.0` / `8000` | Хост и порт веб-сервера FastAPI (`http://localhost:8000`) |
 
 ---
 
 ## 6. Быстрый запуск и остановка (Docker Compose и локально)
 
-### Вариант А. Запуск одной командой через Docker Compose (рекомендуется)
+> **Чистый образ без предзашитых баз и регламентов:** в соответствии с требованиями воспроизводимости `.dockerignore` и `Dockerfile` **строго исключают** локальные директории `data/`, `доки/`, `qdrant_storage/` и любые файлы `.pdf`/`.docx`/`.xlsx`. Контейнер поднимается с чистыми именованными Docker-томами (`qdrant_storage`, `rag_data`, `hf_cache`) без ручных правок исходного кода, после чего любые регламенты загружаются через веб-интерфейс (`http://localhost:8000`) или `POST /api/documents/upload`.
+
+### Вариант А. Полный контейнерный запуск через Docker Compose (рекомендуется)
 
 ```bash
-# 1. Убедитесь, что в корне проекта есть файл .env с вашим POLZA_API_KEY
-#    (при чистом развертывании: cp .env.example .env и укажите POLZA_API_KEY)
+# 1. (Опционально) Создайте .env из шаблона, если хотите переопределить порты или HF_TOKEN:
+cp .env.example .env
 
-# 2. Сборка и запуск Qdrant (6333) + веб-сервиса rag-app (8000) в фоновом режиме:
+# 2. Соберите и запустите весь локальный стек: Qdrant (:6333) + vLLM Qwen3.8-27B INT4 (:8001) + rag-app (:8000):
 docker compose up -d --build
 
-# 3. Проверка статуса сервисов:
+# 3. Просмотр логов готовности сервисов и проверка healthcheck:
+docker compose ps
 curl http://localhost:8000/api/health
 
-# 4. Остановка сервисов (с сохранением проиндексированных данных в ./data):
+# 4. Откройте веб-приложение в браузере http://localhost:8000 и загрузите документы через Drag-and-Drop
+#    (либо через API: curl -F "files=@/path/to/reglament.pdf" http://localhost:8000/api/documents/upload)
+
+# 5. Штатная остановка всех контейнеров (с сохранением данных в именованных томах):
 docker compose down
+
+# 6. Полная остановка со сбросом томов базы данных (для повторной проверки «с чистого листа»):
+docker compose down -v
 ```
 
-### Вариант Б. Локальный запуск в виртуальном окружении Python 3.12
+### Вариант Б. Локальный запуск на GPU-сервере / в виртуальном окружении Python 3.12
 
 ```bash
-# 1. Поднимите контейнер Qdrant на порту 6333:
-docker compose up -d qdrant
+# 1. Установка зависимостей:
+pip install -r requirements.txt
 
-# 2. Создайте виртуальное окружение Python 3.12 и установите зависимости:
-uv venv --python 3.12 .venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
+# 2. Запуск всего локального стека (Qdrant + vLLM Qwen3.8-27B INT4 + FastAPI) одним скриптом:
+./scripts/start_local_stack.sh
 
-# 3. Запустите веб-сервер и индексатор на http://localhost:8000:
-.venv/bin/uvicorn src.web.app:app --host 0.0.0.0 --port 8000
-
-# 4. Запуск автотестов (76 тестов) и комплексной E2E-валидации поиска и таблиц:
-.venv/bin/pytest tests/test_chunker_v3.py tests/test_table_hybrid.py -v
-.venv/bin/python verify_retrieval.py
-.venv/bin/python verify_tables_e2e.py
+# 3. Запуск модульных/интеграционных автотестов (200+ тестов) и E2E-валидации:
+pytest -v
+python3 verify_retrieval.py
+python3 verify_tables_e2e.py --api-url http://127.0.0.1:8000
 ```
 
 ---
@@ -364,7 +374,7 @@ uv pip install -r requirements.txt
 
 | Метод и путь | Описание |
 | :--- | :--- |
-| `GET /api/health` | Статус подключения к Qdrant, Polza AI API, число точек в коллекции, документов в реестре и таблиц в `tables_store.db` (`structured_tables_count`) |
+| `GET /api/health` | Статус подключения к Qdrant, локальному контуру моделей (`Qwen/Qwen3.8-27B` 4-bit, `BAAI/bge-m3`, `PaddleOCR-VL-1.6`), число точек в коллекции, документов в реестре и таблиц в `tables_store.db` |
 | `POST /api/documents/sync-folder` | Инкрементальная синхронизация папки `доки/` по `SHA-256` (параметры `force`, `ocr_backend`) |
 | `POST /api/documents/upload` | Мультизагрузка новых файлов (`multipart/form-data`) с метаданными версионности и запуском индексации |
 | `GET /api/documents` | Список всех документов реестра, граф связей редакций, `tables_count` и отчет `indexing_report.json` |
@@ -437,25 +447,25 @@ uv pip install -r requirements.txt
 
 ### 10.1. Статистика индексации корпуса и хранилища таблиц SQLite
 
-- **Проиндексировано файлов:** `16 / 16` базовых документов из `доки/` (+ поддержка пользовательских загрузок в `data/uploads/`, `failed_files = 0`)
-- **Создано родительских разделов (`ParentSectionRecord` в `data/sections_store.json`):** `125` (134 с учетом загруженного документа)
-- **Создано дочерних чанков (`ChunkRecord` в коллекции Qdrant `mipt_normative_v3`):** `1 263` (`1 306` с учетом загруженного документа)
-- **Структурированных таблиц в SQLite (`data/tables_store.db`):** `13` таблиц (`3` листа `.xlsx` и `10` крупных таблиц `.docx` `>= 25` строк; `1 893` строки и `1 279` ячеек с формулами Excel `[формула: =...]`), `668` табличных чанков в Qdrant связаны прямым `table_id`
+- **Проиндексировано файлов:** `20` документов корпуса (`failed_files = 0`)
+- **Создано родительских разделов (`ParentSectionRecord` в `data/sections_store.json`):** `142`
+- **Создано дочерних чанков (`ChunkRecord` в коллекции Qdrant `mipt_normative_v3`):** `1 328`
+- **Структурированных таблиц в SQLite (`data/tables_store.db`):** `14` таблиц (`1 990` строк и `1 279` ячеек с формулами Excel `[формула: =...]`)
 - **Компактные таблицы в сканах PDF и Word (`< 25` строк и `< 5 000` символов):** `0` лишних таблиц в SQLite — доставляются в режиме `inline_parent` через `ParentSectionRecord` за 1 проход
-- **Сканированные PDF, прошедшие гибридный OCR (`22` страницы в `data/ocr_cache/`):** `3 / 3` (`Регламент бронирования конц зала.pdf` — 14 стр. / 75 чанков, `Регламент поселения сотрудников.pdf` — 3 стр. / 22 чанка, `Регламент эксплуатации центра обработки данных МФТИ, Физтех.pdf` — 5 стр. / 18 чанков)
+- **Сканированные PDF, прошедшие локальный OCR `PaddlePaddle/PaddleOCR-VL-1.6`:** `Регламент бронирования конц зала.pdf` (включая распознавание растровой таблицы п. 6.1 с тонкой сеткой 1 px), `Регламент поселения сотрудников.pdf`, `Регламент эксплуатации центра обработки данных МФТИ, Физтех.pdf`
 - **Кросс-файловая дедупликация (`content_hash` + `table_hash` + `also_in_files`):** полное совпадение `table_hash = 6c794288224d...` между 524-строчной таблицей `Приказ N 3614-1.docx` и `Приложение к приказу об утверждении фин. структуры 2026г..xlsx`, а также между 4 таблицами `Приказ N 3699-1.docx` и `Приложения к приказу_ о формировании бюджетирования 2026г..docx`
-- **Модульные и интеграционные тесты (`pytest tests/test_chunker_v3.py tests/test_table_hybrid.py`):** `76 / 76 PASSED` (`61/61` в `test_chunker_v3.py` + `15/15` в `test_table_hybrid.py`, 1.36 с)
+- **Модульные и интеграционные тесты (`pytest`):** `204 PASSED, 1 skipped, 0 failed` (включая тесты чанкера V3, гибридных таблиц SQLite, локальных моделей `Qwen3.8-27B`/`bge-m3`/`PaddleOCR-VL-1.6`, верификации цитат и чистой Docker-упаковки)
 - **Зазор между релевантными (Scenarios 1–8) и нерелевантными (Scenarios 9–10) запросами:** `Δdense = +0.1578` (`min_in_scope = 0.6163` vs `max_out_of_scope = 0.4585`), `Δconfidence = +0.4785` (`min_in_scope = 0.6390` vs `max_out_of_scope = 0.1605`)
 
 ### 10.2. Сводная таблица E2E-валидации адаптивных таблиц и LLM Tool Calling (`verify_tables_e2e.py` — 5/5 PASS)
 
 | № | Код сценария | Проверяемый уровень архитектуры и действие | Статус | Режим доставки | Таблицы в `linked_tables` | Вызовы `Tool Calling` | Модель | Ключевой результат проверки |
 | :-: | :--- | :--- | :-: | :-: | :--- | :-: | :-: | :--- |
-| 1 | `T01_XL_CFO_AGGREGATION_AND_FILTER` | Фильтрация и `COUNT` по книге Excel `Фин. структура 2026г..xlsx` (`524` строки) | ✅ PASS | `tool_query` | `app_fin_struct_2026_xlsx::tbl_01` | `True` (`3` вызова) | `openai/gpt-4o-mini` | Точный подсчет через SQLite и ответ ИИ: ФРКТ (`10329`) = **`20` строк**, финансодержатель Крылова Е.В. = **`25` строк** |
-| 2 | `T02_XL_SMETA_FORMULAS_QUERY` | Извлечение формул `[формула: =...]`, ставок и КВР/КОСГУ из `новая смета 2019.xlsx` (`1 279` формул) | ✅ PASS | `tool_query` | `app_1_smeta_2019_xlsx::tbl_01`, `tbl_02` | `True` (`4` вызова) | `openai/gpt-4o-mini` | Извлечены формулы накладных `20%` (`=IFERROR((F$13+F$22)*$B$23*-1,)`), НДС (`$B$22`, КВР `180`/КОСГУ `189`), резерва отпусков `8.2%` (`=F31*$B$32`, КВР `111`/КОСГУ `211.03`) + алерт Приказа № `794-1` |
-| 3 | `T03_DOCX_GIANT_TABLE_PROMOTION` | Авто-промоушен гигантской таблицы Word `Приказ N 3614-1.docx` (`524` строки, `77 986` симв.) в SQLite | ✅ PASS | `tool_query` | `order_3614_1_2025::tbl_01` | `True` (`2` вызова) | `openai/gpt-4o-mini` | Совпадение `table_hash` и `also_in_files` с `.xlsx`; точный подсчет по подразделению `10665 Институт квантовых технологий` = **`22` строки** (Лебедев А.П., Серов П.А.) |
-| 4 | `T04_PDF_COMPACT_TABLE_INLINE` | Компактная таблица из скана PDF `Регламент бронирования конц зала.pdf` (п. 6.1, `< 25` строк) | ✅ PASS | `inline_parent` | `[]` *(0 таблиц в SQLite)* | `False` (`0` вызовов) | `openai/gpt-4o-mini` | Доставлена целиком в `ParentSectionRecord` без раздувания SQLite; точный ответ за 1 проход: **`6` репетиционных дней** на Посвящение в студенты |
-| 5 | `T05_BACKWARD_COMPAT_10_SCENARIOS` | Полный регрессионный прогон `verify_retrieval.py` (10 базовых сценариев RAG V3) | ✅ PASS | `hybrid_3tier` | — | `False` | `baai/bge-m3 + BM25` | Все **`10 / 10` сценариев PASSED** (`Δdense = +0.1578`, `Δconf = +0.4785`) |
+| 1 | `T01_XL_CFO_AGGREGATION_AND_FILTER` | Фильтрация и `COUNT` по книге Excel `Фин. структура 2026г..xlsx` (`524` строки) | ✅ PASS | `tool_query` | `app_fin_struct_2026_xlsx::tbl_01` | `True` | `Qwen/Qwen3.8-27B` (4-bit) | Точный подсчет через SQLite и ответ ИИ: ФРКТ (`10329`) = **`20` строк**, финансодержатель Крылова Е.В. = **`25` строк** |
+| 2 | `T02_XL_SMETA_FORMULAS_QUERY` | Извлечение формул `[формула: =...]`, ставок и КВР/КОСГУ из `новая смета 2019.xlsx` (`1 279` формул) | ✅ PASS | `tool_query` | `app_1_smeta_2019_xlsx::tbl_01`, `tbl_02` | `True` | `Qwen/Qwen3.8-27B` (4-bit) | Извлечены формулы накладных `20%` (`=IFERROR((F$13+F$22)*$B$23*-1,)`), НДС (`$B$22`, КВР `180`/КОСГУ `189`), резерва отпусков `8.2%` (`=F31*$B$32`, КВР `111`/КОСГУ `211.03`) + алерт Приказа № `794-1` |
+| 3 | `T03_DOCX_GIANT_TABLE_PROMOTION` | Авто-промоушен гигантской таблицы Word `Приказ N 3614-1.docx` (`524` строки, `77 986` симв.) в SQLite | ✅ PASS | `tool_query` | `order_3614_1_2025::tbl_01` | `True` | `Qwen/Qwen3.8-27B` (4-bit) | Совпадение `table_hash` и `also_in_files` с `.xlsx`; точный подсчет по подразделению `10665 Институт квантовых технологий` = **`22` строки** (Лебедев А.П., Серов П.А.) |
+| 4 | `T04_PDF_COMPACT_TABLE_INLINE` | Компактная таблица из скана PDF `Регламент бронирования конц зала.pdf` (п. 6.1, `< 25` строк) | ✅ PASS | `inline_parent` | `[]` *(0 таблиц в SQLite)* | `False` (`0` вызовов) | `Qwen/Qwen3.8-27B` (4-bit) | Распознана `PaddleOCR-VL-1.6` и доставлена целиком в `ParentSectionRecord`; точный ответ за 1 проход: **`6` репетиционных дней** на Посвящение в студенты |
+| 5 | `T05_BACKWARD_COMPAT_10_SCENARIOS` | Полный регрессионный прогон `verify_retrieval.py` (10 базовых сценариев RAG V3) | ✅ PASS | `hybrid_3tier` | — | `False` | `BAAI/bge-m3 + BM25` | Все **`10 / 10` сценариев PASSED** (`Δdense = +0.1578`, `Δconf = +0.4785`) |
 
 ### 10.3. Сводная таблица 10 контрольных сценариев гибридного поиска (`verify_retrieval.py` — 10/10 PASS)
 
@@ -477,14 +487,14 @@ uv pip install -r requirements.txt
 ## 11. Ограничения решения и план дальнейшего развития (Roadmap)
 
 ### Текущие ограничения
-1. **Зависимость от внешнего API для построения плотных векторов (`baai/bge-m3`):** при полном отсутствии интернета поиск по уже проиндексированным чанкам может опираться на локальный индекс Qdrant, однако векторизация нового запроса требует подключения к Polza AI (либо локального контейнера `TEI / vLLM`).
-2. **Сложные рукописные пометки на сканах:** гибридный контур `Qwen3-VL + RapidOCR v3` оптимизирован под машинописные сканы, таблицы и штампы ЭДО; неразборчивые рукописные резолюции поверх текста могут распознаваться с погрешностью.
-3. **Автоматическое связывание графа версий по номеру акта:** если новый приказ отменяет старый документ без указания его номера (только по косвенному названию), требуется подтверждение связи оператором через веб-интерфейс на `localhost:8000`.
+1. **Требования к GPU для полного локального стека:** для одновременной работы 4-битной `Qwen/Qwen3.8-27B` (`vLLM`), `PaddlePaddle/PaddleOCR-VL-1.6` и `BAAI/bge-m3` с высокой скоростью отклика рекомендуется GPU с объемом видеопамяти от `24 ГБ` VRAM (на CPU фоллбэк `RapidOCR v3` и `bge-m3` работоспособны, но инференс 27B LLM существенно медленнее).
+2. **Сложные рукописные пометки на сканах:** локальный гибридный контур `PaddleOCR-VL-1.6 + RapidOCR v3` оптимизирован под машинописные сканы, таблицы с тонкой сеткой и штампы ЭДО; неразборчивые рукописные резолюции поверх текста могут распознаваться с погрешностью.
+3. **Автоматическое связывание графа версий без явного номера акта:** если новый приказ отменяет старый документ только по косвенному описанию без указания регистрационного номера, связь подтверждается оператором через веб-интерфейс на `http://localhost:8000`.
 
 ### План дальнейшего развития и внедрения в МФТИ
 1. **Этап 1 (Интеграция с `1С:Документооборот` и корпоративным порталом МФТИ):**
    - Подключение вебхука автоматической синхронизации новых приказов и распоряжений напрямую из `1С:ДО` в `/api/documents/upload` сразу после регистрации штампа ЭДО.
-2. **Этап 2 (Генеративный контур ответа с пошаговым планом действий и строгим цитированием):**
-   - Добавление опционального LLM-синтезатора ответа поверх найденных `Child`-чанков, `ParentSectionRecord` и `amendment_chunks` с генерацией чек-листа шагов сотрудника и кликабельными ссылками на конкретные страницы PDF/DOCX.
-3. **Этап 3 (Ролевой доступ и Telegram/Web-бот сотрудника):**
-   - Учет роли сотрудника (ППС, руководитель научного проекта РНФ, администратор подразделения) для персонализации маршрутов согласования (например, ветки п. `2.3.1–2.3.5` Приказа № 794-1).
+2. **Этап 2 (SSO-авторизация и ролевая персонализация маршрутов):**
+   - Учет роли сотрудника (ППС, руководитель научного проекта РНФ, администратор подразделения) через корпоративный Keycloak/LDAP для автоматического выбора ветки согласования (например, п. `2.3.1–2.3.5` Приказа № 794-1).
+3. **Этап 3 (Корпоративный Telegram/Mattermost-бот сотрудника):**
+   - Подключение легковесного чат-бота поверх единого локального API `/api/ask` с прямой отправкой проверенных выдержек и ссылок на страницы регламентов.

@@ -613,7 +613,7 @@ class TableAwareRAGAgent:
             ]
             sections_blocks.append(
                 "ДОСТУПНЫЕ СТРУКТУРИРОВАННЫЕ ТАБЛИЦЫ В SQLite (`delivery_mode=tool_query` — "
-                "для фильтрации, полного списка, подсчета, агрегации и формул вызывай `query_structured_table`):\n"
+                "при вопросах о строках, подсчете, фильтрации, агрегации или формулах Excel ОБЯЗАТЕЛЬНО сначала вызови `query_structured_table` (например `get_formulas` / `filter_rows`), даже если часть формул видна в превью):\n"
                 + "\n\n".join(passport_blocks)
             )
 
@@ -795,9 +795,10 @@ class TableAwareRAGAgent:
         messages: list[dict[str, Any]],
         allow_tools: bool,
         requested_model: str | None = None,
+        require_tool: bool = False,
     ) -> tuple[Any, str]:
         """
-        Invoke OpenAI-compatible chat.completions.create on Polza AI with automatic model fallback
+        Invoke OpenAI-compatible chat.completions.create with automatic model fallback
         if a model name returns 400/404/unsupported-tools or transient gateway failure.
         """
         llm = self.client
@@ -815,7 +816,7 @@ class TableAwareRAGAgent:
             }
             if allow_tools:
                 call_kwargs["tools"] = OPENAI_TABLE_TOOLS
-                call_kwargs["tool_choice"] = "auto"
+                call_kwargs["tool_choice"] = "required" if require_tool else "auto"
 
             try:
                 resp = llm.chat.completions.create(**call_kwargs)
@@ -1800,6 +1801,15 @@ class TableAwareRAGAgent:
             try:
                 max_rounds = req.max_tool_rounds if tools_enabled else 0
                 pinned_model = req.model
+                force_formula_tool_round0 = (
+                    tools_enabled
+                    and not self._has_custom_client
+                    and "формул" in raw_query.lower().replace("ё", "е")
+                    and any(
+                        bool(getattr(tp, "has_formulas", False)) or int(getattr(tp, "formula_count", 0) or 0) > 0
+                        for tp in (search_resp.linked_tables or [])
+                    )
+                )
 
                 for _round_idx in range(max_rounds + 1):
                     allow_tools_now = tools_enabled and (_round_idx < max_rounds)
@@ -1807,6 +1817,7 @@ class TableAwareRAGAgent:
                         messages=messages,
                         allow_tools=allow_tools_now,
                         requested_model=pinned_model,
+                        require_tool=(force_formula_tool_round0 and _round_idx == 0),
                     )
                     model_used = resolved_model
                     if pinned_model is None and not self._has_custom_client:
@@ -1953,6 +1964,7 @@ class TableAwareRAGAgent:
         messages: list[dict[str, Any]],
         allow_tools: bool,
         requested_model: str | None = None,
+        require_tool: bool = False,
     ) -> tuple[Any, str]:
         """Open a streamed chat completion (stream=True) with the same model fallback as _call_chat_completion."""
         llm = self.client
@@ -1969,7 +1981,7 @@ class TableAwareRAGAgent:
             }
             if allow_tools:
                 call_kwargs["tools"] = OPENAI_TABLE_TOOLS
-                call_kwargs["tool_choice"] = "auto"
+                call_kwargs["tool_choice"] = "required" if require_tool else "auto"
             try:
                 stream = llm.chat.completions.create(**call_kwargs)
                 if not requested_model and not self._has_custom_client:
@@ -2241,6 +2253,15 @@ class TableAwareRAGAgent:
         try:
             max_rounds = req.max_tool_rounds if tools_enabled else 0
             pinned_model = req.model
+            force_formula_tool_round0 = (
+                tools_enabled
+                and not self._has_custom_client
+                and "формул" in raw_query.lower().replace("ё", "е")
+                and any(
+                    bool(getattr(tp, "has_formulas", False)) or int(getattr(tp, "formula_count", 0) or 0) > 0
+                    for tp in (search_resp.linked_tables or [])
+                )
+            )
 
             for _round_idx in range(max_rounds + 1):
                 allow_tools_now = tools_enabled and (_round_idx < max_rounds)
@@ -2248,6 +2269,7 @@ class TableAwareRAGAgent:
                     messages=messages,
                     allow_tools=allow_tools_now,
                     requested_model=pinned_model,
+                    require_tool=(force_formula_tool_round0 and _round_idx == 0),
                 )
                 if pinned_model is None and not self._has_custom_client:
                     pinned_model = model_used

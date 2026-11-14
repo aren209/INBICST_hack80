@@ -1,34 +1,47 @@
 services:
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: mipt_rag_qdrant
+    container_name: rag_navigator_qdrant
     ports:
-      - "6333:6333"
+      - "${QDRANT_PORT:-6333}:6333"
       - "6334:6334"
     volumes:
-      - ./data/qdrant_storage:/qdrant/storage
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && echo -e \"GET /healthz HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200\" <&3'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     restart: unless-stopped
 
   vllm-qwen38:
     image: vllm/vllm-openai:latest
-    container_name: mipt_rag_vllm_qwen38_4bit
+    container_name: rag_navigator_vllm_qwen38_4bit
+    ipc: host
     command: >
-      RedHatAI/Qwen3.8-27B-INT4
+      ${LOCAL_LLM_HF_QUANTIZED_REPO:-RedHatAI/Qwen3.8-27B-INT4}
       --host 0.0.0.0
       --port 8001
       --served-model-name Qwen/Qwen3.8-27B Qwen/Qwen3.8-27B-INT4 RedHatAI/Qwen3.8-27B-INT4
       --language-model-only
-      --gpu-memory-utilization 0.68
-      --max-model-len 65536
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.68}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-65536}
       --max-num-seqs 8
       --reasoning-parser qwen3
       --enable-auto-tool-choice
       --tool-call-parser qwen3_xml
       --default-chat-template-kwargs '{"enable_thinking": false}'
     ports:
-      - "8001:8001"
+      - "${LOCAL_LLM_PORT:-8001}:8001"
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
     volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
+      - hf_cache:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -36,32 +49,46 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 240s
     restart: unless-stopped
 
   rag-app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: mipt_rag_app
+    image: rag-navigator-app:latest
+    container_name: rag_navigator_app
     ports:
-      - "8000:8000"
+      - "${APP_PORT:-8000}:8000"
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
-      - QDRANT_URL=http://qdrant:6333
-      - QDRANT_HOST=qdrant
+      - QDRANT_URL=${DOCKER_QDRANT_URL:-http://qdrant:6333}
+      - QDRANT_HOST=${DOCKER_QDRANT_HOST:-qdrant}
       - QDRANT_PORT=6333
-      - LOCAL_LLM_BASE_URL=http://vllm-qwen38:8001/v1
-      - LOCAL_LLM_MODEL=Qwen/Qwen3.8-27B
-      - EMBEDDING_BACKEND=local
-      - EMBEDDING_MODEL=BAAI/bge-m3
-      - OCR_BACKEND=paddleocr_vl
-      - OCR_VL_MODEL=PaddlePaddle/PaddleOCR-VL-1.6
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-mipt_normative_v3}
+      - LLM_BACKEND=${LLM_BACKEND:-local_vllm}
+      - LOCAL_LLM_BASE_URL=${DOCKER_LLM_BASE_URL:-http://vllm-qwen38:8001/v1}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-Qwen/Qwen3.8-27B}
+      - LOCAL_LLM_HF_QUANTIZED_REPO=${LOCAL_LLM_HF_QUANTIZED_REPO:-RedHatAI/Qwen3.8-27B-INT4}
+      - LLM_QUANTIZATION=${LLM_QUANTIZATION:-4bit}
+      - EMBEDDING_BACKEND=${EMBEDDING_BACKEND:-local}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-m3}
+      - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-auto}
+      - OCR_BACKEND=${OCR_BACKEND:-paddleocr_vl}
+      - OCR_VL_MODEL=${OCR_VL_MODEL:-PaddlePaddle/PaddleOCR-VL-1.6}
+      - OCR_VL_DEVICE=${OCR_VL_DEVICE:-auto}
+      - AUTO_SYNC_ON_STARTUP=${AUTO_SYNC_ON_STARTUP:-false}
+      - HF_TOKEN=${HF_TOKEN:-}
     volumes:
-      - ./доки:/app/доки
-      - ./data:/app/data
-      - ./config:/app/config
-      - ~/.cache/huggingface:/root/.cache/huggingface
+      - rag_data:/app/data
+      - hf_cache:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -70,6 +97,19 @@ services:
               count: all
               capabilities: [gpu]
     depends_on:
-      - qdrant
-      - vllm-qwen38
+      qdrant:
+        condition: service_healthy
+      vllm-qwen38:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     restart: unless-stopped
+
+volumes:
+  qdrant_storage:
+  rag_data:
+  hf_cache:
