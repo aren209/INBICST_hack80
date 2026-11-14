@@ -14,23 +14,16 @@ env/
 .ruff_cache/
 .mypy_cache/
 
-# Data & Indexes (runtime / large / root-owned)
-data/qdrant_storage/
-data/storage/
-data/.qdrant-initialized
+# Runtime databases, caches & logs (never committed to Git)
+data/
 qdrant_storage/
-data/embed_cache/
-data/preview_cache/
-data/uploads/
-data/index/
+qdrant_local_db/
+models_cache/
 logs/
 *.log
 
-# Local benchmark evaluation dumps
+# Local scratch & backups
 qwe/
-
-# Temporary UI screenshots & static backups
 docs/ui_screenshots/
 src/web/static/legacy/
 src/web/static/v4_backup/
-

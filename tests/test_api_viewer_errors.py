@@ -374,12 +374,12 @@ class TestWordVisualDocumentPreviewAndViewer:
     def test_real_mipt_docx_files_render_clean_a4_pdf_and_crisp_png_pages(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "preview_cache"
         candidates = [
-            DOCS_DIR / "Приказ N 3065-1 от 25.11.2021.docx",
-            DOCS_DIR / "Приказ N 3699-1 от 18.08.2025.docx",
-            DOCS_DIR / "Приложение 1а Бланк сметы.docx",
+            DOCS_DIR / "orders" / "Приказ N 3065-1 от 25.11.2021.docx",
+            DOCS_DIR / "orders" / "Приказ N 3699-1 от 18.08.2025.docx",
+            DOCS_DIR / "appendices_and_forms" / "Приложение 1а Бланк сметы.docx",
         ]
         existing_real = [p for p in candidates if p.is_file()]
-        assert existing_real, "Expected real MIPT .docx files in доки/"
+        assert existing_real, "Expected real .docx files in documents/"
 
         for docx_path in existing_real:
             pdf_path = ensure_word_preview_pdf(docx_path, cache_dir=cache_dir)

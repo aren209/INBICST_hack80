@@ -150,7 +150,7 @@ class TestLiveLocalPaddleOCRVL16:
         assert "2.3" in res_syn["text"]
 
         # 2. Real scanned MIPT PDF test (page 4 compact table of Регламент бронирования конц зала.pdf)
-        scan_pdf = DOCS_DIR / "Регламент бронирования конц зала.pdf"
+        scan_pdf = DOCS_DIR / "regulations" / "Регламент бронирования конц зала.pdf"
         if scan_pdf.exists():
             pdf_doc = pdfium.PdfDocument(str(scan_pdf))
             page = pdf_doc[3]  # Page 4 (0-indexed 3) contains clause 6.1 rehearsal days table

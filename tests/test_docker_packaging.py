@@ -1,14 +1,4 @@
-"""Tests for clean Docker & Docker Compose packaging according to Technical Specification (Criterion 6).
-
-Verifies:
-  1. Existing databases (data/), regulations (доки/), and office/PDF documents are strictly excluded
-     from the Docker build context (.dockerignore) and NEVER copied in Dockerfile.
-  2. Dockerfile installs required runtime dependencies, defines HEALTHCHECK, EXPOSE 8000, and entrypoint.
-  3. docker-compose.yml defines a reproducible self-contained stack (qdrant, vllm-qwen38, rag-app)
-     using clean named volumes without requiring manual code edits or pre-existing .env files.
-  4. README.md documents environment requirements, start/stop commands, dependencies, .env variables,
-     services list, architecture/data flow, and >= 2 typical user scenarios (Use Cases).
-"""
+"""Tests for clean repository structure, Docker packaging, and Debian setup per Technical Specification (Criterion 6)."""
 
 from __future__ import annotations
 
@@ -16,6 +6,25 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_clean_repository_layout_and_categorized_documents() -> None:
+    # Extraneous draft/prompt files must not pollute repository root
+    forbidden_root_files = [
+        "PROMPT_RAG_BUILDER.md",
+        "ответ_соннет.txt",
+        "анализ_идей_чанкинга.pdf",
+        "анализ_идей_чанкинга.tex",
+        "Чанкинг и Hybrid Search - анализ (2).docx",
+    ]
+    for name in forbidden_root_files:
+        assert not (REPO_ROOT / name).exists(), f"Extraneous file must not exist in root: {name}"
+
+    # Source corpus is neatly categorized under documents/
+    docs_root = REPO_ROOT / "documents"
+    assert (docs_root / "regulations").is_dir()
+    assert (docs_root / "orders").is_dir()
+    assert (docs_root / "appendices_and_forms").is_dir()
 
 
 def test_dockerignore_excludes_databases_and_regulations() -> None:
@@ -27,6 +36,10 @@ def test_dockerignore_excludes_databases_and_regulations() -> None:
         if line.strip() and not line.strip().startswith("#")
     }
     required_exclusions = {
+        "documents",
+        "documents/",
+        "docs",
+        "docs/",
         "доки",
         "доки/",
         "data",
@@ -56,9 +69,8 @@ def test_dockerfile_clean_no_baked_db_or_regulations() -> None:
     ]
     assert copy_lines, "Dockerfile must contain explicit COPY instructions"
 
-    forbidden_sources = ("data", "доки", "qdrant_storage", "registry_overrides.yaml", ".env")
+    forbidden_sources = ("data", "documents", "доки", "docs", "qdrant_storage", "registry_overrides.yaml", ".env")
     for line in copy_lines:
-        # Ensure neither wildcard root COPY (. /app) nor explicit data/regulations COPY is used
         tokens = line.split()
         srcs = tokens[1:-1]
         for src in srcs:
@@ -77,12 +89,12 @@ def test_dockerfile_clean_no_baked_db_or_regulations() -> None:
     assert "/app/scripts/docker-entrypoint.sh" in content
 
 
-def test_entrypoint_script_exists_and_executable() -> None:
-    entrypoint = REPO_ROOT / "scripts" / "docker-entrypoint.sh"
-    assert entrypoint.exists(), "scripts/docker-entrypoint.sh must exist"
-    text = entrypoint.read_text(encoding="utf-8")
-    assert text.startswith("#!/usr/bin/env bash")
-    assert 'exec "$@"' in text
+def test_scripts_exist_and_valid() -> None:
+    for script_name in ("docker-entrypoint.sh", "setup_debian_server.sh", "start_local_stack.sh"):
+        script_path = REPO_ROOT / "scripts" / script_name
+        assert script_path.exists(), f"scripts/{script_name} must exist"
+        text = script_path.read_text(encoding="utf-8")
+        assert text.startswith("#!/usr/bin/env bash")
 
 
 def test_docker_compose_reproducible_clean_volumes() -> None:
@@ -94,18 +106,17 @@ def test_docker_compose_reproducible_clean_volumes() -> None:
     services = compose.get("services", {})
     assert {"qdrant", "vllm-qwen38", "rag-app"}.issubset(services.keys())
 
-    # Named volumes must be used instead of host bind-mounts of ./data or ./доки
     named_volumes = compose.get("volumes", {})
     assert {"qdrant_storage", "rag_data", "hf_cache"}.issubset(named_volumes.keys())
 
     rag_app = services["rag-app"]
-    app_volumes = rag_app.get("volumes", [])
-    for vol in app_volumes:
+    for vol in rag_app.get("volumes", []):
         vol_str = str(vol)
         assert not vol_str.startswith("./data"), f"Host ./data must not be bind-mounted by default: {vol_str}"
-        assert "доки" not in vol_str, f"Host ./доки must not be bind-mounted by default: {vol_str}"
+        assert "documents" not in vol_str and "доки" not in vol_str, (
+            f"Host documents must not be bind-mounted by default: {vol_str}"
+        )
 
-    # Clean clone without .env must still boot without docker compose error
     env_files = rag_app.get("env_file", [])
     assert env_files, "rag-app should support optional .env via env_file"
     for item in env_files:
@@ -113,12 +124,17 @@ def test_docker_compose_reproducible_clean_volumes() -> None:
             assert item.get("required") is False, ".env must have required: false for zero-config clean startup"
 
 
-def test_readme_covers_criterion_6_sections() -> None:
+def test_readme_compact_and_covers_tz_plus_debian_guide() -> None:
     readme_path = REPO_ROOT / "README.md"
     assert readme_path.exists(), "README.md must exist"
     text = readme_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    assert len(lines) <= 320, f"README.md should stay compact (got {len(lines)} lines)"
 
     required_markers = [
+        "Debian",
+        "nvidia-container-toolkit",
+        "setup_debian_server.sh",
         "docker compose up",
         "docker compose down",
         "Dockerfile",

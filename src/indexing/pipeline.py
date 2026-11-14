@@ -1883,12 +1883,13 @@ class IndexingPipeline:
         raw_files = sorted(
             [
                 p
-                for p in target_dir.iterdir()
+                for p in target_dir.rglob("*")
                 if p.is_file()
                 and p.suffix.lower() in SUPPORTED_EXTENSIONS
                 and not p.name.startswith("~$")
+                and not any(part.startswith(".") for part in p.relative_to(target_dir).parts)
             ],
-            key=lambda p: p.name,
+            key=lambda p: (p.name, str(p)),
         )
 
         # When syncing the primary DOCS_DIR corpus, preserve 'data/uploads/' origin path for uploaded copies
@@ -2250,7 +2251,9 @@ class IndexingPipeline:
                 docs_dir_str = str(DOCS_DIR.resolve())
                 group.sort(
                     key=lambda m: (
-                        0 if (DOCS_DIR / m.file_name).exists() or docs_dir_str in (m.file_path or "") else 1,
+                        0
+                        if self._find_in_docs_dir(m.file_name) is not None or docs_dir_str in (m.file_path or "")
+                        else 1,
                         m.indexed_at or "9999",
                     )
                 )
@@ -2415,8 +2418,21 @@ class IndexingPipeline:
             )
         return self.table_store.query_table(req)
 
+    @staticmethod
+    def _find_in_docs_dir(file_name: str) -> Path | None:
+        """Locate a file by name inside DOCS_DIR or any of its category subdirectories."""
+        if not file_name or not DOCS_DIR.exists():
+            return None
+        direct = DOCS_DIR / file_name
+        if direct.exists() and direct.is_file():
+            return direct.resolve()
+        for p in DOCS_DIR.rglob("*"):
+            if p.is_file() and p.name == file_name:
+                return p.resolve()
+        return None
+
     def _resolve_doc_file_path(self, doc_meta: DocumentMeta) -> Path | None:
-        """Locate the source file on disk for a registered document (verifying доки/ or data/uploads/ in production)."""
+        """Locate the source file on disk for a registered document (verifying documents/ or data/uploads/ in production)."""
         is_prod_registry = self.registry_path.resolve() == DOCUMENT_REGISTRY_PATH.resolve()
         allowed_roots = (DOCS_DIR.resolve(), UPLOADS_DIR.resolve())
 
@@ -2433,7 +2449,9 @@ class IndexingPipeline:
                 except OSError:
                     pass
         if doc_meta.file_name:
-            candidates.append(DOCS_DIR / doc_meta.file_name)
+            docs_match = self._find_in_docs_dir(doc_meta.file_name)
+            if docs_match is not None:
+                candidates.append(docs_match)
             candidates.append(UPLOADS_DIR / doc_meta.file_name)
 
         for cand in candidates:

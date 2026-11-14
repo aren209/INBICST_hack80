@@ -1783,6 +1783,19 @@ _DOCUMENT_MIME_TYPES: dict[str, str] = {
 }
 
 
+def _find_file_in_docs_dir(file_name: str) -> Optional[Path]:
+    """Locate `file_name` directly inside `DOCS_DIR` or any nested category subdirectory."""
+    if not file_name or not DOCS_DIR.exists():
+        return None
+    direct = DOCS_DIR / file_name
+    if direct.exists() and direct.is_file():
+        return direct.resolve()
+    for p in DOCS_DIR.rglob("*"):
+        if p.is_file() and p.name == file_name:
+            return p.resolve()
+    return None
+
+
 def _resolve_document_file(
     pipeline: IndexingPipeline,
     doc_id: str,
@@ -1797,7 +1810,9 @@ def _resolve_document_file(
     if doc_meta.file_path:
         candidates.append(Path(doc_meta.file_path))
     if doc_meta.file_name:
-        candidates.append(DOCS_DIR / doc_meta.file_name)
+        docs_match = _find_file_in_docs_dir(doc_meta.file_name)
+        if docs_match is not None:
+            candidates.append(docs_match)
         candidates.append(UPLOADS_DIR / doc_meta.file_name)
 
     target_path: Optional[Path] = None
@@ -2917,7 +2932,9 @@ async def reindex_document(
     if doc_meta.file_path:
         candidates.append(Path(doc_meta.file_path))
     if doc_meta.file_name:
-        candidates.append(DOCS_DIR / doc_meta.file_name)
+        docs_match = _find_file_in_docs_dir(doc_meta.file_name)
+        if docs_match is not None:
+            candidates.append(docs_match)
         candidates.append(UPLOADS_DIR / doc_meta.file_name)
 
     target_path: Optional[Path] = None

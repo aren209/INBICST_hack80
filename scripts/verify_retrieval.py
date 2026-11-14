@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""End-to-End Retrieval & Corpus Verification Suite for MIPT Normative RAG V3.
+"""End-to-End Retrieval & Corpus Verification Suite for Normative RAG V3.
 
-Covers all 10 mandatory retrieval scenarios from PROMPT_RAG_BUILDER.md §3.3:
+Covers 10 mandatory retrieval scenarios:
   1. Paraphrased colloquial query (Concert Hall booking: 2 months, kmo@mipt.ru)
   2. Scanned PDF table query (Concert Hall rehearsal days for Freshman Initiation: 6 days)
   3. Giant-page scan with approval stamp (Settling employees in dormitories)
@@ -25,6 +25,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 import httpx
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import (
     DOCUMENT_REGISTRY_PATH,

@@ -24,6 +24,10 @@ pytest-cache-files-*
 .mypy_cache
 
 # STRICTLY EXCLUDE existing databases, vector stores, caches, and regulations from Docker image
+documents
+documents/
+docs
+docs/
 доки
 доки/
 data
@@ -39,7 +43,7 @@ qwe
 qwe/
 данные-*
 
-# Exclude standalone office/PDF documents (regulations, case description, reports) in build context
+# Exclude standalone office/PDF documents in build context
 *.pdf
 *.docx
 *.doc
@@ -47,9 +51,8 @@ qwe/
 *.xls
 review_*.md
 
-# Exclude tests & dev scripts not needed inside production runtime image
+# Exclude tests & dev assets not needed inside production runtime image
 tests
 tests/
-docs/ui_screenshots
 src/web/static/legacy
 src/web/static/v4_backup

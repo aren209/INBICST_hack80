@@ -154,7 +154,8 @@ class TestExcelRoutingAndFormulaExtraction:
         ]
 
     def test_real_doki_xlsx_routing_regression_read_only(self) -> None:
-        doki_dir = Path("/home/arz/hac2/доки")
+        from src.config import DOCS_DIR
+        doki_dir = DOCS_DIR / "appendices_and_forms"
         smeta_path = doki_dir / "Приложение 1_новая смета 2019 (с незащищенными формулами).xlsx"
         fin_path = doki_dir / "Приложение к приказу об утверждении фин. структуры 2026г..xlsx"
         if not smeta_path.exists() or not fin_path.exists():

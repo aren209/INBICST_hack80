@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = Field(default=32)
 
     # Directory Paths (relative to BASE_DIR if not absolute)
-    DOCS_DIR_NAME: str = Field(default="доки", validation_alias="DOCS_DIR")
+    DOCS_DIR_NAME: str = Field(default="documents", validation_alias="DOCS_DIR")
     DATA_DIR_NAME: str = Field(default="data", validation_alias="DATA_DIR")
     CONFIG_DIR_NAME: str = Field(default="config", validation_alias="CONFIG_DIR")
 

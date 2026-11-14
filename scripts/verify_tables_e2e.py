@@ -36,6 +36,12 @@ from typing import Any
 from fastapi.testclient import TestClient
 import httpx
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPTS_DIR.parent
+for _p in (str(PROJECT_ROOT), str(SCRIPTS_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from src.config import TABLES_DB_PATH
 from src.indexing.pipeline import get_pipeline
 from src.schemas import (

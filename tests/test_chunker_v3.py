@@ -1,6 +1,6 @@
-"""Comprehensive Unit Tests for MIPT Normative RAG V3 Hierarchical Chunker (Module 2 & Module 3).
+"""Comprehensive Unit Tests for Normative RAG V3 Hierarchical Chunker (Module 2 & Module 3).
 
-Covers all 7 critical V3 edge case groups from PROMPT_RAG_BUILDER.md §3.2:
+Covers all 7 critical V3 edge case groups:
 1. Date vs Clause disambiguation & protection (dates never parsed as clauses, 1..63 supported).
 2. Duplicate clause numbers in source document (distinct chunk_id, distinct UUIDv5, no overwrite).
 3. Approval zone isolation & reset (ЛИСТ СОГЛАСОВАНИЯ -> zone="approval", reset on Приложение / УТВЕРЖДЕН).

@@ -7,7 +7,7 @@ mkdir -p \
   "${DATA_DIR:-/app/data}/ocr_cache" \
   "${DATA_DIR:-/app/data}/embed_cache" \
   "${DATA_DIR:-/app/data}/preview_cache" \
-  "${DOCS_DIR:-/app/доки}"
+  "${DOCS_DIR:-/app/documents}"
 
 QDRANT_TARGET="${QDRANT_URL:-http://qdrant:6333}"
 QDRANT_WAIT_SEC="${QDRANT_WAIT_TIMEOUT:-60}"
@@ -26,7 +26,7 @@ done
 
 # Optional auto-indexing of mounted documents directory (disabled by default for clean deployment)
 if [[ "${AUTO_SYNC_ON_STARTUP:-false}" == "true" ]]; then
-  echo "[entrypoint] AUTO_SYNC_ON_STARTUP=true -> running incremental sync of ${DOCS_DIR:-/app/доки}..."
+  echo "[entrypoint] AUTO_SYNC_ON_STARTUP=true -> running incremental sync of ${DOCS_DIR:-/app/documents}..."
   python -c "
 from src.indexing.pipeline import get_pipeline
 rep = get_pipeline().sync_folder(force=False)
