@@ -10,7 +10,7 @@
 
 - **Zero AI-chatbot clichés:** No purple/indigo gradients (`#6366f1`, `#7c3aed`), no 4-point AI sparkles, no right-aligned iMessage bubbles, no centered "Чем могу помочь?" splash screen, no fake example prompt chips, no glowing pill chat bar.
 - **Zero template typography tells:** No `Inter` everywhere, no tracked-out ALL-CAPS eyebrow labels, no middle-dot (`A · B · C`) metadata soup, no `→` appended to button labels.
-- **One memorable focal signature:** **Archival Excerpt Plates (`.doc-quote`)** — crisp folio sheets with a solid Phystech Cobalt left spine, set in optical-size **Literata** serif to distinguish verbatim legal text from analytical prose, paired with emerald verification seals and expandable full-clause context with warm highlighter-ochre `<mark>` passages.
+- **One memorable focal signature:** **Archival Excerpt Plates (`.doc-quote`)** — crisp folio sheets with a solid Phystech Cobalt left spine, set in **Minsk** typography to distinguish verbatim legal text cleanly, paired with emerald verification seals and expandable full-clause context with warm highlighter-ochre `<mark>` passages.
 
 ---
 
@@ -36,10 +36,8 @@
 
 ### Layer 2: Typography Roles
 
-- **`--font-sans` (`Golos Text`)**: Russian modernist neo-grotesque for UI controls, dossier headings, and analytical prose (`max-width: 68ch`, `line-height: 1.62`).
-- **`--font-serif` (`Literata`)**: Optical-size Cyrillic book serif strictly for verbatim normative quotes, Word archival folio prose, and expanded full-clause excerpts (`line-height: 1.68`).
+- **`--font-sans` & `--font-serif` (`Minsk`, fallback `Golos Text`)**: Primary typeface across UI controls, dossier headings, analytical prose (`max-width: 68ch`, `line-height: 1.62`), and verbatim normative quotes (`/static/fonts/ofont.ru_Minsk.ttf` with `unicode-range` excluding empty `@`/`№` slots so symbols fall back to `Golos Text`).
 - **`--font-mono` (`JetBrains Mono`)**: Tabular numerals and archival identifiers (`№ 5990-1`, `п. 2.5`, `стр. 3`, dates, page counters, zoom percentages, latency, file format codes `PDF`/`DOCX`/`DOC`/`XLSX`/`XLS`).
-- **Temporary Debug Font Override (`:root[data-font="minsk"]`)**: One-click masthead switch (`#fontDebugBtn`, persisted in `localStorage` as `mipt_debug_font`) that remaps `--font-sans` and `--font-serif` to `/static/fonts/ofont.ru_Minsk.ttf` with Cyrillic glyph fallbacks while preserving `--font-mono` tabular metrics.
 
 ### Layer 3: Component Tokens
 
@@ -51,7 +49,7 @@ Every UI component (`--masthead-*`, `--history-*`, `--composer-*`, `--dossier-*`
 - **Structured Grounded Dossier Answers (`.ans-structured`)**:
   - **Framed Short Answer (`.ans-brief-frame`)**: Always-visible top editorial plate with a solid `--color-accent` architectural left rule, `КРАТКИЙ ОТВЕТ` micro-label, and crisp elevated surface (`--ans-brief-bg`).
   - **Conditional Action Plate (`.ans-actions-box`)**: Rendered right below `.ans-brief-frame` strictly when procedural steps (`### Порядок действий`) exist; completely omitted on factual/numeric queries.
-  - **Progressive Disclosure Details & Verbatim Quotes (`.ans-details-wrap`)**: Detailed normative analysis (`### Подробный ответ и цитаты`), Markdown tables, and `.doc-quote` plates stay collapsed by default (`hidden`) behind `.ans-toggle-details-btn` with a live quote-count badge (`Цитат: N`) and streaming progress indicator.
+  - **Full Details & Verbatim Quotes (`.ans-details-wrap`)**: Detailed normative analysis (`### Подробный ответ и цитаты`), Markdown tables, and `.doc-quote` plates stay open by default behind a collapsible `.ans-toggle-details-btn` with a live quote-count badge (`Цитат: N`) and streaming progress indicator.
   - **Calm Technical Error Stub (`.ans-error-frame`)**: Replaces raw tracebacks or 5xx/network exceptions with a polite Russian sysadmin notice (`TECH_ERROR_STUB_RU`) and one-click retry.
-- **Right Side-by-Side Document Viewer (`--viewer-width: min(48vw, 680px)`)**: Docked right split panel on desktop (`> 768px`) and full-viewport archival sheet on mobile (`<= 768px`), rendering real paginated A4 page images (`.dv-pdf-page`) with paper shadow, zoom controls, highlight overlays (`.dv-pdf-highlight`), and target-page scroll for `PDF`, `DOCX`, and `DOC` (`has_page_images: true`), plus structured `XLSX`/`XLS` sheet tables (`.dv-xlsx-table`).
+- **Right Side-by-Side Document Viewer (`--viewer-width: min(48vw, 680px)`)**: Docked right split panel on desktop (`> 768px`) and full-viewport archival sheet on mobile (`<= 768px`), rendering real paginated A4 page images (`.dv-pdf-page`) with paper shadow, zoom controls, and clean target-page scroll for `PDF`, `DOCX`, and `DOC` (`has_page_images: true`), plus structured `XLSX`/`XLS` sheet tables (`.dv-xlsx-table`).
 - **Fixed-Track Knowledge Base Ledger (`--ledger-columns: 60px minmax(200px, 1fr) 152px 76px 116px 156px`)**: Exact 6-track CSS Grid shared identically between `.ledger-head` and `.doc` rows (`.doc-cell-fmt`, `.doc-main`, `.doc-req`, `.doc-pages`, `.doc-cell-status`, `.doc-row-actions`) so every header aligns pixel-for-pixel with its column, paired with amber duplicate-rejection upload rows (`.upload.duplicate` + `.toast.warn`).

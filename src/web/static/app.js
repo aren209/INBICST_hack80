@@ -517,6 +517,9 @@
 
   function updateStructuredAnswerDom(mdBox, text, { isStreaming = false, quotes = null } = {}) {
     mdBox.classList.add("md", "ans-structured");
+    if (typeof mdBox._detailsExpanded !== "boolean") {
+      mdBox._detailsExpanded = true;
+    }
     if (!mdBox._parts) {
       mdBox._parts = {
         briefFrame: null,
@@ -593,27 +596,27 @@
       parts.actionsBody = null;
     }
 
-    // 3. Collapsible Full Answer & Quotes (.ans-details-wrap) — collapsed by default
+    // 3. Collapsible Full Answer & Quotes (.ans-details-wrap) — open by default
     if (parsed.hasDetails) {
       if (!parts.detailsWrap) {
         const wrap = el("div", "ans-details-wrap");
         const panelId = `ans-details-${++detailsSeq}`;
         const btn = el("button", "ans-toggle-details-btn");
         btn.type = "button";
-        btn.setAttribute("aria-expanded", "false");
+        btn.setAttribute("aria-expanded", "true");
         btn.setAttribute("aria-controls", panelId);
 
         const pulse = el("span", "ans-toggle-pulse");
         pulse.hidden = true;
-        const lbl = el("span", "ans-toggle-label", "Показать полный ответ и цитаты");
+        const lbl = el("span", "ans-toggle-label", "Скрыть полный ответ и цитаты");
         const badge = el("span", "ans-toggle-badge");
         badge.hidden = true;
         btn.append(pulse, lbl, badge);
         btn.insertAdjacentHTML("beforeend", ICONS.chev);
 
-        const panel = el("div", "ans-details-panel");
+        const panel = el("div", "ans-details-panel is-open");
         panel.id = panelId;
-        panel.hidden = true;
+        panel.hidden = false;
         const dBody = el("div", "ans-details-body");
         panel.appendChild(dBody);
 
@@ -1101,61 +1104,11 @@
   });
   syncThemeAria();
 
-  /* ---------------- Temporary Debug Font Switcher (Golos <-> Minsk) ---------------- */
-  const FONT_DEBUG_KEY = "mipt_debug_font";
-  const fontDebugBtn = $("#fontDebugBtn");
-  const fontDebugValue = $("#fontDebugValue");
-
-  function currentDebugFont() {
-    if (document.documentElement.dataset.font === "minsk") return "minsk";
-    try {
-      if (localStorage.getItem(FONT_DEBUG_KEY) === "minsk") return "minsk";
-    } catch {
-      /* ignore */
-    }
-    return "golos";
+  /* ---------------- Preload Primary Font (Minsk) ---------------- */
+  delete document.documentElement.dataset.font;
+  if (document.fonts && typeof document.fonts.load === "function") {
+    document.fonts.load('400 16px "Minsk"').catch(() => {});
   }
-
-  function applyDebugFont(mode, { persist = false } = {}) {
-    const isMinsk = mode === "minsk";
-    if (isMinsk) {
-      document.documentElement.dataset.font = "minsk";
-      if (document.fonts && typeof document.fonts.load === "function") {
-        document.fonts.load('400 16px "Minsk"').catch(() => {});
-      }
-    } else {
-      delete document.documentElement.dataset.font;
-    }
-
-    if (fontDebugValue) {
-      fontDebugValue.textContent = isMinsk ? "Minsk" : "Golos";
-    }
-    if (fontDebugBtn) {
-      fontDebugBtn.setAttribute("aria-pressed", String(isMinsk));
-      fontDebugBtn.setAttribute(
-        "aria-label",
-        isMinsk
-          ? "Временная отладка шрифта: активен Minsk (нажмите для возврата к Golos Text)"
-          : "Временная отладка шрифта: активен Golos Text (нажмите для переключения на Minsk)"
-      );
-    }
-
-    if (persist) {
-      try {
-        localStorage.setItem(FONT_DEBUG_KEY, isMinsk ? "minsk" : "golos");
-      } catch {
-        /* storage blocked */
-      }
-    }
-  }
-
-  if (fontDebugBtn) {
-    fontDebugBtn.addEventListener("click", () => {
-      const next = currentDebugFont() === "minsk" ? "golos" : "minsk";
-      applyDebugFont(next, { persist: true });
-    });
-  }
-  applyDebugFont(currentDebugFont(), { persist: false });
 
   /* ==========================================================================
      LEFT QUERY HISTORY SIDEBAR (localStorage: mipt_rag_threads_v1)
@@ -1923,21 +1876,6 @@
         );
         stage.appendChild(img);
 
-        if (Array.isArray(p.highlights) && p.highlights.length) {
-          p.highlights.forEach((hl, hIdx) => {
-            if (!hl) return;
-            const hlBox = el("div", "dv-pdf-highlight");
-            hlBox.style.left = `${Math.max(0, Number(hl.x) || 0) * 100}%`;
-            hlBox.style.top = `${Math.max(0, Number(hl.y) || 0) * 100}%`;
-            hlBox.style.width = `${Math.min(1, Math.max(0.01, Number(hl.w) || 0.1)) * 100}%`;
-            hlBox.style.height = `${Math.min(1, Math.max(0.008, Number(hl.h) || 0.02)) * 100}%`;
-            if (pNum === targetPage && hIdx === 0) {
-              hlBox.dataset.scrollAnchor = "1";
-            }
-            stage.appendChild(hlBox);
-          });
-        }
-
         card.appendChild(stage);
         frag.appendChild(card);
       }
@@ -2034,9 +1972,9 @@
     syncViewerNavControls(targetPage);
 
     // Jump immediately on mount and reinforce on next animation frame for exact scrollTop
-    scrollToViewerPage(targetPage, { instant: true, focusAnchor: true });
+    scrollToViewerPage(targetPage, { instant: true, focusAnchor: !hasPageImages });
     requestAnimationFrame(() => {
-      scrollToViewerPage(targetPage, { instant: true, focusAnchor: true });
+      scrollToViewerPage(targetPage, { instant: true, focusAnchor: !hasPageImages });
     });
   }
 
@@ -2239,26 +2177,17 @@
     openDocumentViewer(target);
   });
 
-  /* ---- Smart Auto-Scroll ---- */
-  let stick = true;
-  let lastTop = 0;
-  chatScroll.addEventListener(
-    "scroll",
-    () => {
-      const top = chatScroll.scrollTop;
-      const dist = chatScroll.scrollHeight - top - chatScroll.clientHeight;
-      if (top < lastTop - 2 && dist > 48) stick = false;
-      else if (dist < 32) stick = true;
-      lastTop = top;
-    },
-    { passive: true }
-  );
-
-  function scrollToBottom(force = false) {
-    if (force) stick = true;
-    if (!stick) return;
+  /* ---- Anchor at Top of Query (No Downward Auto-Scroll While Streaming) ---- */
+  function scrollToQueryTop(userEl) {
     requestAnimationFrame(() => {
-      chatScroll.scrollTop = chatScroll.scrollHeight;
+      if (!userEl || queryCount <= 1) {
+        chatScroll.scrollTop = 0;
+        return;
+      }
+      const scrollRect = chatScroll.getBoundingClientRect();
+      const elRect = userEl.getBoundingClientRect();
+      const targetTop = Math.max(0, elRect.top - scrollRect.top + chatScroll.scrollTop - 16);
+      chatScroll.scrollTo({ top: targetTop, behavior: "smooth" });
     });
   }
 
@@ -2268,6 +2197,7 @@
     const heading = el("h2", "query-heading", text);
     li.append(meta, heading);
     messages.appendChild(li);
+    return li;
   }
 
   function addBotShell() {
@@ -2570,11 +2500,11 @@
     const threadId = thr.id;
 
     queryCount++;
-    addUserMessage(question, queryCount);
+    const userLi = addUserMessage(question, queryCount);
 
     const { li, body } = addBotShell();
     const typing = showTyping(body);
-    scrollToBottom(true);
+    scrollToQueryTop(userLi);
     const epoch = chatEpoch;
 
     const state = {
@@ -2603,7 +2533,6 @@
         isStreaming: true,
         quotes: state.quotes,
       });
-      scrollToBottom();
     };
 
     const schedule = () => {
@@ -2724,7 +2653,6 @@
     if (controller === ctrl) controller = null;
     currentStreamHits = [];
     setBusy(false);
-    scrollToBottom();
     input.focus({ preventScroll: true });
   }
 

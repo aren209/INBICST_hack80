@@ -7,7 +7,7 @@
    ========================================================================== */
 
 /* ==========================================================================
-   LOCAL DEBUG FONT FACE (Minsk)
+   PRIMARY UI FONT FACE (Minsk)
    ========================================================================== */
 @font-face {
   font-family: "Minsk";
@@ -15,6 +15,9 @@
   font-weight: normal;
   font-style: normal;
   font-display: swap;
+  /* ofont.ru_Minsk.ttf maps '@' (U+0040) and '№' (U+2116) to empty blank glyphs;
+     restrict unicode-range to its 139 non-empty glyphs so '@', '№', and symbols fall back cleanly to Golos Text */
+  unicode-range: U+0020-0022, U+002C-002E, U+0030-003B, U+003F, U+0041-005A, U+0061-007A, U+00A0, U+0410-044F, U+0451, U+201C-201D;
 }
 
 /* ==========================================================================
@@ -109,11 +112,9 @@
   --prim-shadow-lg-dark: 0 18px 42px rgba(0, 0, 0, 0.62), 0 2px 8px rgba(0, 0, 0, 0.4);
 
   /* Typography Primitives */
-  --prim-font-sans: "Golos Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --prim-font-serif: "Literata", Georgia, "PT Serif", "Times New Roman", serif;
+  --prim-font-sans: "Minsk", "Golos Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --prim-font-serif: "Minsk", "Golos Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --prim-font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
-  --prim-font-minsk-sans: "Minsk", "Golos Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --prim-font-minsk-serif: "Minsk", "Literata", Georgia, "PT Serif", "Times New Roman", serif;
 
   --prim-text-xs: 0.75rem;      /* 12px */
   --prim-text-sm: 0.8125rem;    /* 13px */
@@ -364,12 +365,6 @@
   --shadow-lg: var(--prim-shadow-lg-dark);
 
   color-scheme: dark;
-}
-
-/* Temporary Debug Font Override (Minsk vs Golos Text + Literata) */
-:root[data-font="minsk"] {
-  --font-sans: var(--prim-font-minsk-sans);
-  --font-serif: var(--prim-font-minsk-serif);
 }
 
 /* ==========================================================================
@@ -783,44 +778,6 @@ svg {
   background-color: var(--color-bg-subtle);
   border-color: var(--color-border-default);
   color: var(--color-fg-primary);
-}
-
-/* Temporary Debug Font Switcher (Masthead) */
-.font-debug-btn {
-  padding: 0 var(--space-2-5);
-  gap: var(--space-1-5);
-  font-size: var(--prim-text-xs);
-  color: var(--color-fg-secondary);
-}
-
-.font-debug-tag {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1px 5px;
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--color-border-default);
-  background-color: var(--color-bg-subtle);
-  color: var(--color-fg-muted);
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  line-height: 1.3;
-}
-
-.font-debug-btn[aria-pressed="true"],
-:root[data-font="minsk"] .font-debug-btn {
-  border-color: var(--color-accent-border);
-  background-color: var(--color-accent-tint);
-  color: var(--color-accent);
-}
-
-.font-debug-btn[aria-pressed="true"] .font-debug-tag,
-:root[data-font="minsk"] .font-debug-btn .font-debug-tag {
-  background-color: var(--color-accent-solid);
-  border-color: var(--color-accent-solid);
-  color: var(--color-fg-on-accent);
 }
 
 .i-moon {
@@ -3295,14 +3252,6 @@ svg {
   height: 100%;
   object-fit: contain;
   user-select: none;
-}
-
-.dv-pdf-highlight {
-  position: absolute;
-  pointer-events: none;
-  background-color: var(--color-highlight-bg);
-  opacity: 0.34;
-  border-radius: var(--radius-xs);
 }
 
 /* Word / Excel Archival Folio Sheet */

@@ -9,15 +9,13 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Literata:ital,opsz,wght@0,7..72,400..600;1,7..72,400..500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css?v=8.2" />
   <script>
     (function () {
       try {
         var t = localStorage.getItem("theme");
         if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
-        var f = localStorage.getItem("mipt_debug_font");
-        if (f === "minsk") document.documentElement.dataset.font = "minsk";
       } catch (e) {}
     })();
   </script>
@@ -84,18 +82,6 @@
               <path d="M8 5v14M11.5 9.5h5M11.5 13h3.5" />
             </svg>
             <span class="hide-sm">База знаний</span>
-          </button>
-
-          <button
-            class="nav-btn font-debug-btn"
-            id="fontDebugBtn"
-            type="button"
-            aria-pressed="false"
-            aria-label="Переключить отладочный шрифт (сейчас Golos Text)"
-            title="Временная отладка шрифта: Golos Text / Minsk"
-          >
-            <span class="font-debug-tag" aria-hidden="true">DBG</span>
-            <span class="font-debug-label" id="fontDebugLabel"><span class="hide-sm">Шрифт: </span><span id="fontDebugValue">Golos</span></span>
           </button>
 
           <button class="icon-btn" id="themeBtn" type="button" aria-label="Переключить тему оформления" title="Сменить тему оформления">
@@ -356,6 +342,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" defer></script>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=8.2" defer></script>
 </body>
 </html>
