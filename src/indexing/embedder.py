@@ -1,4 +1,4 @@
-"""Dense (Polza AI baai/bge-m3) and Local Russian Sparse BM25 (razdel + pymorphy3 + CRC32) Embedders."""
+"""Dense (Local GPU/CPU BAAI/bge-m3) and Local Russian Sparse BM25 (razdel + pymorphy3 + CRC32) Embedders."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import threading
 import zlib
 from collections import Counter
 from functools import lru_cache
@@ -533,10 +534,45 @@ def _normalize_l2(vec: list[float]) -> list[float]:
     return [float(x / norm) for x in vec]
 
 
+_LOCAL_ST_MODELS: dict[tuple[str, str], Any] = {}
+_LOCAL_ST_LOCK = threading.RLock()
+
+
+def _resolve_torch_device(preferred: str = "auto") -> str:
+    """Resolve optimal PyTorch execution device ('cuda', 'mps', or 'cpu')."""
+    pref = (preferred or "auto").strip().lower()
+    if pref and pref != "auto":
+        return pref
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _get_local_sentence_transformer(model_name: str, device: str) -> Any:
+    """Load and cache SentenceTransformer(BAAI/bge-m3) once per process and device."""
+    key = (model_name, device)
+    if key in _LOCAL_ST_MODELS:
+        return _LOCAL_ST_MODELS[key]
+    with _LOCAL_ST_LOCK:
+        if key not in _LOCAL_ST_MODELS:
+            from sentence_transformers import SentenceTransformer
+
+            logger.info("Loading local embedding model '%s' on device '%s'...", model_name, device)
+            _LOCAL_ST_MODELS[key] = SentenceTransformer(model_name, device=device)
+    return _LOCAL_ST_MODELS[key]
+
+
 class DenseEmbedder:
     """
-    Dense embedder via Polza AI OpenAI-compatible API (baai/bge-m3, 1024d)
-    with batching (32), tenacity exponential backoff, and SHA-256 disk caching in data/embed_cache/.
+    Dense embedder powered by local `BAAI/bge-m3` (1024d Cosine, SentenceTransformer on CUDA/CPU)
+    with optional OpenAI-compatible API fallback, batching (32), and SHA-256 disk caching in `data/embed_cache/`.
     """
 
     def __init__(
@@ -547,16 +583,31 @@ class DenseEmbedder:
         batch_size: int = EMBEDDING_BATCH_SIZE,
         dim: int = EMBEDDING_DIM,
         cache_dir: Path | None = None,
+        backend: str | None = None,
+        device: str | None = None,
     ) -> None:
+        self.backend = (backend or settings.EMBEDDING_BACKEND or "local").strip().lower()
+        self.device_preference = (device or settings.EMBEDDING_DEVICE or "auto").strip().lower()
         self.api_key = api_key if api_key is not None else settings.POLZA_API_KEY
-        self.base_url = base_url if base_url is not None else settings.POLZA_BASE_URL
-        self.model = model if model is not None else settings.POLZA_EMBEDDING_MODEL
+        self.base_url = base_url if base_url is not None else (
+            "local://sentence-transformers" if self.backend == "local" else settings.POLZA_BASE_URL
+        )
+        self.model = model if model is not None else (
+            settings.EMBEDDING_MODEL if self.backend == "local" else settings.POLZA_EMBEDDING_MODEL
+        )
         self.batch_size = max(1, batch_size)
         self.dim = dim
         self.cache_dir = cache_dir if cache_dir is not None else EMBED_CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._mem_cache: dict[str, list[float]] = {}
         self._client: OpenAI | None = None
+        self._resolved_device: str | None = None
+
+    @property
+    def resolved_device(self) -> str:
+        if self._resolved_device is None:
+            self._resolved_device = _resolve_torch_device(self.device_preference)
+        return self._resolved_device
 
     @property
     def client(self) -> OpenAI:
@@ -612,6 +663,25 @@ class DenseEmbedder:
                 except OSError as rm_exc:
                     logger.debug("Cleanup of temp embedding file failed: %s", rm_exc)
 
+    def _encode_local_batch(self, batch: list[str]) -> list[list[float]]:
+        """Encode a batch of texts locally using BAAI/bge-m3 (SentenceTransformer)."""
+        with _LOCAL_ST_LOCK:
+            st_model = _get_local_sentence_transformer(self.model, self.resolved_device)
+            arr = st_model.encode(
+                batch,
+                batch_size=self.batch_size,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+            )
+        vectors: list[list[float]] = []
+        for row in arr:
+            vec = _normalize_l2([float(x) for x in row.tolist()])
+            if len(vec) != self.dim:
+                raise ValueError(f"Expected embedding dim {self.dim}, got {len(vec)}")
+            vectors.append(vec)
+        return vectors
+
     @retry(
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1.0, min=1.0, max=15.0),
@@ -619,7 +689,9 @@ class DenseEmbedder:
         reraise=True,
     )
     def _call_api_batch(self, batch: list[str]) -> list[list[float]]:
-        """Call Polza AI embeddings endpoint with exponential backoff retries."""
+        """Encode batch via local BAAI/bge-m3 (default) or OpenAI-compatible embeddings endpoint."""
+        if self.backend == "local" and self._client is None:
+            return self._encode_local_batch(batch)
         response = self.client.embeddings.create(
             model=self.model,
             input=batch,
@@ -683,13 +755,17 @@ class DenseEmbedder:
     embed_text = embed_query
 
     def check_health(self) -> dict[str, Any]:
-        """Return Polza AI configuration and cache health status."""
+        """Return local BAAI/bge-m3 + PaddleOCR-VL-1.6 configuration and cache health status."""
         cache_files_count = len(list(self.cache_dir.glob("*.json"))) if self.cache_dir.exists() else 0
+        is_local = self.backend == "local"
+        configured = True if is_local else bool(self.api_key and self.api_key != "your_polza_api_key_here")
         return {
-            "configured": bool(self.api_key and self.api_key != "your_polza_api_key_here"),
+            "configured": configured,
+            "backend": self.backend,
+            "device": self.resolved_device if is_local else "remote",
             "base_url": self.base_url,
             "embedding_model": self.model,
-            "vlm_model": settings.POLZA_VLM_MODEL,
+            "vlm_model": settings.OCR_VL_MODEL if settings.OCR_BACKEND != "polza_vlm" else settings.POLZA_VLM_MODEL,
             "dim": self.dim,
             "batch_size": self.batch_size,
             "cached_embeddings": cache_files_count,

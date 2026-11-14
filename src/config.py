@@ -22,20 +22,36 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # DeepSeek Official API (Primary LLM for RAG Agent & Query Pipeline)
+    # Local LLM (Primary: Linear-Hybrid Qwen/Qwen3.8-27B in 4-bit quantization via vLLM or BitsAndBytes NF4)
+    LLM_BACKEND: str = Field(default="local_vllm")  # "local_vllm" | "local_bnb_4bit" | "openai_compat"
+    LOCAL_LLM_BASE_URL: str = Field(default="http://localhost:8001/v1")
+    LOCAL_LLM_API_KEY: str = Field(default="local-qwen38-4bit")
+    LOCAL_LLM_MODEL: str = Field(default="Qwen/Qwen3.8-27B")
+    LOCAL_LLM_HF_QUANTIZED_REPO: str = Field(default="RedHatAI/Qwen3.8-27B-INT4")
+    LLM_QUANTIZATION: str = Field(default="4bit")
+    LLM_ENABLE_THINKING: bool = Field(default=False)
+
+    # Local Dense Embeddings (Primary: BAAI/bge-m3, 1024d Cosine)
+    EMBEDDING_BACKEND: str = Field(default="local")  # "local" | "openai_compat"
+    EMBEDDING_MODEL: str = Field(default="BAAI/bge-m3")
+    EMBEDDING_DEVICE: str = Field(default="auto")  # "auto" | "cuda" | "mps" | "cpu"
+
+    # Local Vision OCR (Primary: PaddlePaddle/PaddleOCR-VL-1.6 + RapidOCR v3 PP-OCRv5 ESLAV fallback)
+    OCR_BACKEND: str = Field(default="paddleocr_vl")  # "paddleocr_vl" | "hybrid_vlm" | "local_rapidocr"
+    OCR_VL_MODEL: str = Field(default="PaddlePaddle/PaddleOCR-VL-1.6")
+    OCR_VL_DEVICE: str = Field(default="auto")  # "auto" | "cuda" | "cpu"
+    OCR_VL_MAX_PIXELS: int = Field(default=1280 * 28 * 28)
+
+    # Optional Legacy External Cloud Overrides (inactive when keys are empty)
     DEEPSEEK_API_KEY: str = Field(default="")
     DEEPSEEK_BASE_URL: str = Field(default="https://api.deepseek.com")
     DEEPSEEK_MODEL: str = Field(default="deepseek-chat")
 
-    # Polza AI API (OpenAI-compatible — Embeddings, OCR VLM, and fallback LLM)
     POLZA_API_KEY: str = Field(default="")
     POLZA_BASE_URL: str = Field(default="https://polza.ai/api/v1")
-    POLZA_EMBEDDING_MODEL: str = Field(default="baai/bge-m3")
-    POLZA_VLM_MODEL: str = Field(default="qwen/qwen3-vl-235b-a22b-instruct")
-    POLZA_LLM_MODEL: str = Field(default="openai/gpt-4o-mini")
-
-    # OCR Backend ("hybrid_vlm" or "local_rapidocr")
-    OCR_BACKEND: str = Field(default="hybrid_vlm")
+    POLZA_EMBEDDING_MODEL: str = Field(default="BAAI/bge-m3")
+    POLZA_VLM_MODEL: str = Field(default="PaddlePaddle/PaddleOCR-VL-1.6")
+    POLZA_LLM_MODEL: str = Field(default="Qwen/Qwen3.8-27B")
 
     # Qdrant Vector Store
     QDRANT_URL: str = Field(default="http://localhost:6333")
@@ -74,20 +90,37 @@ class Settings(BaseSettings):
 
     @property
     def llm_provider(self) -> str:
-        return "deepseek" if self.DEEPSEEK_API_KEY.strip() else "polza"
+        if self.DEEPSEEK_API_KEY.strip():
+            return "deepseek"
+        if self.POLZA_API_KEY.strip():
+            return "polza"
+        return "local"
 
     @property
     def llm_api_key(self) -> str:
         ds_key = self.DEEPSEEK_API_KEY.strip()
-        return ds_key if ds_key else self.POLZA_API_KEY
+        if ds_key:
+            return ds_key
+        pz_key = self.POLZA_API_KEY.strip()
+        if pz_key:
+            return pz_key
+        return self.LOCAL_LLM_API_KEY
 
     @property
     def llm_base_url(self) -> str:
-        return self.DEEPSEEK_BASE_URL if self.DEEPSEEK_API_KEY.strip() else self.POLZA_BASE_URL
+        if self.DEEPSEEK_API_KEY.strip():
+            return self.DEEPSEEK_BASE_URL
+        if self.POLZA_API_KEY.strip():
+            return self.POLZA_BASE_URL
+        return self.LOCAL_LLM_BASE_URL
 
     @property
     def llm_model(self) -> str:
-        return self.DEEPSEEK_MODEL if self.DEEPSEEK_API_KEY.strip() else self.POLZA_LLM_MODEL
+        if self.DEEPSEEK_API_KEY.strip():
+            return self.DEEPSEEK_MODEL
+        if self.POLZA_API_KEY.strip():
+            return self.POLZA_LLM_MODEL
+        return self.LOCAL_LLM_MODEL
 
 
 settings = Settings()

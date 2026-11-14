@@ -9,6 +9,35 @@ services:
       - ./data/qdrant_storage:/qdrant/storage
     restart: unless-stopped
 
+  vllm-qwen38:
+    image: vllm/vllm-openai:latest
+    container_name: mipt_rag_vllm_qwen38_4bit
+    command: >
+      RedHatAI/Qwen3.8-27B-INT4
+      --host 0.0.0.0
+      --port 8001
+      --served-model-name Qwen/Qwen3.8-27B Qwen/Qwen3.8-27B-INT4 RedHatAI/Qwen3.8-27B-INT4
+      --language-model-only
+      --gpu-memory-utilization 0.68
+      --max-model-len 65536
+      --max-num-seqs 8
+      --reasoning-parser qwen3
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_xml
+      --default-chat-template-kwargs '{"enable_thinking": false}'
+    ports:
+      - "8001:8001"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
   rag-app:
     build:
       context: .
@@ -22,10 +51,25 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - LOCAL_LLM_BASE_URL=http://vllm-qwen38:8001/v1
+      - LOCAL_LLM_MODEL=Qwen/Qwen3.8-27B
+      - EMBEDDING_BACKEND=local
+      - EMBEDDING_MODEL=BAAI/bge-m3
+      - OCR_BACKEND=paddleocr_vl
+      - OCR_VL_MODEL=PaddlePaddle/PaddleOCR-VL-1.6
     volumes:
       - ./доки:/app/доки
       - ./data:/app/data
       - ./config:/app/config
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       - qdrant
+      - vllm-qwen38
     restart: unless-stopped

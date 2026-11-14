@@ -394,7 +394,7 @@ async def serve_index():
 # System Health & Statistics
 # -----------------------------------------------------------------------------
 
-@app.get("/api/health", summary="Get Qdrant, Polza AI, SQLite Table Store & Knowledge Base Health")
+@app.get("/api/health", summary="Get Qdrant, Local Models (PaddleOCR-VL-1.6, BGE-M3, Qwen3.8-27B 4-bit), SQLite & KB Health")
 async def get_health():
     pipeline = get_pipeline()
     health_info = dict(pipeline.get_health() or {})
@@ -410,9 +410,22 @@ async def get_health():
         "llm",
         {
             "provider": settings.llm_provider,
+            "backend": settings.LLM_BACKEND,
+            "quantization": settings.LLM_QUANTIZATION,
             "configured": bool(settings.llm_api_key),
             "base_url": settings.llm_base_url,
             "model": settings.llm_model,
+            "quantized_repo": settings.LOCAL_LLM_HF_QUANTIZED_REPO,
+        },
+    )
+    health_info.setdefault(
+        "local_models",
+        {
+            "ocr_vl": settings.OCR_VL_MODEL,
+            "embeddings": settings.EMBEDDING_MODEL,
+            "llm": settings.LOCAL_LLM_MODEL,
+            "llm_quantization": settings.LLM_QUANTIZATION,
+            "llm_quantized_repo": settings.LOCAL_LLM_HF_QUANTIZED_REPO,
         },
     )
     health_info["llm_provider"] = settings.llm_provider

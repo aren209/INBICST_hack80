@@ -25,10 +25,10 @@
 
 Система спроектирована без использования примитивных символьных сплиттеров (`RecursiveCharacterTextSplitter`, `TokenTextSplitter`), которые разрушают структуру нормативных актов. Вместо них реализован специализированный доменный конвейер:
 
-- **Двухуровневый гибридный OCR с защитой от ловушек сканов:**
+- **Двухуровневый локальный гибридный OCR с защитой от ловушек сканов:**
   - Автоматическое определение комбинированных сканов, где поверх растрового изображения наложен короткий текстовый штамп согласования/ЭДО (`Регламент поселения сотрудников.pdf` стр. 1 — 148 символов штампа; `Регламент бронирования конц зала.pdf` стр. 6 — 13 символов).
   - Рендеринг при `300 DPI` с автоповоротом альбомных страниц и ограничением длинной стороны `MAX_OCR_IMAGE_SIDE = 3509 px` для гигантских сканов (`5167×7305 px`).
-  - Основной контур: Vision LLM `qwen/qwen3-vl-235b-a22b-instruct` (через Polza AI) с жесткой защитой от зацикливания на пустых бланках подписей (`[___]` вместо бесконечных `_____` на стр. 7 `Регламент бронирования конц зала.pdf`).
+  - Основной локальный контур: компактная SOTA документная Vision-Language модель **`PaddlePaddle/PaddleOCR-VL-1.6`** (`0.9B`, `OmniDocBench v1.6 = 96.33%`) на GPU/CPU через `transformers` с конвертацией таблиц в Markdown и жесткой защитой от зацикливания на пустых бланках подписей (`[___]` вместо бесконечных `_____` на стр. 7 `Регламент бронирования конц зала.pdf`).
   - Автоматический локальный CPU-фоллбэк: `RapidOCR v3 (PP-OCRv5, ESLAV, MOBILE)` с `Global.use_cls = False` (предотвращает переворот широких русских строк на 180°) и `Det.box_thresh = 0.3`.
 - **Двухпроходный парсинг таблиц и формул Excel (`.xlsx`) и списков Word (`.docx`):**
   - Одновременное чтение вычисленных значений (`data_only=True`) и зашитых формул (`data_only=False`) в формате `[формула: =SUM(...)]`. Решает проблему пустых `cached_value=None` в книге `Приложение 1_новая смета 2019 (с незащищенными формулами).xlsx` (848 формул, коды КВР/КОСГУ, НДС 20%, накладные 20%) без записи `"None"`.
@@ -249,11 +249,16 @@ flowchart TD
 - **Docker и Docker Compose:** `Docker Engine 24.0+` и `docker compose v2` (для контейнерного запуска Qdrant и веб-сервиса)
 - **ОЗУ и диск:** от 2 ГБ свободной ОЗУ и 3 ГБ места на диске
 
-### Внешние сервисы и компоненты
-1. **Polza AI API (`https://polza.ai/api/v1`)** — OpenAI-совместимый шлюз:
-   - Модель плотных эмбеддингов: `baai/bge-m3` (размерность `1024`, Cosine).
-   - Vision-модель для гибридного OCR сканов: `qwen/qwen3-vl-235b-a22b-instruct` (при недоступности или срабатывании защиты от зацикливания система автоматически переключается на встроенный офлайн-движок `RapidOCR v3`).
-2. **Qdrant (`qdrant/qdrant:latest`, порт `6333`)** — векторная СУБД с поддержкой гибридного поиска по Dense (`1024d`) и Sparse (`BM25 + IDF`) векторам со слиянием `Reciprocal Rank Fusion (RRF)`.
+### Локальный стек моделей и инфраструктурные компоненты (100% On-Prem / без внешних облачных API)
+1. **Локальная линейно-гибридная LLM — `Qwen/Qwen3.8-27B` в 4-битной квантизации (`RedHatAI/Qwen3.8-27B-INT4` / `BitsAndBytes NF4`):**
+   - Архитектура `Qwen3_5ForConditionalGeneration` (`16 × [3 × Gated DeltaNet -> 1 × Gated Attention]`).
+   - Обслуживается локально через `vLLM` на `http://localhost:8001/v1` (`Marlin W4A16` + `Triton/FLA GDN` + `--tool-call-parser qwen3_xml` + `--reasoning-parser qwen3`) либо напрямую в процессе через `transformers` + `bitsandbytes` (`LLM_BACKEND=local_bnb_4bit`).
+   - Отвечает за 4-стадийный конвейер переписывания и реранкинга запросов (`QueryPipeline`), автономный `Tool Calling` по SQLite-таблицам и синтез ответов с верификацией цитат (`TableAwareRAGAgent`).
+2. **Локальные плотные эмбеддинги — `BAAI/bge-m3` (`sentence-transformers`, `1024d`, Cosine):**
+   - Работают локально на GPU (`cuda`) или CPU с L2-нормализацией и персистентным `SHA-256` кэшем в `data/embed_cache/`.
+3. **Локальная документная VLM OCR — `PaddlePaddle/PaddleOCR-VL-1.6` + `RapidOCR v3 (PP-OCRv5 ESLAV)`:**
+   - Выполняет высокоточное распознавание русских сканов, штампов ЭДО и сложных таблиц локально на GPU (`bfloat16`) с автоматическим фоллбэком на `RapidOCR v3`.
+4. **Qdrant (`qdrant/qdrant:latest`, порт `6333`)** — векторная СУБД с поддержкой гибридного поиска по Dense (`1024d`) и Sparse (`BM25 + IDF`) векторам со слиянием `Reciprocal Rank Fusion (RRF)`.
 
 ### Основные зависимости (`requirements.txt`)
 - Веб-сервер и API: `fastapi`, `uvicorn[standard]`, `python-multipart`, `httpx`
@@ -270,12 +275,15 @@ flowchart TD
 
 | Переменная | Значение по умолчанию | Описание |
 | :--- | :--- | :--- |
-| `POLZA_API_KEY` | *(обязательно)* | API-ключ Polza AI для генерации эмбеддингов `baai/bge-m3` и VLM OCR |
-| `POLZA_BASE_URL` | `https://polza.ai/api/v1` | Базовый URL OpenAI-совместимого API Polza AI |
-| `POLZA_EMBEDDING_MODEL` | `baai/bge-m3` | Модель плотных векторов (`1024d`) |
-| `POLZA_VLM_MODEL` | `qwen/qwen3-vl-235b-a22b-instruct` | Мультимодальная модель для распознавания сканов в режиме `hybrid_vlm` |
-| `POLZA_LLM_MODEL` | `openai/gpt-4o-mini` | LLM-модель (через Polza AI) для синтеза ответов и автономного вызова табличных инструментов (`Tool Calling`) |
-| `OCR_BACKEND` | `hybrid_vlm` | Режим OCR: `hybrid_vlm` (Qwen3-VL + фоллбэк RapidOCR) или `local_rapidocr` (полностью офлайн) |
+| `LLM_BACKEND` | `local_vllm` | Локальный режим LLM: `local_vllm` (сервер vLLM INT4) или `local_bnb_4bit` (внутрипроцессный `BitsAndBytes NF4`) |
+| `LOCAL_LLM_BASE_URL` | `http://localhost:8001/v1` | Локальный OpenAI-совместимый адрес сервера `vLLM` |
+| `LOCAL_LLM_MODEL` | `Qwen/Qwen3.8-27B` | Линейно-гибридная модель `Qwen/Qwen3.8-27B` (в 4-битной квантизации) |
+| `LOCAL_LLM_HF_QUANTIZED_REPO` | `RedHatAI/Qwen3.8-27B-INT4` | 4-битный репозиторий весов `W4A16` для `vLLM` |
+| `LLM_QUANTIZATION` | `4bit` | Режим квантизации LLM |
+| `EMBEDDING_BACKEND` | `local` | Локальный контур эмбеддингов (`sentence-transformers`) |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Локальная модель плотных векторов (`1024d`, Cosine) |
+| `OCR_BACKEND` | `paddleocr_vl` | Локальный контур OCR: `paddleocr_vl` (`PaddlePaddle/PaddleOCR-VL-1.6` + фоллбэк `RapidOCR`) или `local_rapidocr` |
+| `OCR_VL_MODEL` | `PaddlePaddle/PaddleOCR-VL-1.6` | Локальная Vision-Language OCR модель для сканов и таблиц |
 | `QDRANT_URL` | `http://localhost:6333` | URL подключения к серверу Qdrant (`http://qdrant:6333` внутри Docker Compose) |
 | `QDRANT_HOST` | `localhost` | Хост Qdrant |
 | `QDRANT_PORT` | `6333` | HTTP-порт Qdrant |

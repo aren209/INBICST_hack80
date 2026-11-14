@@ -408,16 +408,18 @@ class TestDeepSeekConfigurationAndIsolation:
         assert qp._candidate_models(None) == ["deepseek-chat"]
         assert qp._candidate_models("openai/gpt-4.1-mini") == ["deepseek-chat"]
 
-    def test_embedder_and_ocr_remain_on_polza_api(self, tmp_path: Path) -> None:
-        emb = DenseEmbedder()
-        assert "polza" in emb.base_url.lower()
-        assert emb.model == settings.POLZA_EMBEDDING_MODEL
+    def test_embedder_and_ocr_use_local_models_by_default(self, tmp_path: Path) -> None:
+        s_default = Settings(DEEPSEEK_API_KEY="", POLZA_API_KEY="")
+        assert s_default.llm_provider == "local"
+        assert s_default.llm_model == "Qwen/Qwen3.8-27B"
+        assert s_default.LLM_QUANTIZATION == "4bit"
+
+        emb = DenseEmbedder(cache_dir=tmp_path / "embed_cache")
+        assert emb.backend == "local"
+        assert emb.model == "BAAI/bge-m3"
 
         ocr = HybridOCREngine(cache_dir=tmp_path / "ocr_cache")
-        if settings.POLZA_API_KEY:
-            ocr_client = ocr._get_openai_client()
-            assert ocr_client is not None
-            assert "polza" in str(ocr_client.base_url).lower()
+        assert ocr.vl_model_name == "PaddlePaddle/PaddleOCR-VL-1.6"
 
 
 # -----------------------------------------------------------------------------

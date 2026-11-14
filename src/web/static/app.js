@@ -44,7 +44,7 @@
     "Возникли технические неполадки при обработке запроса. Пожалуйста, повторите попытку позже или обратитесь к системному администратору.";
 
   const TECH_LEAK_RE =
-    /Traceback \(most recent call last\)|TypeError|ReferenceError|SyntaxError|NetworkError|Failed to fetch|Load failed|FetchError|AbortSignal|JSON\.parse|Unexpected token|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout|Errno\s*\d+|HTTPException|KeyError|AttributeError|ValueError|RuntimeError|OperationalError|ConnectionRefusedError|ConnectError|ReadTimeout|PoolTimeout|qdrant|polza|openai|httpx|litellm|sqlite3|sqlalchemy|pydantic/i;
+    /Traceback \(most recent call last\)|TypeError|ReferenceError|SyntaxError|NetworkError|Failed to fetch|Load failed|FetchError|AbortSignal|JSON\.parse|Unexpected token|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout|Errno\s*\d+|HTTPException|KeyError|AttributeError|ValueError|RuntimeError|OperationalError|ConnectionRefusedError|ConnectError|ReadTimeout|PoolTimeout|qdrant|polza|openai|vllm|transformers|paddleocr|httpx|litellm|sqlite3|sqlalchemy|pydantic/i;
 
   function sanitizeUserErrorMessage(err, fallback = TECH_ERROR_STUB_RU) {
     if (!err) return fallback;

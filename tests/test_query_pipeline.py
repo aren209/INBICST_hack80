@@ -616,7 +616,22 @@ class TestAgentStreamingAndUserFacingUX:
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not bool(settings.POLZA_API_KEY), reason="POLZA_API_KEY not configured")
+def _is_live_llm_and_qdrant_ready() -> bool:
+    import httpx
+
+    try:
+        r_q = httpx.get(f"{settings.QDRANT_URL.rstrip('/')}/healthz", timeout=2.0)
+        if r_q.status_code != 200:
+            return False
+        if settings.llm_provider == "local":
+            r_l = httpx.get(f"{settings.llm_base_url.rstrip('/')}/models", timeout=2.0)
+            return r_l.status_code == 200
+        return bool(settings.POLZA_API_KEY or settings.DEEPSEEK_API_KEY)
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _is_live_llm_and_qdrant_ready(), reason="Live local Qwen3.8-27B / Qdrant not running")
 class TestLivePolzaQueryPipeline:
     def test_live_what_can_you_do_meta_assistant(self) -> None:
         agent = TableAwareRAGAgent()

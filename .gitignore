@@ -16,11 +16,14 @@ env/
 
 # Data & Indexes (runtime / large / root-owned)
 data/qdrant_storage/
+data/storage/
+data/.qdrant-initialized
 qdrant_storage/
 data/embed_cache/
 data/preview_cache/
 data/uploads/
 data/index/
+logs/
 *.log
 
 # Local benchmark evaluation dumps

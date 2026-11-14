@@ -618,7 +618,7 @@ def run_t05_backward_compat_10_scenarios(api_url: str | None = None) -> TableSce
         sqlite_matched_count=passed_cnt,
         used_table_tools=False,
         tool_calls_count=0,
-        model_used="baai/bge-m3 + BM25 RRF",
+        model_used="BAAI/bge-m3 + BM25 RRF",
         tool_traces=[],
         answer_excerpt=f"Пройдено {passed_cnt}/{total_cnt} сценариев, Δdense={dense_margin:+.4f}, Δconf={conf_margin:+.4f}",
         details=details,

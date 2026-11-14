@@ -13,6 +13,12 @@ from openai import OpenAI
 
 from src.config import settings
 from src.indexing.table_store import OPENAI_TABLE_TOOLS, StructuredTableStore
+from src.retrieval.local_llm import (
+    LOCAL_QWEN_MODELS,
+    create_llm_client,
+    parse_qwen3_xml_tool_calls,
+    strip_thinking_tags,
+)
 from src.retrieval.query_pipeline import QueryPipeline, is_meta_assistant_query
 from src.retrieval.quote_verifier import (
     build_source_label,
@@ -366,7 +372,7 @@ class TableAwareRAGAgent:
         api_key: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
-        timeout: float = 75.0,
+        timeout: float = 120.0,
         query_pipeline: QueryPipeline | None = None,
         enable_query_pipeline: bool | None = None,
     ) -> None:
@@ -377,13 +383,13 @@ class TableAwareRAGAgent:
         self._has_custom_client: bool = injected_client is not None
         self.api_key: str = settings.llm_api_key if api_key is None else api_key
         self.base_url: str = (base_url or settings.llm_base_url).rstrip("/")
-        self.default_model: str = (model or settings.llm_model or "deepseek-chat").strip()
-        self.llm_provider: str = (
-            "deepseek"
-            if "deepseek.com" in self.base_url.lower()
-            or (base_url is None and settings.llm_provider == "deepseek")
-            else "polza"
-        )
+        self.default_model: str = (model or settings.llm_model or "Qwen/Qwen3.8-27B").strip()
+        if "deepseek.com" in self.base_url.lower() or (base_url is None and settings.llm_provider == "deepseek"):
+            self.llm_provider: str = "deepseek"
+        elif "polza.ai" in self.base_url.lower() or (base_url is None and settings.llm_provider == "polza"):
+            self.llm_provider = "polza"
+        else:
+            self.llm_provider = "local"
         self.timeout: float = timeout
         self._verified_model: str | None = None
         self._query_pipeline: QueryPipeline | None = query_pipeline
@@ -391,16 +397,17 @@ class TableAwareRAGAgent:
 
     @property
     def client(self) -> Any:
-        """Return injected or lazily constructed OpenAI client pointed at Polza AI."""
+        """Return injected or lazily constructed local 4-bit Qwen3.8-27B / OpenAI-compatible client."""
         if self._client is not None:
             return self._client
         if not self.api_key:
             return None
-        self._client = OpenAI(
+        self._client = create_llm_client(
             api_key=self.api_key,
             base_url=self.base_url,
             timeout=self.timeout,
-            max_retries=2,
+            max_retries=0 if self.llm_provider == "local" else 2,
+            llm_provider=self.llm_provider,
         )
         return self._client
 
@@ -419,6 +426,7 @@ class TableAwareRAGAgent:
                 api_key=self.api_key,
                 base_url=self.base_url,
                 model=self.default_model,
+                timeout=self.timeout,
             )
         else:
             if self._query_pipeline.search_service is not self.search_service:
@@ -478,6 +486,12 @@ class TableAwareRAGAgent:
                     explicit,
                     self.default_model,
                 )
+            elif self.llm_provider == "local" and explicit not in LOCAL_QWEN_MODELS and not self._has_custom_client:
+                logger.info(
+                    "Mapping requested model '%s' to local 4-bit model '%s'.",
+                    explicit,
+                    self.default_model,
+                )
             else:
                 ordered.append(explicit)
         elif self._verified_model:
@@ -487,11 +501,12 @@ class TableAwareRAGAgent:
             ordered.append(self.default_model)
 
         if not self._has_custom_client:
-            fallbacks = (
-                DEEPSEEK_FALLBACK_MODELS
-                if self.llm_provider == "deepseek"
-                else POLZA_TOOL_FALLBACK_MODELS
-            )
+            if self.llm_provider == "local":
+                fallbacks: tuple[str, ...] = LOCAL_QWEN_MODELS
+            elif self.llm_provider == "deepseek":
+                fallbacks = DEEPSEEK_FALLBACK_MODELS
+            else:
+                fallbacks = POLZA_TOOL_FALLBACK_MODELS
             for m in fallbacks:
                 if m not in ordered:
                     ordered.append(m)
@@ -822,6 +837,11 @@ class TableAwareRAGAgent:
                     exc,
                 )
                 if self._has_custom_client:
+                    break
+                if (
+                    self.llm_provider == "local"
+                    and not any(k in str(exc).lower() for k in ("not found", "does not exist", "404"))
+                ):
                     break
 
         assert last_exc is not None
@@ -1622,7 +1642,7 @@ class TableAwareRAGAgent:
                 )
                 choices = list(getattr(resp, "choices", None) or [])
                 if choices:
-                    txt = str(getattr(choices[0].message, "content", None) or "").strip()
+                    txt = strip_thinking_tags(str(getattr(choices[0].message, "content", None) or ""))
                     txt = re.sub(r"(?m)^\s*>\s*", "", txt)
                     if txt:
                         return txt, resolved_model
@@ -1796,9 +1816,13 @@ class TableAwareRAGAgent:
                     if not choices:
                         break
                     msg = choices[0].message
-                    msg_content = str(getattr(msg, "content", None) or "").strip()
+                    raw_msg_content = str(getattr(msg, "content", None) or "").strip()
                     raw_tool_calls = getattr(msg, "tool_calls", None)
                     tool_calls_list = list(raw_tool_calls) if raw_tool_calls else []
+                    if not tool_calls_list and allow_tools_now and "<tool_call>" in raw_msg_content:
+                        msg_content, tool_calls_list = parse_qwen3_xml_tool_calls(raw_msg_content)
+                    else:
+                        msg_content = strip_thinking_tags(raw_msg_content)
 
                     if not tool_calls_list or not allow_tools_now:
                         final_answer = msg_content
@@ -1960,6 +1984,11 @@ class TableAwareRAGAgent:
                     exc,
                 )
                 if self._has_custom_client:
+                    break
+                if (
+                    self.llm_provider == "local"
+                    and not any(k in str(exc).lower() for k in ("not found", "does not exist", "404"))
+                ):
                     break
         assert last_exc is not None
         raise last_exc

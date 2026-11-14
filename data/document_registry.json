@@ -2,7 +2,7 @@
   "order_3065_1": {
     "doc_id": "order_3065_1",
     "file_name": "Приказ N 3065-1 от 25.11.2021.docx",
-    "file_path": "/home/arz/hac2/доки/Приказ N 3065-1 от 25.11.2021.docx",
+    "file_path": "/root/INBICST_hack80/доки/Приказ N 3065-1 от 25.11.2021.docx",
     "file_format": "docx",
     "sha256": "6727a73550f01bb87f29dd4aa143336f4c03d88460fbc1d1f45011b5a590fc5d",
     "doc_number": "3065-1",
@@ -32,13 +32,16 @@
     "chunk_count": 117,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:27:36Z",
+    "indexed_at": "2026-11-14T16:16:45Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
       "order_number": "3065-1",
       "order_date": "2021-11-25",
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "amendment::изменении регламента открытия финансового лицевого счета",
       "clause_page_map": {
         "1": [
           1
@@ -255,8 +258,8 @@
         ]
       },
       "norm_sections_sha256": "aa2c7ba9165fda59546a65dc3e3e05f5067970e6e7cce73f7632be96b633ff43",
-      "norm_text_sha256": "aa2c7ba9165fda59546a65dc3e3e05f5067970e6e7cce73f7632be96b633ff43",
-      "norm_text_char_len": 40992,
+      "norm_chunks_sha256": "585c2950dafd8918d68e993e9338879635ca4526cef56da873534920470ae8f1",
+      "norm_blocks_sha256": "65c6276499ce055fbb5b9c7af2507ad96313d659a23c16f90ff92ffd3cfc02d4",
       "chunk_content_hashes": [
         "01a19b112da49b823935b2ccbd2c14663e874ad4fb1bcf7a8750c2fe6f381846",
         "05abe953043d7f56acbebf391dcc0bd0bffe0ac57ede9cdcd42c0aed3f742414",
@@ -264,7 +267,6 @@
         "0861d7c2410413e4af86457fbc4533b319bd6965bfb0e68e7f9b1637796819b1",
         "0cad33a253031532f70845dd815695674dcfceaaf5a66a96ebc1268dd6f3f5e7",
         "1582508061530363bd8905a14568e99ef254484bbbab810a7062b000e8874955",
-        "17a92d3cd988694bb2fe8c6c9c65ea6e501c02a7c08a15874b5fd5f9e16ebf68",
         "187c555c69bccd48b3e6398cb4d03875935cf7b0e22c2937267ba897f43ff12d",
         "1ceb67984ff4cd85bddedf730a6a529d8750fe500d2c45f03bd4b5709a42f4ee",
         "1e2233dfff364517562e193c978317090f770dc4d42ef1b670a29515513eb844",
@@ -372,10 +374,11 @@
         "f8452a7ad38dba8c28f84b62a1e67647d4ef7384fef59c37baba2c2083b74225",
         "fa0d5018177413eb4615fe3aad848cc9f73737a9e9ddcafd593b44eb20f74983",
         "ffa78e3b2fb21c0ab958231116b32236a0d401fdf6cee1f3fd2528c43293e0a9"
-      ],
-      "edition_date": "",
-      "version_family": "amendment::изменении регламента открытия финансового лицевого счета"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "amendment::изменении регламента открытия финансового лицевого счета",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -593,15 +596,12 @@
       "6, 7": [
         4
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "amendment::изменении регламента открытия финансового лицевого счета"
+    }
   },
   "order_3614_1_2025": {
     "doc_id": "order_3614_1_2025",
     "file_name": "Приказ N 3614-1 от 11.08.2025 по Фин.структуре 2026г..docx",
-    "file_path": "/home/arz/hac2/доки/Приказ N 3614-1 от 11.08.2025 по Фин.структуре 2026г..docx",
+    "file_path": "/root/INBICST_hack80/доки/Приказ N 3614-1 от 11.08.2025 по Фин.структуре 2026г..docx",
     "file_format": "docx",
     "sha256": "492e44d578352801406124bb28997f4eb9a40a8a212254f42f2c7fa437a20949",
     "doc_number": "3614-1",
@@ -626,13 +626,19 @@
     "also_in_files": [
       "Приложение к приказу об утверждении фин. структуры 2026г..xlsx"
     ],
-    "indexed_at": "2026-11-13T00:27:38Z",
+    "indexed_at": "2026-11-14T16:16:49Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
       "order_number": "3614-1",
       "order_date": "2025-08-11",
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::финансовой структуры",
+      "target_plan_years": [
+        2026
+      ],
       "clause_page_map": {
         "1": [
           1
@@ -1584,8 +1590,8 @@
         ]
       },
       "norm_sections_sha256": "f5b08b2335d7813c39926100578326ff35747d96f6f12bb7a3dc04534d8fe758",
-      "norm_text_sha256": "f5b08b2335d7813c39926100578326ff35747d96f6f12bb7a3dc04534d8fe758",
-      "norm_text_char_len": 111293,
+      "norm_chunks_sha256": "7fa8eab8508b38f16b6f6d726a6bc4ad5c28a4aaeb3d23347acd5f675b000bab",
+      "norm_blocks_sha256": "e8c5420aff0b36de07be83fea876791cd65a581c65cc2af2cf07741ca72f89ef",
       "chunk_content_hashes": [
         "004f6d132ee7bb4e64535f2d95ff39b1de87328847bcebb5580580a8c29970c8",
         "043c24020eb9df102d56dc1be1f553960642f68b369e58effece5881badd4ca7",
@@ -1656,7 +1662,6 @@
         "513014df269d311fddea1a3d3ce8b34271378b473584c9720fe57f367f93ba1a",
         "514bb6627164095079cabb82f5c119902987b05826abfa2bf8efc85478e516e8",
         "537a2339409040bbb3e9a9d7ec769aae94d1e74be99e35e603c12697a39f08fb",
-        "543a4ac6acbb50d5871cf05d9a28c2816a014a41e692f20fde91fff9a977d31b",
         "578ec76cec19b084a21d6945b707ab3bd247dc33632ec3443157061267a55a79",
         "58155cdd6355cf1400b572e89cf83e7b1dbb7270e19f32505f7f5d27a3ee0fb5",
         "58dc717b465e688a8f89c5aca1fc54d5b50d6995698115ae00c372d06887ff89",
@@ -1839,15 +1844,11 @@
         "ff69ded5fb516775473c1853cfae3a8cb11f982c5a7ee0463426f27895dc0051",
         "ffa05922abdd724a0a2a78451bf0dd3f6b20763b7f31d93dc3fa5c516f284ad4",
         "fff758b29a285f9ace6d6b4052708e74b8a329b2e36f8ba284bce045f00f8f9a"
-      ],
-      "target_plan_years": [
-        2026,
-        2027,
-        2028
-      ],
-      "edition_date": "",
-      "version_family": "normative::финансовой структуры"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::финансовой структуры",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -2800,15 +2801,12 @@
       "п. Таблица (табл. ч. 66) (ч. 2)": [
         3
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::финансовой структуры"
+    }
   },
   "order_3699_1_2025": {
     "doc_id": "order_3699_1_2025",
     "file_name": "Приказ N 3699-1 от 18.08.2025.docx",
-    "file_path": "/home/arz/hac2/доки/Приказ N 3699-1 от 18.08.2025.docx",
+    "file_path": "/root/INBICST_hack80/доки/Приказ N 3699-1 от 18.08.2025.docx",
     "file_format": "docx",
     "sha256": "51fb8534e70ad0722ddb1e4270a6e038be842ac03e24faa38eddfcfc78bd507e",
     "doc_number": "3699-1",
@@ -2835,13 +2833,21 @@
     "also_in_files": [
       "Приложения к приказу_ о формировании бюджетирования  2026г..docx"
     ],
-    "indexed_at": "2026-11-13T00:27:40Z",
+    "indexed_at": "2026-11-14T16:16:55Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
       "order_number": "3699-1",
       "order_date": "2025-08-18",
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::реализации процесса формирования бюджетов структурных подразделений и плана финансово-хозяйственной деятельности",
+      "target_plan_years": [
+        2026,
+        2027,
+        2028
+      ],
       "clause_page_map": {
         "1": [
           1,
@@ -3143,8 +3149,8 @@
         ]
       },
       "norm_sections_sha256": "e450fa54a767d9a715f6f88dd2513effb5ec688cc0a46a6b3f5b7f96c7b1ce09",
-      "norm_text_sha256": "e450fa54a767d9a715f6f88dd2513effb5ec688cc0a46a6b3f5b7f96c7b1ce09",
-      "norm_text_char_len": 38225,
+      "norm_chunks_sha256": "3c487f0462f788ce2fcfa5687a76ea649584bd777e790bd4e4d2650255e92fc4",
+      "norm_blocks_sha256": "68362a85fc1ef776de30d3a177f1bf1c015ae114d0fde17f32a65bfa8dbb95ec",
       "chunk_content_hashes": [
         "02a77b6b6d4e9035d53f9efddb76ca0fe8fce5b75ccd940298f1852beab060fb",
         "0a2648c8f7e0acaa3e8f11690773d712468497353251880ba4b719ee7076e657",
@@ -3176,7 +3182,6 @@
         "34cb13d16150dce116510be029185f7b284b8839235fa17f9ad8bae4ad59be42",
         "36372395f9029e964563dcb88432b8c5e0936632bb9416c0426ce449850e142b",
         "368d02765a457de0ead31b81ee45fa5f6dfe33d29d698f609c029bdeee926c27",
-        "37f21b14d67251b8489ccc3517d89d4c06b1971abdaec4b168265a830b2d279e",
         "3a9b49f519766819e6ac291f2f882ec561e03266cfe0229224174228ee7d22db",
         "3ba4c072d0af68b4d7f29a96222dc81df0fb8056b6dbd73b87efb911fcff8e85",
         "3e67a3be0248ac140a0e20d61ef278add83d34c976d98461e9ec366b6fe68058",
@@ -3263,15 +3268,11 @@
         "f8ac944ccab0aa40ee9e5584903a17f944e705189b3d27fba605211d63051c14",
         "fcfc8937f82efe79c65edc1e44ac7e061821013961b2bc5501d47a951e4cc79a",
         "fe3bd9952a8b02cada5ae6aa91d34e1c4bba83fb0a7dbaf9cbf2c022c5fd325a"
-      ],
-      "target_plan_years": [
-        2026,
-        2027,
-        2028
-      ],
-      "edition_date": "",
-      "version_family": "normative::реализации процесса формирования бюджетов структурных подразделений и плана финансово-хозяйственной деятельности"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::реализации процесса формирования бюджетов структурных подразделений и плана финансово-хозяйственной деятельности",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -3574,15 +3575,12 @@
       "Таблица (табл. ч. 8)": [
         3
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::реализации процесса формирования бюджетов структурных подразделений и плана финансово-хозяйственной деятельности"
+    }
   },
   "order_794_1_2023": {
     "doc_id": "order_794_1_2023",
     "file_name": "Приказ N 794-1 от 28.03.2023.docx",
-    "file_path": "/home/arz/hac2/доки/Приказ N 794-1 от 28.03.2023.docx",
+    "file_path": "/root/INBICST_hack80/доки/Приказ N 794-1 от 28.03.2023.docx",
     "file_format": "docx",
     "sha256": "9781a32433903ed9fb94e136e33e3b5a8acd14ade378630091abe14556d2d914",
     "doc_number": "794-1",
@@ -3611,13 +3609,16 @@
     "chunk_count": 23,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:27:42Z",
+    "indexed_at": "2026-11-14T16:16:58Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
       "order_number": "794-1",
       "order_date": "2023-03-28",
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "amendment::внесении изменений в приказ",
       "clause_page_map": {
         "1": [
           1
@@ -3717,10 +3718,9 @@
         ]
       },
       "norm_sections_sha256": "a824611918492d96550a1619711e9b126bcb6bd680271daf3b141b5d94a6fee0",
-      "norm_text_sha256": "a824611918492d96550a1619711e9b126bcb6bd680271daf3b141b5d94a6fee0",
-      "norm_text_char_len": 6738,
+      "norm_chunks_sha256": "ade2e3af9f1924115282b70b364a39bfc5723d572828234522c1fd33074b5efc",
+      "norm_blocks_sha256": "2dba2218de8d3f2658be4c2161353c98f4a3e84e23cebde31d8e2951cf61b94f",
       "chunk_content_hashes": [
-        "0cbf94df2fcfa43edd25e8532570dc968335abcfa09459b53d035375b7c56cc9",
         "18d86ef2c82da0931c23eb4923f6151ce54f105a5082361da98c29a98a86b071",
         "35e5c45bdbb5a03e134526b27aa7f7e692dccc01aec3dd841c981a3431e123ea",
         "3dba8dcd76f704a822ee0e9552bf41f40fe2d561486f8bd17a922e20b98e80fc",
@@ -3742,10 +3742,11 @@
         "eabadd5b1686651d3e5b4aeb204095672ae74197d480cde3f84c8c39e4efbbfb",
         "eb287e6fd7b9b7d323c4eee9f7d9d685a7ef5f404cc4d9f3a62764e54edef358",
         "fc657dbc17a863d101e3f12ac34bd88f424d050108a636a232cc9a7612a3b77d"
-      ],
-      "edition_date": "",
-      "version_family": "amendment::внесении изменений в приказ"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "amendment::внесении изменений в приказ",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -3846,15 +3847,12 @@
       "2.5.6": [
         3
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "amendment::внесении изменений в приказ"
+    }
   },
   "reg_first_line_support": {
     "doc_id": "reg_first_line_support",
     "file_name": "Приказ и Регламент работы первой линии техподдержки.pdf",
-    "file_path": "/home/arz/hac2/доки/Приказ и Регламент работы первой линии техподдержки.pdf",
+    "file_path": "/root/INBICST_hack80/доки/Приказ и Регламент работы первой линии техподдержки.pdf",
     "file_format": "pdf",
     "sha256": "f3ce38fc92bdd0c2e32749eee1de039cbc2e15abb109b04085b9aa2cdc7f1f94",
     "doc_number": "2993-1",
@@ -3877,13 +3875,16 @@
     "chunk_count": 18,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:27:43Z",
+    "indexed_at": "2026-11-14T16:17:00Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
       "order_number": "2993-1",
       "order_date": "2026-06-19",
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::регламент работы первой линии техподдержки",
       "clause_page_map": {
         "1": [
           1
@@ -4003,8 +4004,8 @@
         ]
       },
       "norm_sections_sha256": "02fc8ecb48ec3a49006719e88410a3b0ca832331476f123cf43e4dd7498ecc1e",
-      "norm_text_sha256": "02fc8ecb48ec3a49006719e88410a3b0ca832331476f123cf43e4dd7498ecc1e",
-      "norm_text_char_len": 5690,
+      "norm_chunks_sha256": "d057a950f690634bd30568c3a05260a70542f9de2eb9ebe2eba3da6068e93773",
+      "norm_blocks_sha256": "3183d56f85f5a0fa92d130204316654fa9677b975864f04fd38af58333c96268",
       "chunk_content_hashes": [
         "07af673631d940077da847bb4232228aee89f5b77ad3b402d8c6347a651379e2",
         "28b56039666e0d489e6c72f6eb0c97ab2b35a5e14fd5e1cb4f8aaa8c4b3ac38d",
@@ -4024,10 +4025,11 @@
         "e56d769f29fe4f439ce0abd19f0301cd9d60d482ac3831bc3ccc15cbe73980cb",
         "ea0ba09f8d08a1ab541bd257bb149cd8ed191fc5d777a1ee11daf1b5a1444a17",
         "f35e90ccd42f1077307dc89c33abee9c88d4188c7fa9929321931dc5c2cf0582"
-      ],
-      "edition_date": "",
-      "version_family": "normative::регламент работы первой линии техподдержки"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::регламент работы первой линии техподдержки",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -4148,15 +4150,12 @@
       "5.2, 5.3, 5.4": [
         4
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::регламент работы первой линии техподдержки"
+    }
   },
   "order_5990_1_2026": {
     "doc_id": "order_5990_1_2026",
     "file_name": "Приказ №  5990-1 от 03.11.2026 новый.pdf",
-    "file_path": "/home/arz/hac2/доки/Приказ №  5990-1 от 03.11.2026 новый.pdf",
+    "file_path": "/root/INBICST_hack80/доки/Приказ №  5990-1 от 03.11.2026 новый.pdf",
     "file_format": "pdf",
     "sha256": "0788efe4cf5df8a9561293eb28d25db87113cebbc29252cb249aae84a046d29f",
     "doc_number": "5990-1",
@@ -4182,13 +4181,16 @@
     "chunk_count": 34,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:27:48Z",
+    "indexed_at": "2026-11-14T16:17:04Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
       "order_number": "5990-1",
       "order_date": "2026-11-03",
+      "edition_date": "",
+      "edition_number": "новая",
+      "version_family": "normative::регламент о внутреннем заимствовании для реализации научных образовательных и прочих проектов",
       "clause_page_map": {
         "1": [
           1,
@@ -4297,8 +4299,8 @@
         ]
       },
       "norm_sections_sha256": "2966e079103fb6ba34aef00407982ce6cf37f487b844ffdbb2d379b8330c4b90",
-      "norm_text_sha256": "2966e079103fb6ba34aef00407982ce6cf37f487b844ffdbb2d379b8330c4b90",
-      "norm_text_char_len": 13056,
+      "norm_chunks_sha256": "42c6b67cc0d0ac1a3ae3599c632315076fde3db6f6d36d7ecfd562e15ddce8b9",
+      "norm_blocks_sha256": "d73f5b0c762d8ccfc2e78a34ec632fc09b2f34cc3576ac7d1685961133a41027",
       "chunk_content_hashes": [
         "0461151f54a760637c0016d233be2cf34c8e4aa41bff25d860ce5dcf9aec6538",
         "07ef838c100dcf4e12e01407dd49d0bd46faa2ecd711b8ea29ceb16a297621fb",
@@ -4328,16 +4330,15 @@
         "bbd8be13ca8c033925f96282a9aff445357cf36e9cc88de76fa40586cf47939d",
         "c22b0869cfa05f48442efc3306fe39bfd6980b1ebf4f95191e8f3b8f981c8805",
         "c9b08cba23e08739b644e90a181a33e5abed6b4fab138e50b14a8ac0168226bf",
-        "cb7519fa7c5ef69a86c4dbe221912e2fff9a270c9eda3686596e8745d2f992d0",
         "d66a80010d4494e1085583fa059a342c5fd937242e06db87e2d66d84061cd505",
         "d92075a067f68d2cbee32a3799c67df73a8ca62ef98bc4c88346125a5c122f01",
         "f090fe1d2f0a01ea2fe70b7d84da0d8cb01c8d47c05e8dc97516dcd768a4e377",
         "f289ab01eec685e4370bcf6b76b0466fc9cd75c82ae4104885488381e4fc8a32"
-      ],
-      "edition_date": "",
-      "edition_number": "новая",
-      "version_family": "normative::регламент о внутреннем заимствовании для реализации научных образовательных и прочих проектов"
+      ]
     },
+    "edition_date": "",
+    "edition_number": "новая",
+    "version_family": "normative::регламент о внутреннем заимствовании для реализации научных образовательных и прочих проектов",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -4447,15 +4448,12 @@
         6,
         7
       ]
-    },
-    "edition_date": "",
-    "edition_number": "новая",
-    "version_family": "normative::регламент о внутреннем заимствовании для реализации научных образовательных и прочих проектов"
+    }
   },
   "app_1_smeta_2019_xlsx": {
     "doc_id": "app_1_smeta_2019_xlsx",
     "file_name": "Приложение 1_новая смета 2019 (с незащищенными формулами).xlsx",
-    "file_path": "/home/arz/hac2/доки/Приложение 1_новая смета 2019 (с незащищенными формулами).xlsx",
+    "file_path": "/root/INBICST_hack80/доки/Приложение 1_новая смета 2019 (с незащищенными формулами).xlsx",
     "file_format": "xlsx",
     "sha256": "8bcea11517bcd24ac0c50c5f51f899e5dba186babe842876629a5f71c6b916d2",
     "doc_number": "",
@@ -4477,7 +4475,7 @@
     ],
     "amends": [],
     "amended_by": [],
-    "version_note": "ВНИМАНИЕ (Смена редакции): Печатная форма сметы 2019 г. (Приказ № 1469-1 от 11.10.2019) заменена Приказом № 794-1 от 28.03.2023 на помесячный бланк Приложение 1а в 1С:ДО (и 1б для РЦНИ). Данный файл 2019 г. сохраняется в статусе справочного эталона (superseded_template_reference), так как содержит коды КВР/КОСГУ и расчетные формулы. Отменен / заменен документом № app_1a_smeta_blank.",
+    "version_note": "ВНИМАНИЕ (Смена редакции): Печатная форма сметы 2019 г. (Приказ № 1469-1 от 11.10.2019) заменена Приказом № 794-1 от 28.03.2023 на помесячный бланк Приложение 1а в 1С:ДО (и 1б для РЦНИ). Данный файл 2019 г. сохраняется в статусе справочного эталона (superseded_template_reference), так как содержит коды КВР/КОСГУ и расчетные формулы. Утратил актуальность: действует более новая редакция — Приложение 1а Бланк сметы от 2026 г..",
     "quality_warning": "Книга Excel сохранена без пересчета кэшированных значений формул (cached_value=None); извлечены расчетные формулы [формула: =...] и коды КВР/КОСГУ.",
     "pages_total": 2,
     "ocr_pages": 0,
@@ -4485,11 +4483,14 @@
     "chunk_count": 91,
     "tables_count": 2,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:27:56Z",
+    "indexed_at": "2026-11-14T16:17:09Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "form::приложение 1 смета с незащищенными формулами",
       "clause_page_map": {
         "Форма (ч. 1)": [
           1,
@@ -4853,8 +4854,8 @@
         ]
       },
       "norm_sections_sha256": "664d94fc251ec1e394fa0eaf88c132bf006b3b242967ccf5c2f0b67db86d308a",
-      "norm_text_sha256": "664d94fc251ec1e394fa0eaf88c132bf006b3b242967ccf5c2f0b67db86d308a",
-      "norm_text_char_len": 38476,
+      "norm_chunks_sha256": "02fb11d2bce768c21990c4fab6e0da708e6b4ba34700cb5821950c48f604016e",
+      "norm_blocks_sha256": "c6f380e3639f30f3f5fc6ab9d63f356004c1b4b19a92fb6725818899f6b6d7ad",
       "chunk_content_hashes": [
         "02583137fa2b88d2f9260824b9c8487f4c08e54827c324de9275395db66152b8",
         "02ad83ae2224ffe00027e5f101f35ab8ac72f4fdfb0325033bafc0de14bafbff",
@@ -4946,10 +4947,11 @@
         "e8729a9ae2c4ea07329294bf44c61310fc6336e40bbc7408b0900b37cfd3d248",
         "f123caa0a2889de82590b93e1f94ad92743e16f52c6c8e8310d177e73e274042",
         "fe0a122f3bbaa5470385097d500592f546d3ebee2b8dcfc7a519956234f6abf1"
-      ],
-      "edition_date": "",
-      "version_family": "form::приложение 1 смета с незащищенными формулами"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "form::приложение 1 смета с незащищенными формулами",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -5314,15 +5316,12 @@
         1,
         2
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "form::приложение 1 смета с незащищенными формулами"
+    }
   },
   "app_1a_smeta_blank": {
     "doc_id": "app_1a_smeta_blank",
     "file_name": "Приложение 1а Бланк сметы.docx",
-    "file_path": "/home/arz/hac2/доки/Приложение 1а Бланк сметы.docx",
+    "file_path": "/root/INBICST_hack80/доки/Приложение 1а Бланк сметы.docx",
     "file_format": "docx",
     "sha256": "5642563998510c8bfe9f7713367479631c4711c0b02e6cd3dca2454b2e984800",
     "doc_number": "",
@@ -5350,11 +5349,14 @@
     "chunk_count": 8,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:27:57Z",
+    "indexed_at": "2026-11-14T16:17:12Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "form::приложение 1а бланк сметы",
       "clause_page_map": {
         "Форма": [
           1
@@ -5370,8 +5372,8 @@
         ]
       },
       "norm_sections_sha256": "a2fe7d4f8ae86f6b815adaf354530e7acf3119483986dfedaea3a76eb94d630d",
-      "norm_text_sha256": "a2fe7d4f8ae86f6b815adaf354530e7acf3119483986dfedaea3a76eb94d630d",
-      "norm_text_char_len": 1404,
+      "norm_chunks_sha256": "a2fe7d4f8ae86f6b815adaf354530e7acf3119483986dfedaea3a76eb94d630d",
+      "norm_blocks_sha256": "9a7f39d633a250f5b52e5b9634a62fd1a3eb6408c8eca0a3070024fc9092c9f7",
       "chunk_content_hashes": [
         "7e3784db9ae37dd58728c6cd3327e1eccf921cc6f31ab063d5b9a92c642c959d",
         "94eb1c600bf20bb02362ff55492dd63a6f17fc42267f370f8402d1a93e7013f6",
@@ -5380,10 +5382,11 @@
         "c250e1daaf0aa94c1dbded61aac8ae70b2288e67aefac265f9523a6aad9b9c19",
         "cad65ac5b6ecc15499f5ab9a0ca2fbc18bffef22d6257dc80884445fdff47d7a",
         "ec4d4a4144f22f358a41ec3318fe451ad639dac752a0042f44257d45371348ef"
-      ],
-      "edition_date": "",
-      "version_family": "form::приложение 1а бланк сметы"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "form::приложение 1а бланк сметы",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -5400,15 +5403,12 @@
       "Таблица (табл. ч. 2)": [
         1
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "form::приложение 1а бланк сметы"
+    }
   },
   "app_fin_struct_2026_xlsx": {
     "doc_id": "app_fin_struct_2026_xlsx",
     "file_name": "Приложение к приказу об утверждении фин. структуры 2026г..xlsx",
-    "file_path": "/home/arz/hac2/доки/Приложение к приказу об утверждении фин. структуры 2026г..xlsx",
+    "file_path": "/root/INBICST_hack80/доки/Приложение к приказу об утверждении фин. структуры 2026г..xlsx",
     "file_format": "xlsx",
     "sha256": "f146a057937aa92322bcb35c2d49f86d8e0ab700af724641b2f3a16c464abbe0",
     "doc_number": "",
@@ -5433,11 +5433,17 @@
     "also_in_files": [
       "Приказ N 3614-1 от 11.08.2025 по Фин.структуре 2026г..docx"
     ],
-    "indexed_at": "2026-11-13T00:27:59Z",
+    "indexed_at": "2026-11-14T16:17:14Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "form::приложение к приказу об утверждении фин структуры",
+      "target_plan_years": [
+        2026
+      ],
       "clause_page_map": {
         "Таблица (табл. ч. 1)": [
           1
@@ -6374,8 +6380,8 @@
         ]
       },
       "norm_sections_sha256": "318d990d3b082a1acfdb206b733ce3b35797b01efb21d91cb2134eea18f73c11",
-      "norm_text_sha256": "318d990d3b082a1acfdb206b733ce3b35797b01efb21d91cb2134eea18f73c11",
-      "norm_text_char_len": 109833,
+      "norm_chunks_sha256": "78289515bc823ea71a9d9431f26f32cb9756389e0fc45b6579e57f4818fd9a70",
+      "norm_blocks_sha256": "9d793afae25b6f60e4611d43ad52e93e6e3c714a3b31cb47ae91f21a3d0c4111",
       "chunk_content_hashes": [
         "004f6d132ee7bb4e64535f2d95ff39b1de87328847bcebb5580580a8c29970c8",
         "043c24020eb9df102d56dc1be1f553960642f68b369e58effece5881badd4ca7",
@@ -6624,13 +6630,11 @@
         "fce4ad829c623068dc37e7add1bd70ac794de78b6924f26ea35d4985427134cf",
         "ff69ded5fb516775473c1853cfae3a8cb11f982c5a7ee0463426f27895dc0051",
         "ffa05922abdd724a0a2a78451bf0dd3f6b20763b7f31d93dc3fa5c516f284ad4"
-      ],
-      "target_plan_years": [
-        2026
-      ],
-      "edition_date": "",
-      "version_family": "form::приложение к приказу об утверждении фин структуры"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "form::приложение к приказу об утверждении фин структуры",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -7568,15 +7572,12 @@
       "п. Таблица (табл. ч. 66) (ч. 2)": [
         1
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "form::приложение к приказу об утверждении фин структуры"
+    }
   },
   "app_budget_2026_3699_1": {
     "doc_id": "app_budget_2026_3699_1",
     "file_name": "Приложения к приказу_ о формировании бюджетирования  2026г..docx",
-    "file_path": "/home/arz/hac2/доки/Приложения к приказу_ о формировании бюджетирования  2026г..docx",
+    "file_path": "/root/INBICST_hack80/доки/Приложения к приказу_ о формировании бюджетирования  2026г..docx",
     "file_format": "docx",
     "sha256": "73ef8637c388d7abae0b902702db27e1a7f2539b5297b636bdc6b97ebecb1c90",
     "doc_number": "",
@@ -7603,11 +7604,17 @@
     "also_in_files": [
       "Приказ N 3699-1 от 18.08.2025.docx"
     ],
-    "indexed_at": "2026-11-13T00:28:01Z",
+    "indexed_at": "2026-11-14T16:17:20Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "form::приложения к приказу о формировании бюджетирования",
+      "target_plan_years": [
+        2026
+      ],
       "clause_page_map": {
         "Таблица (табл. ч. 1)": [
           1
@@ -7770,8 +7777,8 @@
         ]
       },
       "norm_sections_sha256": "a8a9ef7e1b4c845f87d652c1951e73a33475c586f3e1977e154d16412115e6c6",
-      "norm_text_sha256": "a8a9ef7e1b4c845f87d652c1951e73a33475c586f3e1977e154d16412115e6c6",
-      "norm_text_char_len": 22499,
+      "norm_chunks_sha256": "b7aa04c2125c7e01119ed8f1887886551c19dbd5a288604fdd28f1e0dfcf7f5b",
+      "norm_blocks_sha256": "56ec60acf7b68b8c52abdc1a49fba9fb02ff1c1cccc2615091ae519f4b912acf",
       "chunk_content_hashes": [
         "02a77b6b6d4e9035d53f9efddb76ca0fe8fce5b75ccd940298f1852beab060fb",
         "0a2648c8f7e0acaa3e8f11690773d712468497353251880ba4b719ee7076e657",
@@ -7852,13 +7859,11 @@
         "f8ac944ccab0aa40ee9e5584903a17f944e705189b3d27fba605211d63051c14",
         "fcfc8937f82efe79c65edc1e44ac7e061821013961b2bc5501d47a951e4cc79a",
         "fe3bd9952a8b02cada5ae6aa91d34e1c4bba83fb0a7dbaf9cbf2c022c5fd325a"
-      ],
-      "target_plan_years": [
-        2026
-      ],
-      "edition_date": "",
-      "version_family": "form::приложения к приказу о формировании бюджетирования"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "form::приложения к приказу о формировании бюджетирования",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -8022,15 +8027,12 @@
       "4": [
         1
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "form::приложения к приказу о формировании бюджетирования"
+    }
   },
   "order_700_fls": {
     "doc_id": "order_700_fls",
     "file_name": "Распоряжение N 700 от 28.12.2024 Порядок присвоения номера ФЛС.docx",
-    "file_path": "/home/arz/hac2/доки/Распоряжение N 700 от 28.12.2024 Порядок присвоения номера ФЛС.docx",
+    "file_path": "/root/INBICST_hack80/доки/Распоряжение N 700 от 28.12.2024 Порядок присвоения номера ФЛС.docx",
     "file_format": "docx",
     "sha256": "b8631b19da2fdc238c608f83e46edd34ced538ed8c4fff2b98bdcd3740818001",
     "doc_number": "700",
@@ -8057,13 +8059,16 @@
     "chunk_count": 27,
     "tables_count": 1,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:28:02Z",
+    "indexed_at": "2026-11-14T16:17:22Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
       "order_number": "700",
       "order_date": "2024-12-28",
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::порядок присвоения номера флс",
       "clause_page_map": {
         "1": [
           1
@@ -8166,14 +8171,13 @@
         ]
       },
       "norm_sections_sha256": "c34209084618a0a6479d0ac32270e9e63bcbec350bf9a465efc72bf932b00ae1",
-      "norm_text_sha256": "c34209084618a0a6479d0ac32270e9e63bcbec350bf9a465efc72bf932b00ae1",
-      "norm_text_char_len": 10491,
+      "norm_chunks_sha256": "777a75e393fb86ed0e1df97c7d418511679267432b9d513ae3ede942ea43c283",
+      "norm_blocks_sha256": "514f44a972ff4a87064da66470ee9e739a0892bd147cbd91d51f1f565f9c49fd",
       "chunk_content_hashes": [
         "04ba3d35913f3b60286a84de166e795decad117ab018a9ddd7a311bb0c6a901d",
         "05918acd45392e62eefe366c8a332f755b501b5bfc838eb277cc31535423d456",
         "15955c32e55998c0f42b3623e095cc2937d9a032529d728d7fd64f5786dc8bf3",
         "223fe224ce1c12d94367b9693f9544e3c095c893915921312ca14fd00350e5dc",
-        "360933030fef8c682fb51da560b2652874e15cf221073706f13210f6f52dc1a5",
         "373cbe6a20275c24338d5706c776b3752fcbad9d7bdc0c3fac97dc2767ca8cd8",
         "3f990f811d6e9bf674fba9b2c339f5fc9456ad0a69b8f4d9f5a097b677bb3548",
         "42c83696ff57e4f6e3021f10ee3f055d8ce350d7ab716c9996a462440b670294",
@@ -8195,10 +8199,11 @@
         "e41a157cc5a130f3c4514a22c0b1b22582f2896f3c9a0d99a320c36ea5edbbfc",
         "e7f160e03165d824c97a7fbaf75f47413d0c321cee311f64830416fa3759ed65",
         "ee55d1e4b1797818078012d487f58f86810461d5a4b8601f721b4ea60e660e1c"
-      ],
-      "edition_date": "",
-      "version_family": "normative::порядок присвоения номера флс"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::порядок присвоения номера флс",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -8302,789 +8307,12 @@
       "3.2": [
         3
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::порядок присвоения номера флс"
-  },
-  "reg_concert_hall_booking": {
-    "doc_id": "reg_concert_hall_booking",
-    "file_name": "Регламент бронирования конц зала.pdf",
-    "file_path": "/home/arz/hac2/доки/Регламент бронирования конц зала.pdf",
-    "file_format": "pdf",
-    "sha256": "2a8080d448c07b891954b7666e734d93c9feb37523027b27f4bf6a89736d940f",
-    "doc_number": "3897-1",
-    "doc_date": "2025-09-01",
-    "doc_type": "Регламент",
-    "title": "Регламент бронирования конц зала",
-    "status": "active",
-    "applicable_years": [
-      2025
-    ],
-    "supersedes": [],
-    "superseded_by": [],
-    "amends": [],
-    "amended_by": [],
-    "version_note": "",
-    "quality_warning": "",
-    "pages_total": 14,
-    "ocr_pages": 14,
-    "parent_count": 9,
-    "chunk_count": 74,
-    "tables_count": 0,
-    "also_in_files": [],
-    "indexed_at": "2026-11-13T00:28:13Z",
-    "metadata": {
-      "edo_number": "3897-1",
-      "edo_date": "2025-09-01",
-      "is_edo_stamp": true,
-      "clause_page_map": {
-        "1.1": [
-          1
-        ],
-        "1.2": [
-          1
-        ],
-        "1.3": [
-          1
-        ],
-        "1.4": [
-          1
-        ],
-        "1.3, 1.4": [
-          1
-        ],
-        "1.5": [
-          1
-        ],
-        "1.6": [
-          1
-        ],
-        "1.5, 1.6": [
-          1
-        ],
-        "1.7": [
-          1
-        ],
-        "2.1": [
-          1
-        ],
-        "2.2": [
-          1
-        ],
-        "2.1, 2.2": [
-          1
-        ],
-        "2.3": [
-          1
-        ],
-        "2.4": [
-          1
-        ],
-        "2.3, 2.4": [
-          1
-        ],
-        "2.5": [
-          1
-        ],
-        "2.6": [
-          1
-        ],
-        "2.7": [
-          2
-        ],
-        "2.8": [
-          2
-        ],
-        "3.1": [
-          2
-        ],
-        "3.2": [
-          2
-        ],
-        "3.3": [
-          2
-        ],
-        "3.2, 3.3": [
-          2
-        ],
-        "3.4": [
-          2
-        ],
-        "3.5": [
-          2
-        ],
-        "3.6": [
-          2
-        ],
-        "3.7": [
-          2
-        ],
-        "3.8": [
-          2
-        ],
-        "3.9": [
-          2
-        ],
-        "3.10": [
-          2
-        ],
-        "3.9, 3.10": [
-          2
-        ],
-        "4.1": [
-          2
-        ],
-        "4.2": [
-          2
-        ],
-        "4.3": [
-          3
-        ],
-        "4.2, 4.3": [
-          2,
-          3
-        ],
-        "4.4": [
-          3
-        ],
-        "4.5": [
-          3
-        ],
-        "4.6": [
-          3
-        ],
-        "4.7": [
-          3
-        ],
-        "4.6, 4.7": [
-          3
-        ],
-        "4.8": [
-          3
-        ],
-        "4.9": [
-          3
-        ],
-        "5.1": [
-          3
-        ],
-        "5.2": [
-          3
-        ],
-        "5.3": [
-          3
-        ],
-        "5.4": [
-          3
-        ],
-        "5.5": [
-          3
-        ],
-        "5.4, 5.5": [
-          3
-        ],
-        "6.1": [
-          3
-        ],
-        "Таблица (табл. ч. 1)": [
-          4,
-          5
-        ],
-        "п. Таблица (табл. ч. 1) (ч. 1)": [
-          4,
-          5
-        ],
-        "п. Таблица (табл. ч. 1) (ч. 2)": [
-          4,
-          5
-        ],
-        "Таблица (табл. ч. 2)": [
-          4,
-          5
-        ],
-        "п. Таблица (табл. ч. 2) (ч. 1)": [
-          4,
-          5
-        ],
-        "п. Таблица (табл. ч. 2) (ч. 2)": [
-          4,
-          5
-        ],
-        "6.2": [
-          5
-        ],
-        "6.3": [
-          5
-        ],
-        "6.4": [
-          5
-        ],
-        "6.5": [
-          5
-        ],
-        "7": [
-          5
-        ],
-        "1": [
-          5,
-          10,
-          11
-        ],
-        "7, 1": [
-          5
-        ],
-        "2": [
-          5,
-          10,
-          11,
-          12,
-          13,
-          14
-        ],
-        "7, 1, 2": [
-          5
-        ],
-        "6.5, 7, 1, 2": [
-          5
-        ],
-        "Таблица": [
-          6,
-          7
-        ],
-        "Форма (ч. 1)": [
-          7
-        ],
-        "Форма (ч. 2)": [
-          7
-        ],
-        "Форма (ч. 3)": [
-          7
-        ],
-        "п. б/н (ч. 1)": [
-          8,
-          9,
-          10
-        ],
-        "п. б/н (ч. 2)": [
-          8,
-          9,
-          10
-        ],
-        "п. б/н (ч. 3)": [
-          8,
-          9,
-          10
-        ],
-        "п. б/н (ч. 4)": [
-          8,
-          9,
-          10
-        ],
-        "п. б/н (ч. 5)": [
-          8,
-          9,
-          10
-        ],
-        "п. б/н (ч. 6)": [
-          8,
-          9,
-          10
-        ],
-        "3": [
-          10,
-          11
-        ],
-        "4": [
-          10
-        ],
-        "5": [
-          10
-        ],
-        "4, 5": [
-          10
-        ],
-        "п. 2 (ч. 1)": [
-          11,
-          12,
-          13,
-          14
-        ],
-        "п. 2 (ч. 2)": [
-          11,
-          12,
-          13,
-          14
-        ],
-        "п. 2 (ч. 3)": [
-          11,
-          12,
-          13,
-          14
-        ],
-        "п. 2 (ч. 4)": [
-          11,
-          12,
-          13,
-          14
-        ],
-        "п. 2 (ч. 5)": [
-          11,
-          12,
-          13,
-          14
-        ],
-        "п. 2 (ч. 6)": [
-          11,
-          12,
-          13,
-          14
-        ],
-        "п. 2 (ч. 7)": [
-          11,
-          12,
-          13,
-          14
-        ],
-        "п. 2 (ч. 8)": [
-          11,
-          12,
-          13,
-          14
-        ],
-        "п. 2 (ч. 9)": [
-          11,
-          12,
-          13,
-          14
-        ],
-        "п. 2 (ч. 10)": [
-          11,
-          12,
-          13,
-          14
-        ]
-      },
-      "norm_sections_sha256": "aaa30780068e2ab41ac6d48a9e2c6c6458e364babdbadd1a951b1cfeb2a25c7f",
-      "norm_text_sha256": "aaa30780068e2ab41ac6d48a9e2c6c6458e364babdbadd1a951b1cfeb2a25c7f",
-      "norm_text_char_len": 29102,
-      "chunk_content_hashes": [
-        "00a59280e55ddf8cc8e1e91556aa279ff72432140f9124bcb9ced3002d0abdbd",
-        "024e30d8463746e141ff5ad314b676cdff32ab0097c73e8353a75291c484514d",
-        "093e2b89ccdb1faf4464de3eca6b2c5edc74df991a427d8b2fd033e689a8044b",
-        "09c8aad891fc8a6ab77223296d82c9ffcf5f8996dee89466bdd5cf8b1b4a6232",
-        "0a94cfbd590e84f3b320a6c7c4ac496c764c07377798bf9ab13011bfbdb7ca17",
-        "0d3d2dbae42e47625d917919292e41d6a696882edcc504a2c5e87148806aae04",
-        "0f31aedbf6e82be778df872cc5f3c2eb554ad9268ee4050f705f3c5bbcd38b38",
-        "12cb6f87dfd4f0f98d7daee0324dd178f34dc0becf6f3dffbac2dc30910a8ffe",
-        "14eb9d2d122b02c99712ab59b6bac0d56b9cafcc8d2663ce03b6617fa097105d",
-        "180bd5c052ab1dfda67d1e50a481a3fe1fdc6bfa4d8d68942b56d3ed014fce86",
-        "1a37c3fcf818d2cb8582e222e29aa50354662869fe0c5b1bd04538467bc55f3b",
-        "1ac575f74b54ca49b13ad8ea7a4d3d6a9ed64119849081cce172504d04b727f3",
-        "1bc1f71a3835c57600a3a164781233b453c05066b8a491c7ef965d044af5320b",
-        "1f0babdf0c54d89d939d588405d897204363e36a17f319d864b9988eb1eeff35",
-        "22901dfdd201722848c201319f1d89441ecc360ba2cf30055d1c8d1952701986",
-        "2c0d14a24a6f35968a6daefb1034c3158c01c54ec062a5a33c64d8d0ebe89e30",
-        "36ffb2c11cf1cbe1a59f5ea0aad4e4a47dbace8571304dd7faf3865a3118c743",
-        "3758d24521b69c32c9787dc1a3b3731ef9b1b95747eebd34941757e9e74ad85d",
-        "3d66a7db2a144ebe3ea832d81f266b4feb1254d519b756d1e3250e428b5ee50e",
-        "3e65046c459895487ea4b7e0247ae71bfe7e27d5c60abd852e6a51f9e6eba0ae",
-        "3e8f79eb4aa0a507d1a80e8c3011483faf4f78b4ac3697d7cf81ea779da3f368",
-        "4a0d92046f78360a341368bef0a9eb1324b030b702fe182d9e645f487c6cc204",
-        "515cffb0b2388e6dab0868d5863d0959aa2bf623e98361ad98f9fd59ef8fb1f9",
-        "5b22ef3e9c7f9afb7e693c8a233b101d0646efe14fa692d9ce6a3ce7826f4579",
-        "6f6429b5c0fd5ecaea7fd33060b90493d7dea14bb4c17b9757d55c378195cba0",
-        "71579fa2c362f2fa73db401c1b6a43116cdc3e40be82c19b8c075bff4f07f991",
-        "719ae77c5cd031a52049ab73fa51bb2aa8071ca2619ebeb6379257f8ac476a93",
-        "7a85aec7e75f83a492f087be396dafa1d7824dd13e4f5e51e10e25ead932c5fd",
-        "7d3e9bb0d49e94f16162d3e4e98d72f4b3d85bd72e2979429e9e3cc93e880971",
-        "7e835f77f473d64f18fbc2270ae81f2ee4013b9d59e7b2ef4c54e9aad11b87ad",
-        "805297b24d0c48bd8e2bb3d3f6011d0efd15f9af6d97b579df379adcae85e10d",
-        "82d0212edec215fbe5ee7d5ba80b340c79fd516b465ad8e7bc56a03ede267b2c",
-        "845d142fb6e0ce09445c210823d5746249b2dfd01cc212c6d542637079127772",
-        "87dae9c82e916f17b85191a62052e7c0e865010a0f7aa4961a1b4b6afa0749cb",
-        "8ebc0928f54fc4a0e23f91f8bfbd8c65e56d608a733621f1ffd6cb71fb1e289c",
-        "8fa5e409e44460726aa1de9bf79c866dcdf49da90fe7ea06d6273ae50106018f",
-        "903aa528f742c13e657cd453eddbad3a4e718bdf0140982399b886405e6b42b7",
-        "90b31dbb5988190aef117dd8290f3965803a8fe42791e3256b7c1165a520f3b3",
-        "90fc01f1de06d7ad52a8f381d3bbf9df088aa15d6800bdd63ab5c440113e617f",
-        "9195ec7e6d985140731e2f9d23b7a29994aa3b0b559aad151dcc27abf8f6b0db",
-        "9aedcfc9e04468adee66c216432a044bb5726b78cbe809ef0ed62805b94ecb56",
-        "9b22cb6732b7109c1fa361d5577b009415cc2b8d1cef43a630f7292e6401f99b",
-        "9ebc29339702ff4d92458250d88212e2f815e5393510fb3eceeea08d98625e0f",
-        "a437f03fa80483d7e1b829646cd80884e29cca79eb6ac8d6d4fbd367ccb5d903",
-        "a87188b991af17826d98197cbd86c7ee9be74d14630a532f77b1eb948d94bddd",
-        "a9f1da32152702d1be5f8234fe168187d70b520c53a1665fca63ab47833456c1",
-        "aa17b50410911bfe952e07f180a26deafa0b02f645fa98f2a8936e7ba2760191",
-        "b15053834e2160b28e0c02c4fc7b72b16de2c369bbc02ab17d6a359192c8389b",
-        "b5d43b727c7c0216caff1b7148b03637c56269f0d4c1bfeb85151507c93680cb",
-        "b9f17c2a8fbfcaec217026e8fa560ad9d2ce7d16c8210031da6981f121638d7b",
-        "c0eab9e495fd19a44bc6af8a3ec87a68595d9d841da11a70cdeefb0ca58f9d50",
-        "c5513c3d10b96c886c70e893532780c4e3025d005f1c6fb3516e4913d897004b",
-        "c6a0a9c5db566f27bc3c890adbd1a1c43ca0e08f33b6a2fbd87443a41675001b",
-        "c89e8fee917636e57b67d812db160e204f35b7ae09934bcbfcff068bedf68515",
-        "c9c13666c4236cfa9e101578a8132b0049f95ee6f69f9c1bc8777dd0b2185a9d",
-        "cb17b17d8df28a1d6d4e8c5365e8993cbee2397b35e44713e8e9844b22a945f5",
-        "ccb1fcf639fbc64f23fb63955e6ed2a2498006da4d7786c9bbe1d239734711d2",
-        "ce8ee543414fa6a4e1baf036bd97534d7daf5ebe2363b4a74958c0b2d3fbe34d",
-        "cf6ba633d26b5065fa3ef486ecf5174b659d1eba2314c6f553761bb2e430ec06",
-        "d297cac72a0217d86590c717313af9d2c58a67f68c46ecd2231ebc17c5e45728",
-        "dad1a270c8eca2d5803cd5458cb341e6de1c5320c3ca99920a2aca82b0ca3c3c",
-        "dc5700a82873ea16a859d505384348e1ec91cc5329b433cba9e0712c4d5d61df",
-        "dd71c47deb11d30d6fd657bc616d56f398a123571fc36f042f44ce57439f3fa8",
-        "e0212f490088f8f30e5ae843eb48238d1f8e0865282fc8f65159a7b0bbc92914",
-        "e84128b7c0b796d1505430a66e0d2e8799304352af0f51ce4888b4b321a1ca50",
-        "e964818a909ea61d1c70048ddba0dfec77ce144b2cd3942eb23166f3c3c2d189",
-        "ec02dfa7428f65931a13c4bad0a89aaf9aed632ea4f9a3ab123005f465a872a3",
-        "eeb9c5246ab993b964ca1cad9e8cd0b4bc5d17852090bdb516f389c2b97d00f1",
-        "eeee0ab247b9b0c1f098837d58d084296e940e8f6c8715898bbc3f373ace5818",
-        "f22c5bd0c6094c586c3b726f3e286968d230d05bff7a8c752096126e8e0b27c8",
-        "f240d86cf8f57ced6a9583da08fb999dcf02f19197e8c0628b4e584292fadf78",
-        "f2a12f70e2697b0be031322745c326b33eab78b7c9bf696a3489b136ae3d62b3",
-        "f8169a43e8bf97bcb579373b874fc8e86941106bc7f6f5a63ea3be38f32081e5",
-        "fc14d33db14a1e970828730b545fb608c6b69f7a861716f7032e16e49ed5eac6"
-      ],
-      "edition_date": "",
-      "version_family": "normative::регламент бронирования конц зала"
-    },
-    "edo_number": "3897-1",
-    "edo_date": "2025-09-01",
-    "is_edo_stamp": true,
-    "clause_page_map": {
-      "1.1": [
-        1
-      ],
-      "1.2": [
-        1
-      ],
-      "1.3": [
-        1
-      ],
-      "1.4": [
-        1
-      ],
-      "1.3, 1.4": [
-        1
-      ],
-      "1.5": [
-        1
-      ],
-      "1.6": [
-        1
-      ],
-      "1.5, 1.6": [
-        1
-      ],
-      "1.7": [
-        1
-      ],
-      "2.1": [
-        1
-      ],
-      "2.2": [
-        1
-      ],
-      "2.1, 2.2": [
-        1
-      ],
-      "2.3": [
-        1
-      ],
-      "2.4": [
-        1
-      ],
-      "2.3, 2.4": [
-        1
-      ],
-      "2.5": [
-        1
-      ],
-      "2.6": [
-        1
-      ],
-      "2.7": [
-        2
-      ],
-      "2.8": [
-        2
-      ],
-      "3.1": [
-        2
-      ],
-      "3.2": [
-        2
-      ],
-      "3.3": [
-        2
-      ],
-      "3.2, 3.3": [
-        2
-      ],
-      "3.4": [
-        2
-      ],
-      "3.5": [
-        2
-      ],
-      "3.6": [
-        2
-      ],
-      "3.7": [
-        2
-      ],
-      "3.8": [
-        2
-      ],
-      "3.9": [
-        2
-      ],
-      "3.10": [
-        2
-      ],
-      "3.9, 3.10": [
-        2
-      ],
-      "4.1": [
-        2
-      ],
-      "4.2": [
-        2
-      ],
-      "4.3": [
-        3
-      ],
-      "4.2, 4.3": [
-        2,
-        3
-      ],
-      "4.4": [
-        3
-      ],
-      "4.5": [
-        3
-      ],
-      "4.6": [
-        3
-      ],
-      "4.7": [
-        3
-      ],
-      "4.6, 4.7": [
-        3
-      ],
-      "4.8": [
-        3
-      ],
-      "4.9": [
-        3
-      ],
-      "5.1": [
-        3
-      ],
-      "5.2": [
-        3
-      ],
-      "5.3": [
-        3
-      ],
-      "5.4": [
-        3
-      ],
-      "5.5": [
-        3
-      ],
-      "5.4, 5.5": [
-        3
-      ],
-      "6.1": [
-        3
-      ],
-      "Таблица (табл. ч. 1)": [
-        4,
-        5
-      ],
-      "п. Таблица (табл. ч. 1) (ч. 1)": [
-        4,
-        5
-      ],
-      "п. Таблица (табл. ч. 1) (ч. 2)": [
-        4,
-        5
-      ],
-      "Таблица (табл. ч. 2)": [
-        4,
-        5
-      ],
-      "п. Таблица (табл. ч. 2) (ч. 1)": [
-        4,
-        5
-      ],
-      "п. Таблица (табл. ч. 2) (ч. 2)": [
-        4,
-        5
-      ],
-      "6.2": [
-        5
-      ],
-      "6.3": [
-        5
-      ],
-      "6.4": [
-        5
-      ],
-      "6.5": [
-        5
-      ],
-      "7": [
-        5
-      ],
-      "1": [
-        5,
-        10,
-        11
-      ],
-      "7, 1": [
-        5
-      ],
-      "2": [
-        5,
-        10,
-        11,
-        12,
-        13,
-        14
-      ],
-      "7, 1, 2": [
-        5
-      ],
-      "6.5, 7, 1, 2": [
-        5
-      ],
-      "Таблица": [
-        6,
-        7
-      ],
-      "Форма (ч. 1)": [
-        7
-      ],
-      "Форма (ч. 2)": [
-        7
-      ],
-      "Форма (ч. 3)": [
-        7
-      ],
-      "п. б/н (ч. 1)": [
-        8,
-        9,
-        10
-      ],
-      "п. б/н (ч. 2)": [
-        8,
-        9,
-        10
-      ],
-      "п. б/н (ч. 3)": [
-        8,
-        9,
-        10
-      ],
-      "п. б/н (ч. 4)": [
-        8,
-        9,
-        10
-      ],
-      "п. б/н (ч. 5)": [
-        8,
-        9,
-        10
-      ],
-      "п. б/н (ч. 6)": [
-        8,
-        9,
-        10
-      ],
-      "3": [
-        10,
-        11
-      ],
-      "4": [
-        10
-      ],
-      "5": [
-        10
-      ],
-      "4, 5": [
-        10
-      ],
-      "п. 2 (ч. 1)": [
-        11,
-        12,
-        13,
-        14
-      ],
-      "п. 2 (ч. 2)": [
-        11,
-        12,
-        13,
-        14
-      ],
-      "п. 2 (ч. 3)": [
-        11,
-        12,
-        13,
-        14
-      ],
-      "п. 2 (ч. 4)": [
-        11,
-        12,
-        13,
-        14
-      ],
-      "п. 2 (ч. 5)": [
-        11,
-        12,
-        13,
-        14
-      ],
-      "п. 2 (ч. 6)": [
-        11,
-        12,
-        13,
-        14
-      ],
-      "п. 2 (ч. 7)": [
-        11,
-        12,
-        13,
-        14
-      ],
-      "п. 2 (ч. 8)": [
-        11,
-        12,
-        13,
-        14
-      ],
-      "п. 2 (ч. 9)": [
-        11,
-        12,
-        13,
-        14
-      ],
-      "п. 2 (ч. 10)": [
-        11,
-        12,
-        13,
-        14
-      ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::регламент бронирования конц зала"
+    }
   },
   "reg_business_trips": {
     "doc_id": "reg_business_trips",
     "file_name": "Регламент о командировании.pdf",
-    "file_path": "/home/arz/hac2/доки/Регламент о командировании.pdf",
+    "file_path": "/root/INBICST_hack80/доки/Регламент о командировании.pdf",
     "file_format": "pdf",
     "sha256": "8d7c95e76c1e87a323f99dafbf9ecbb70cebbfbd96db895cab5d57f9211d3b6b",
     "doc_number": "",
@@ -9103,27 +8331,36 @@
     "quality_warning": "",
     "pages_total": 16,
     "ocr_pages": 0,
-    "parent_count": 17,
-    "chunk_count": 92,
+    "parent_count": 20,
+    "chunk_count": 95,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:28:18Z",
+    "indexed_at": "2026-11-14T16:21:52Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::регламент командирования работников",
       "clause_page_map": {
         "п. б/н (ч. 1)": [
           1,
-          2
+          2,
+          10,
+          11
         ],
         "п. б/н (ч. 2)": [
           1,
-          2
+          2,
+          10,
+          11
         ],
         "п. б/н (ч. 3)": [
           1,
-          2
+          2,
+          10,
+          11
         ],
         "п. б/н (ч. 4)": [
           1,
@@ -9294,27 +8531,8 @@
         "37": [
           10
         ],
-        "38": [
-          10
-        ],
         "39": [
           10
-        ],
-        "40": [
-          10,
-          11
-        ],
-        "п. 40 (ч. 1)": [
-          10,
-          11
-        ],
-        "п. 40 (ч. 2)": [
-          10,
-          11
-        ],
-        "п. 40 (ч. 3)": [
-          10,
-          11
         ],
         "41": [
           11
@@ -9326,9 +8544,6 @@
           11
         ],
         "44": [
-          12
-        ],
-        "45": [
           12
         ],
         "46": [
@@ -9402,58 +8617,67 @@
           14
         ],
         "65": [
-          14,
-          15,
-          16
+          14
         ],
         "п. 65 (ч. 1)": [
-          14,
-          15,
-          16
+          14
         ],
         "п. 65 (ч. 2)": [
-          14,
+          14
+        ],
+        "66": [
+          14
+        ],
+        "67": [
+          14
+        ],
+        "68": [
+          15
+        ],
+        "69": [
+          15
+        ],
+        "68, 69": [
+          15
+        ],
+        "70": [
+          15
+        ],
+        "71": [
+          15
+        ],
+        "72": [
+          15
+        ],
+        "73": [
+          15
+        ],
+        "74": [
+          15
+        ],
+        "75": [
           15,
           16
         ],
-        "п. 65 (ч. 3)": [
-          14,
-          15,
-          16
-        ],
-        "п. 65 (ч. 4)": [
-          14,
-          15,
-          16
-        ],
-        "п. 65 (ч. 5)": [
-          14,
-          15,
-          16
-        ],
-        "п. 65 (ч. 6)": [
-          14,
-          15,
-          16
-        ],
-        "п. 65 (ч. 7)": [
-          14,
+        "74, 75": [
           15,
           16
         ]
       },
-      "norm_sections_sha256": "5fae13f197a24634c19acd2c5271738a8705c04ea4d3a11a42d7fb9f8b4709b8",
-      "norm_text_sha256": "5fae13f197a24634c19acd2c5271738a8705c04ea4d3a11a42d7fb9f8b4709b8",
-      "norm_text_char_len": 47879,
+      "norm_sections_sha256": "154afec9075daab576394a9ebc15dc90202da8a40ba0f13b968dae9afc77722d",
+      "norm_chunks_sha256": "a280a118372f6038787470b66989aebbbe75e047f2e4df7becd20b392ec4aa29",
+      "norm_blocks_sha256": "695da8aa9ce532c94aa5ec7befe31790e5a592bc5fd4209766668ec37fcaee53",
       "chunk_content_hashes": [
+        "0343a11f68c4dda2abfbd1837be1356b2413fbc519cd7955ac86b67f4480faff",
         "0347f2b26ce8118b97dae557fdb54cfe0ba12cfe2ecd577ced9ca83e2b799754",
+        "0880e5452ae1d0038ffc10542c04cb3316019b9b0d184de799867db126e94159",
         "0a193dd8fdd5f23d925cb372b84d5b2106a8ef20b349dc9755261d14275875d3",
         "0a35a780b8ff4dbdf7d74144d334c4b7510ca60925172ebd5693f28418369e0b",
-        "0d2c102a8235a71871a45cc234cfc477dc01a0151999205a73bebd9af9c77b6c",
         "0d3a51d97c3ff7ecb67b4ab3122e81cfbb1181b54ee9582436de0fd3df7096ef",
         "0f9f1bd7f66c4478fdd062a640e44c33090be08dc137d446fafda46df5885d37",
         "1150f3d9adb41773f0f56bac0f338488df8d90345dd74b660a8a5960af10b99b",
         "11528ee003c6432de23a4446e18e516ec52a0b85139ee51aff39a68402abef2c",
+        "126eb075293fe96ff7cc54e90470bae8304f5f27a91ddbd9fc4e3a2d212492bc",
         "1a4c474f5df579553d029aee2c1b8dfb42e83510fc1fdcd9d96198b76e4b4c7f",
         "20d8214f2e0e98e7bb162f2e804ec5151a3e05155a5f9110ad40b7a5842ecc1a",
         "21a446028d8dbe21528b3e01049440097800b14f8c99ebbd9edbc4559081b994",
@@ -9461,6 +8685,7 @@
         "2971b97f878687185ff038668a3f96e55ab5ac40a239055748541d7fda51e4e3",
         "35b19ebfa748bf83a3204b6e06eadbea48bbd5dcef458cb150e1738b056e6c21",
         "3880d30721ade4553b7f5bcc5e7609d032f168fa09fc486a9be62fb456d10895",
+        "3dedf886c12ce7c785d63c51497da9a56f41e49965cca624267af87633da1bc6",
         "3df344aab2831879d7187586254968837e83e8b837ac3aff397136741e5e2e99",
         "3fca0a7125ce211c5287c2543c6dd778fa3050fc42a24792306e9a7c1bb44fcd",
         "4130660c9d81b81869720d72761ce54e2d73cc9afa6856f739c320368ab4c417",
@@ -9468,8 +8693,8 @@
         "43bbd1db0446534a6a58325325cff0b976414a0b4396ee9de9bb334eb334ec3b",
         "446822c7510f1b85e52b6c4a648860d0d0df6a5288d1a1e3241e56194b1c74ae",
         "44aa514732daef7e0b768242aa4e3608f82f4dbcbd5bc37dfd11c5890464c108",
+        "47973bcd9a99009f9d08a2b46845bf840f0065d7338c6c6041e97eb30641a9e0",
         "498b340b7416b0ac17a7f404d02f87801601fccf2c0b6bb4dcefeae051290d04",
-        "4e941d591e8c70cf0cb85fa46e261e3cb5c95b4d141a2c69a5c95ee9011f86ea",
         "57ab13e077d30232a94250e4c8cb5a88390c518351b86a8870036c7e1bc2819f",
         "57b34fee530b5d714520aa3bb80819ad39b1021ee81fdc9800c1b8c8f2c9af4f",
         "63460f18b01abc0a59ea60ef1e2d40c322201a1fc088dc54cf5be55c2a0890c6",
@@ -9486,19 +8711,16 @@
         "7de18b398ce48214fa23b2e61d35a492d0a747978e1944ec043f9a9b0c7c9795",
         "7e7e7fe2735b67bfee9f272e8cccb82abed7023dd50d093ac23730ada336c7e6",
         "80d6665570d654e12ee99adb6bd4ea169f21722a55920744dcb7a17a6e34b9c7",
-        "887c1230aa9452b8a1825f70714a90792c0cb3ebc1f34a5c61b5e2c4e4f7ed8f",
+        "812f388f47d57af35a9a1852930272ad0874d3da797bb7dd6b37a97e4bdfc9fa",
         "894232142928c0c0376006200d405e0de293edf9508571492278d57efb6b96e0",
         "8d2b7aed6a273bd364336aca0c4027deb35aa96dbb9108a76c0c90770f8fe9d8",
         "8de1da86253f2554c2787b626b878d1f44598fbb5447ea6bfb0e44664de7a27f",
-        "8e5f326b5c0a835a625ea3d7247d83c937987d90e273d065e3413f2bfb2558d0",
         "8e8ee673bd80fff10f250b75c9bf22f701f0e3789890c6165d0dad74ff8d42b5",
         "927c568da8e789dfdfba970bd69445556b1c8f37043882c10870f6083b51d4be",
         "949213b74b1c643575fd1086ffcec05b8033ff5789a83b7d4edb00b6d9a089f8",
-        "94aa3d5d48afc354516b5aef743941e699a31bc5ce5d1020498aa1cf68a3a668",
         "94ee838412c27c474bed649520606402da45131042c644214d6a8ce3e1dcc113",
         "9602f59a672cdd59b4c89ce83a1ae95fc8c6f8e9d6a8b9dd9f514910cf25d90e",
         "9ac8a66ca314907f3ed6faad2a66200d68a5a232fe592b75204f3376991dedba",
-        "9e2365db206126f30a17b878e56a7e041ebb167ecc050fedc6f8b697899873d9",
         "9f968a25e79c409e5740d575fd056eeed26127767c4e5a575b81829621b19b26",
         "9f9d601c61139fa71abd40f8e5b4f59a8fd95e51aef253dfba0a877ad5d8d9cc",
         "9fed3331e58dce1ec5877257741524e1fe4d47c972406ee7110463cebc555b6b",
@@ -9507,16 +8729,18 @@
         "a5f0158991498fcd0c9e0292861b59f7e6e4472846f6dd0d7726f7c3c728184b",
         "abcf743ee4fbc99582d49bac3aef4d5e8a07cef8d2c820c9016d44f9bc0495a2",
         "ad9a80aebd7e4be5995878ed2ede8bd99cb910100db5a1dac54b58ba288efda7",
+        "ae96430947fdebe0c86907b08eb917d014159180658e78a2f7ae429576113f08",
         "b159c26a83775bc81a0c172c32476ce92ad43a36e6ecba975012b3c3e85cc790",
-        "b1b6b85e5378b1f9af8c60822a0d2eee0d2a935f80b03db155338826d5316f14",
         "b3798217a22e2afc6d3db9a038f90ba0641a006a87ec82ea34772cf172ee0a74",
         "b8168b6a9c4e594360e81320e079c0556d861bea9a7eb8d2660e896a0f150c01",
         "b9f2c3c9f65bfbb9ee33831e4948b95b340c91a766de260ca4d6e714c39e4a38",
         "ba12c74f27fed33200cadc8419f1994d5a6f6be1849e26e19ef6370e82ef4609",
         "baa21c0941054258315d5197bf740f0a65f05ce3c1750eb768f120e33c22ee6f",
+        "be2824336d126b3ad084cb9d4830a497e7dff892c5e64f5f52a2531b2480a9d7",
         "be583604ff5acc437cf518027d9a125c31e37ec7a1346eeee2fda7e68915f07c",
         "bf557f5fa59fe8d166ea63edead572fa2bba3eca988115eaf3495f2ab6ebe2a0",
         "c2ee188c281896be85b99cd99afc8fbe7be6020f1a1cfe6427397344edb23970",
+        "c43ad867c5d32b0bf9177e48f8c5f344792951179a841f21db3b47695900365f",
         "c47dd63b7da1a37646688b6d638f8d934b9a8a5decde5694df1c019240cb9aed",
         "cd887e4ef90c53d69d43709bf825465383b5cdbed725582c88b75399b13321ea",
         "d1aa0c97f93b5bedbd95d79880425d42569d68fe04b8070c9396052871938a22",
@@ -9526,37 +8750,45 @@
         "e0cde6af6fefad2ef3461b07a2c6a22668585bb1bfa5ab56310daa4ac914d208",
         "e0e7608e60fad93569e6c129d2b34a079a6ff7897f25cfd4fdcba5b86c82e622",
         "e3b990f7f6479a34dc8c7d66c0d66d8394d9536a7cd7699b362402b9e4814c64",
+        "e4f875f91ddc59dfd1fd7d2f896d64566df9bc85b21295aa0fa7882e9646d5c0",
         "e78b4f11b24eb7dbad3488ddea1f057059f36a40d5d5766837b677af237821d1",
         "e9785d3d090baaf1221c8e0a07a64521cef9babcf107f16e9a4f666378c2de37",
         "ea84d83e7eb6194079039d3febb35573501a5e596ad9a59047a4f3fcd24fce57",
         "ec4d26f242d0e81dddaea392522eac80f1df19b0e149686d184e24a0e9861ffc",
         "ecd321430233f66939d67ee95888c1af76e174d718f39eded35c7631c85092d8",
-        "f0957d81b563f8e96705590310618d477869ba7a6a5e4617e47c5867a3425a3e",
+        "f0d84efc528452e495ae056b874d651393808f3893f04df14697f93610a9fe02",
         "f2261801997c16e09b1dc1cae18aba37581cc0c064eb7f5ca5e6b82b2293c591",
         "f3fce6abac4670e74fc9597c9f26db10993f1ae7e86d06a08f3771086e5144ab",
         "fa76d12e8620f6432285e7201a36e9c17f81d559b70c83c192bdc21e37386221",
         "fc1af014304650783f5485c49d9ba05af0e1ce2e9aff057177ac82a7bef64b5e",
         "fc9be63b7f7824ebd93bf8a59d60239d8bd22aa30ecff98f20345b3a049f4ee4",
         "fdcfe3f16c738c629367ff1a5f23ced0c2a7a6b6921328c64f0ada7bb50219ac"
-      ],
-      "edition_date": "",
-      "version_family": "normative::регламент командирования работников"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::регламент командирования работников",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
     "clause_page_map": {
       "п. б/н (ч. 1)": [
         1,
-        2
+        2,
+        10,
+        11
       ],
       "п. б/н (ч. 2)": [
         1,
-        2
+        2,
+        10,
+        11
       ],
       "п. б/н (ч. 3)": [
         1,
-        2
+        2,
+        10,
+        11
       ],
       "п. б/н (ч. 4)": [
         1,
@@ -9727,27 +8959,8 @@
       "37": [
         10
       ],
-      "38": [
-        10
-      ],
       "39": [
         10
-      ],
-      "40": [
-        10,
-        11
-      ],
-      "п. 40 (ч. 1)": [
-        10,
-        11
-      ],
-      "п. 40 (ч. 2)": [
-        10,
-        11
-      ],
-      "п. 40 (ч. 3)": [
-        10,
-        11
       ],
       "41": [
         11
@@ -9759,9 +8972,6 @@
         11
       ],
       "44": [
-        12
-      ],
-      "45": [
         12
       ],
       "46": [
@@ -9835,54 +9045,58 @@
         14
       ],
       "65": [
-        14,
-        15,
-        16
+        14
       ],
       "п. 65 (ч. 1)": [
-        14,
-        15,
-        16
+        14
       ],
       "п. 65 (ч. 2)": [
-        14,
+        14
+      ],
+      "66": [
+        14
+      ],
+      "67": [
+        14
+      ],
+      "68": [
+        15
+      ],
+      "69": [
+        15
+      ],
+      "68, 69": [
+        15
+      ],
+      "70": [
+        15
+      ],
+      "71": [
+        15
+      ],
+      "72": [
+        15
+      ],
+      "73": [
+        15
+      ],
+      "74": [
+        15
+      ],
+      "75": [
         15,
         16
       ],
-      "п. 65 (ч. 3)": [
-        14,
-        15,
-        16
-      ],
-      "п. 65 (ч. 4)": [
-        14,
-        15,
-        16
-      ],
-      "п. 65 (ч. 5)": [
-        14,
-        15,
-        16
-      ],
-      "п. 65 (ч. 6)": [
-        14,
-        15,
-        16
-      ],
-      "п. 65 (ч. 7)": [
-        14,
+      "74, 75": [
         15,
         16
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::регламент командирования работников"
+    }
   },
   "reg_staff_recruitment": {
     "doc_id": "reg_staff_recruitment",
     "file_name": "Регламент поиска и подбора персонала.pdf",
-    "file_path": "/home/arz/hac2/доки/Регламент поиска и подбора персонала.pdf",
+    "file_path": "/root/INBICST_hack80/доки/Регламент поиска и подбора персонала.pdf",
     "file_format": "pdf",
     "sha256": "7c4d3a4c1d7afc4248d54e399c3afe2a6e951f762c9ae6069781a5909a7e0ddf",
     "doc_number": "",
@@ -9903,11 +9117,14 @@
     "chunk_count": 35,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:28:37Z",
+    "indexed_at": "2026-11-14T16:21:56Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::регламент поиска и подбора персонала",
       "clause_page_map": {
         "Форма": [
           1
@@ -10142,8 +9359,8 @@
         ]
       },
       "norm_sections_sha256": "0c88418dc088dea46079e5eee94750e57b41d8283c951685cb57a9f23d32e4ce",
-      "norm_text_sha256": "0c88418dc088dea46079e5eee94750e57b41d8283c951685cb57a9f23d32e4ce",
-      "norm_text_char_len": 12777,
+      "norm_chunks_sha256": "2f9dd4b0ebde50669c3bd20d5de89f40445e83bf4985c65f61f71471438e2c28",
+      "norm_blocks_sha256": "c7894d78557138710029c11476f1b79d566fc3f7d7ac161faaccb08b1ad1a501",
       "chunk_content_hashes": [
         "02844b97fd1d877790659f863a8261d8bc0c865f7f7bbf41578c56cbd41c1f3f",
         "0553d2c3a1a2ba9a1a384b174a552e95a2018518d76d5e5fcb6e79fa79a2af92",
@@ -10180,10 +9397,11 @@
         "f5506ba29572290f76f5bc1be63602aac3dfa0f3abe2434203f9d2b50bff6ffb",
         "fc5e443da5d623ab7fc383874297123c79f2b098189ad0093d492c02b81b6a37",
         "fcb0dc5edddb107e1d6269797dfecc18bfaf7e5946163545ead2a0c9c7655039"
-      ],
-      "edition_date": "",
-      "version_family": "normative::регламент поиска и подбора персонала"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::регламент поиска и подбора персонала",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -10419,15 +9637,12 @@
       "17": [
         5
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::регламент поиска и подбора персонала"
+    }
   },
   "reg_staff_dorm_settlement": {
     "doc_id": "reg_staff_dorm_settlement",
     "file_name": "Регламент поселения сотрудников.pdf",
-    "file_path": "/home/arz/hac2/доки/Регламент поселения сотрудников.pdf",
+    "file_path": "/root/INBICST_hack80/доки/Регламент поселения сотрудников.pdf",
     "file_format": "pdf",
     "sha256": "0ea0b6ac27ee4ac755112860a405a4c8dbf948efac4ff84a5e1d5165bd5f029a",
     "doc_number": "",
@@ -10444,23 +9659,23 @@
     ],
     "amends": [],
     "amended_by": [],
-    "version_note": "Утратил актуальность: действует более новая редакция — Приказ № 2990-1 от 19.06.2026 Об утверждении регламента поселения сотрудников в общежития МФТИ, Физтех от 2026-06-19.",
+    "version_note": "Утратил актуальность: действует более новая редакция — Приказ № 2990-1 от 19.06.2026 Об утверждении регламента поселения от 2026-06-19.",
     "quality_warning": "",
     "pages_total": 3,
     "ocr_pages": 3,
-    "parent_count": 2,
-    "chunk_count": 21,
+    "parent_count": 3,
+    "chunk_count": 22,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:28:46Z",
+    "indexed_at": "2026-11-14T16:23:08Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::регламент поселения сотрудников",
       "clause_page_map": {
-        "Форма": [
-          1
-        ],
         "1.1": [
           1
         ],
@@ -10564,42 +9779,40 @@
           3
         ]
       },
-      "norm_sections_sha256": "1f99bba9b13d2625b0825717ece03def477d5deef917eb2f219c354120142de6",
-      "norm_text_sha256": "1f99bba9b13d2625b0825717ece03def477d5deef917eb2f219c354120142de6",
-      "norm_text_char_len": 6969,
+      "norm_sections_sha256": "759d99eca91094df5c5a394c97e8663fa345bb2e7fc2b24a81c93ee0675d8f2b",
+      "norm_chunks_sha256": "eac0789b004e13a81989ed1726ea08fee5b2c37d092aa92e7ee59b992faaa5f0",
+      "norm_blocks_sha256": "eac0789b004e13a81989ed1726ea08fee5b2c37d092aa92e7ee59b992faaa5f0",
       "chunk_content_hashes": [
         "034c6f1de284f7fa8efe2f4748e2faac7b8d75713a5f196db11cbbf4619089b0",
-        "0e35858fecb00f5d17d6de748db4bee1b62831d9ba64d6e444d903bb3009978c",
-        "276151078c076c327902d3263b85c11362b3fd13ffc23294063023ab44ea93e6",
-        "29255f1cb2b86013df80ef0118015d848cf7277657a5d6351cfb06cce78a666f",
-        "36f5376ce2061eca4cab17b72115324dfc6024b305ed3f19fb1145a5ec69590c",
-        "3b8cbe789a2ec4242898bd5492c0ffd4df06e06974b5e0a68ac6572eae1c73c0",
-        "4f8dd4fe0769c00f5c895732e2cb3ec2e9d042a14d6f1d907e260f55f120cf22",
-        "6238e77b0f1e315e7004d545b454393a32b839bac5b8145a884d4389ac4f1e15",
-        "6890f74783ff62fee9720ba29192506471e09af0b33b05a7a744f64650787384",
-        "77fc5c6296238e8bee9513daf74b3b2e471b31f08c25462c3a05a30a276f61ec",
-        "839f035a3ba9e35a193160e24b02a443f3c7bf118e51d5cc420abaf6521725d8",
-        "926e7488514123745fc661c3356fc5334d83ee1da15661084ae685710ba337aa",
-        "b1d073309ec92b3d9836a37d3c4cafd4b9919ca7b59ca9f0285c2746d4b6c1ed",
-        "c111d322d48dc08a5932abaf03c98cf24aa177ff7090dde5ccd6ede97d47deee",
-        "c20bdf6151807ac50ccdb3944379fd03054db55ab29434b8ac29ab2c83c38177",
-        "cd42470ffbbca3d1d99b54bb9876cb9984aa7aa6cdd68264fa746a67791d4628",
-        "daf93ae71a31c2d3279dfaa0dc95c270cb19b14de48350974b553a26bf9d6e0a",
-        "dcd7f13a385a565ed478c3660d1688abf2d52fb034d2663a3ed8029a82d7f4bd",
-        "e6b38927b203d92760ac9f37c226def10d8d0a77348b59fe0f8b22903096e9d1",
-        "ec1aa1e0a3f57b9269f2fd862de9066ab4daa2bf547209e279a4fb6c948c5d62",
-        "ed63763aa018c4506a47d9b03243c3dbca9cd903a9d877357fdbde27d2fd72a5"
-      ],
-      "edition_date": "",
-      "version_family": "normative::регламент поселения сотрудников в общежития"
+        "0e2ff00fc956acb9fa8b929dc70d3324614887f6f3dfd05330e3b3f63bd958a7",
+        "18cbbb88ce53f5459cb73ccd2765d9895b0382631d5a68040db51591cb81265f",
+        "2603f4163ba7aa0b2f42bc1a4ada90c037106a457d9f184676baf49ba530c9b0",
+        "286e2f92f4aaa4e79fbee5bc61418876a164cd593b2805b9c7ae2f703c6b9c18",
+        "2de8b3d8d9469b7bd9ef1a8bf29ee6b745ab6afe1e828532a61109294d0dfdb8",
+        "350dc7993e1faf87f99bc84ae8763bf5dfee261f0c20aecd53e7a4c5ad0f3981",
+        "3b49a5f9e091d931f97307304fd968bda2cdaebeaabce124ae0c8677697126b7",
+        "3f5d515e7794c957be074651aafcb0f477a083246dbfc848f6412805f990f730",
+        "449e31f8d5c5e6054dc56bd7502cfff8b7824c57542cf0015c68802b4d25c4b3",
+        "47e755acb7a2600f84a9e39d754735e6513ba5db88b66b095b88adaed494843e",
+        "49e5e5b81fb658d9aa72bdffa26c65b003e65ba7d0727c1c630295d09954267e",
+        "52fb9118178edacda17b5d812af2214c8c65f03e72979a53ee2028a20bfebcd0",
+        "68154d10168ca3e795a49fa63817dfd05fd4cb4b63354f83fc2d73ef674dccac",
+        "8cde848f57747245f84109001f82ad31de95acd3b90cb5dbcc7fb6ed7d563ecf",
+        "9a4b1a1e17e3861737b11ae766cc0378196846570533a52b42be74d62f29ce2b",
+        "b2f1c2f4348ffed0fa3cb27b5e8365f5e10618322b97f899cd25d96a4f773716",
+        "cec2f7f25c645e008db277cbfdc229acf5857ec1c3d596d754d1ff6143ea0531",
+        "df2df20d29edf0ce07dc3c6b906c422ee121b26685b40850e8b5c5deba3e0669",
+        "e1dd53e6ca7323e7a3ba6972813342cff416fe3bc14e864288acd1552cc8dc72",
+        "e8480b1d7f260c72cbfb29e7730f7af1711643b31fcc1108a67b6604e163cadf"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::регламент поселения сотрудников",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
     "clause_page_map": {
-      "Форма": [
-        1
-      ],
       "1.1": [
         1
       ],
@@ -10702,19 +9915,16 @@
       "5.3, 5.4": [
         3
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::регламент поселения сотрудников в общежития"
+    }
   },
   "reg_datacenter_operations": {
     "doc_id": "reg_datacenter_operations",
     "file_name": "Регламент эксплуатации центра обработки данных МФТИ, Физтех.pdf",
-    "file_path": "/home/arz/hac2/доки/Регламент эксплуатации центра обработки данных МФТИ, Физтех.pdf",
+    "file_path": "/root/INBICST_hack80/доки/Регламент эксплуатации центра обработки данных МФТИ, Физтех.pdf",
     "file_format": "pdf",
     "sha256": "9efd496936a7c3336335f35f80d22438ca1b69ce966f7a1da1d446fca4b37fc1",
     "doc_number": "1292-1",
-    "doc_date": "2025-03-28",
+    "doc_date": "",
     "doc_type": "Регламент",
     "title": "Регламент эксплуатации центра обработки данных МФТИ, Физтех",
     "status": "active",
@@ -10730,19 +9940,25 @@
     "pages_total": 5,
     "ocr_pages": 5,
     "parent_count": 4,
-    "chunk_count": 17,
+    "chunk_count": 16,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:28:50Z",
+    "indexed_at": "2026-11-14T16:24:15Z",
     "metadata": {
       "edo_number": "1292-1",
-      "edo_date": "2025-03-28",
+      "edo_date": "",
       "is_edo_stamp": true,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::регламент эксплуатации центра обработки данных",
       "clause_page_map": {
         "1.1": [
           1
         ],
         "1.2": [
+          1
+        ],
+        "1.1, 1.2": [
           1
         ],
         "1.3": [
@@ -10757,7 +9973,13 @@
         "1.5": [
           1
         ],
+        "2": [
+          1
+        ],
         "2.1": [
+          1
+        ],
+        "2, 2.1": [
           1
         ],
         "2.2": [
@@ -10815,9 +10037,14 @@
           3
         ],
         "5.1": [
-          3
+          3,
+          4
         ],
-        "5.2": [
+        "п. 5.1 (ч. 1)": [
+          3,
+          4
+        ],
+        "п. 5.1 (ч. 2)": [
           3,
           4
         ],
@@ -10846,39 +10073,42 @@
           5
         ]
       },
-      "norm_sections_sha256": "866cb4ae27daf032837b5df42fbf5c0c3e1d30f8355193087e0c42d9debf3c03",
-      "norm_text_sha256": "866cb4ae27daf032837b5df42fbf5c0c3e1d30f8355193087e0c42d9debf3c03",
-      "norm_text_char_len": 7585,
+      "norm_sections_sha256": "7b05868c6669ed7dadb3f5a69b10b566bf9622cbec35b6ff2634bbd95c087d72",
+      "norm_chunks_sha256": "1e7b1af78f5428ca079ce3d82ab81c18603589889d8d06f7c88d328c6dab572e",
+      "norm_blocks_sha256": "ddfcaf6c16ccdc87e83ee4b270ce1df74a83aa3d919a27280ad92089ca18ce09",
       "chunk_content_hashes": [
-        "0a54eaa7208d1e5cecb172b4142ac4631cbb82894464af773d468fe87b8c864b",
+        "01a1fd6f8bc5762fcb4fb4dec805d1137d5d04ad704c2202ae34bd0f6b5b3205",
         "1cbea95648a16543cd08f378d365497f5d319cd9071845fb61cf188718c56f07",
-        "206f2258ecf0bac14e78391c6c4ca4f993e0fd2a5e45c2ccc178c512d914f4ca",
-        "229c26d4580778352e7809bb54438ac1c10ac7dea14517286cc6de8bdef63283",
-        "344f06010152471ccc5944158976f3cfc887ee5737410224a3519f6ab1593d51",
-        "3f376f573d2b034897a25da890af5b0e72f03b54d6f2942cac3acb7924a42ba9",
+        "27f577b87bf1d0516f3d5a61a4cae083d4f4bc88b6c192158a38f9a69ea33c63",
+        "41c7c805cc6142cbc7ffe271985b665d61d321215ca79bfcb7035f2067f52028",
+        "557bf432cd766f3adf6e2a6d5ff1bb67f338b5f146c67c08e2eaba6b293f288c",
+        "570a983d0724e13f3022d08958dc80a646d746dae62a90d89f2e889a728bae43",
+        "5e267043c8c4aa670051e2f2c5346df5ed87a716b8e92630a1eb89fc486051ac",
         "60fefc783d557cf1cdf26d4e662d0e2f37c2c7e705cc60ecdf8785820fa95370",
-        "64eb58665590f981f7a081b5b37af566757f59ed3e525a5c94c3d41a7278078f",
         "7823c71aa6235bb5517f17615a6295ca4c2e553aeb416b3cbe8a462367156cd9",
-        "81c48e80efeb501310f5088d8d4d779f14b8f0750650c2b6d570c0dac5ac0779",
-        "9250df8a0f57fd8a7bdb7e9b95250bdf7873adb3b5e22955791487095b9bb589",
         "9d84008bd981a4ad0184e19badd2bd0700cca243423e7867ecebd80b5763fe79",
-        "cecbc90ed0d87343cdd63faf444ff6f8936d6dedf1886e6c625ab69499a345c4",
+        "ab520a1fa832e386c87e4a9478e6bfb5b6b2e18b247ae717370bafcee84516e2",
+        "c52f2e64b1815f32777f8a2b998ca66e91278b9619c17e51304a15486a71e7b4",
+        "d732c81a11197eca9ccfcdb63844dec77b943465fa4f3841dafd055675e331b7",
         "e006b2fdb9848350cc0979ea7f8197da4d2754215b0052fb90f802fef53d05ed",
-        "e69bf7ddb7d55b6be30fbe408b87453f4d402ac2a57d2e87d13c1f060333cd3e",
-        "ebb9ea1e906b4d8f7512fc363d567e33e6d462dc066f29266cccb4b461d33a51",
-        "f2e2f00b40f87ce178c46f34d9e77956505b5c413460a024f93ff3a034282c81"
-      ],
-      "edition_date": "",
-      "version_family": "normative::регламент эксплуатации центра обработки данных"
+        "f7753baf93e73e28b7a26f236079ce2b2e3303126775c2859ec0b1b4b3259433",
+        "fb2b8f04c8c5474be00216ac57badd0ccb2e3b00fd2e772b57206050ad98f777"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::регламент эксплуатации центра обработки данных",
     "edo_number": "1292-1",
-    "edo_date": "2025-03-28",
+    "edo_date": "",
     "is_edo_stamp": true,
     "clause_page_map": {
       "1.1": [
         1
       ],
       "1.2": [
+        1
+      ],
+      "1.1, 1.2": [
         1
       ],
       "1.3": [
@@ -10893,7 +10123,13 @@
       "1.5": [
         1
       ],
+      "2": [
+        1
+      ],
       "2.1": [
+        1
+      ],
+      "2, 2.1": [
         1
       ],
       "2.2": [
@@ -10951,9 +10187,14 @@
         3
       ],
       "5.1": [
-        3
+        3,
+        4
       ],
-      "5.2": [
+      "п. 5.1 (ч. 1)": [
+        3,
+        4
+      ],
+      "п. 5.1 (ч. 2)": [
         3,
         4
       ],
@@ -10981,21 +10222,18 @@
         4,
         5
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::регламент эксплуатации центра обработки данных"
+    }
   },
   "doc_9380b426a8": {
     "doc_id": "doc_9380b426a8",
     "file_name": "Приказ_№_2990_1_от_19_06_2026_Об_утверждении_регламента_поселения.pdf",
-    "file_path": "/home/arz/hac2/data/uploads/Приказ_№_2990_1_от_19_06_2026_Об_утверждении_регламента_поселения.pdf",
+    "file_path": "/root/INBICST_hack80/доки/Приказ_№_2990_1_от_19_06_2026_Об_утверждении_регламента_поселения.pdf",
     "file_format": "pdf",
     "sha256": "3465c52001f7367cb7481d7887d09f3a5e9812655f8c3f79e7665b71e2364a32",
     "doc_number": "2990-1",
     "doc_date": "2026-06-19",
     "doc_type": "Приказ",
-    "title": "Приказ № 2990-1 от 19.06.2026 Об утверждении регламента поселения сотрудников в общежития МФТИ, Физтех",
+    "title": "Приказ № 2990-1 от 19.06.2026 Об утверждении регламента поселения",
     "status": "active",
     "applicable_years": [
       2026
@@ -11011,16 +10249,22 @@
     "pages_total": 7,
     "ocr_pages": 0,
     "parent_count": 9,
-    "chunk_count": 42,
+    "chunk_count": 43,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:27:50Z",
+    "indexed_at": "2026-11-14T16:17:07Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
       "order_number": "2990-1",
       "order_date": "2026-06-19",
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::регламент поселения сотрудников в общежития",
+      "repealed_subjects": [
+        "регламент поселения сотрудников в общежития"
+      ],
       "clause_page_map": {
         "1": [
           1
@@ -11202,8 +10446,8 @@
         ]
       },
       "norm_sections_sha256": "b73490f34a67d18956bbe2dd53fac7f114b9bda0a380b9d8ca24deb6658a1e7f",
-      "norm_text_sha256": "b73490f34a67d18956bbe2dd53fac7f114b9bda0a380b9d8ca24deb6658a1e7f",
-      "norm_text_char_len": 16683,
+      "norm_chunks_sha256": "60e410736becfa89b642f3a5e0cc8a0325c4b29f0ced68125bff045d5bb719ab",
+      "norm_blocks_sha256": "37039fea52cb9cc9369c9d98d25db3fdd3f5c83c2596784d0541580a6ee7ebf3",
       "chunk_content_hashes": [
         "046e2355b5762f32ec185971d629767816368f543dd2de41fbcea5dff24e43cd",
         "04bc981a0fb7ece04465cfc105e4ca9ecb41a59b9c327f4258b6e117ecf6b22d",
@@ -11247,10 +10491,11 @@
         "f03aeb5d763dbce8d2c7294fcbca3e7c3fb6c3e1fb0b6687a2608466a19e3fa8",
         "f460fbee3d5547aa24a5507848e73ea32e3a2edfd4350359bbada718d5eeae0d",
         "faadafa4c81b8a8bfe68a6754c263b2dac528799a566bb1501a3d1a55d314c78"
-      ],
-      "edition_date": "",
-      "version_family": "normative::регламент поселения сотрудников в общежития"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::регламент поселения сотрудников в общежития",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -11433,15 +10678,12 @@
       "Форма (ч. 6)": [
         7
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "normative::регламент поселения сотрудников в общежития"
+    }
   },
   "doc_ca9bf55500": {
     "doc_id": "doc_ca9bf55500",
     "file_name": "Согласие_работника_на_обработку_персональных_данных.docx",
-    "file_path": "/home/arz/hac2/data/uploads/Согласие_работника_на_обработку_персональных_данных.docx",
+    "file_path": "/root/INBICST_hack80/доки/Согласие_работника_на_обработку_персональных_данных.docx",
     "file_format": "docx",
     "sha256": "c1b6a8910a8e7f458948f84df8b9780a8870992219dd0307555d6ccf77cde2ef",
     "doc_number": "",
@@ -11462,11 +10704,14 @@
     "chunk_count": 15,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T06:43:51Z",
+    "indexed_at": "2026-11-14T16:24:16Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "form::согласие работника на обработку персональных данных",
       "clause_page_map": {
         "Форма": [
           1
@@ -11494,8 +10739,8 @@
         ]
       },
       "norm_sections_sha256": "052a7e88cc1bcc899b5eba60b18e4501bd76d786f89ff785887113a72a8ff852",
-      "norm_text_sha256": "052a7e88cc1bcc899b5eba60b18e4501bd76d786f89ff785887113a72a8ff852",
-      "norm_text_char_len": 5540,
+      "norm_chunks_sha256": "052a7e88cc1bcc899b5eba60b18e4501bd76d786f89ff785887113a72a8ff852",
+      "norm_blocks_sha256": "c16c030b97edfe678de01562b6397ed82ee588868e51ea43c3f15d033c3af9ed",
       "chunk_content_hashes": [
         "1101c33e37ea9118936956a3504515fbb0d46889c255256fb4db9fff37e1cd5c",
         "13432f91f9ffdad0f9866e1024f1ff19e2ae5d175dcc54a50dbe22844e29740c",
@@ -11512,10 +10757,11 @@
         "986ab4066cd3d30e3778fde198d1ac42978367032014da0244ca940206e6b9c8",
         "b5218358140e5b20a2da79e44d18a31117ac20e8d3ba16a0b2310677ac32128d",
         "dc3df0ef9250302311400b64bf5324e43abcb2ff31d32aaaed4eb11a7377be16"
-      ],
-      "edition_date": "",
-      "version_family": "form::согласие работника на обработку персональных данных"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "form::согласие работника на обработку персональных данных",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -11544,15 +10790,12 @@
       "п. б/н (ч. 7)": [
         1
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "form::согласие работника на обработку персональных данных"
+    }
   },
   "doc_2b9240c2d7": {
     "doc_id": "doc_2b9240c2d7",
     "file_name": "Анкета_для_поселения_сотрудников.xlsx",
-    "file_path": "/home/arz/hac2/data/uploads/Анкета_для_поселения_сотрудников.xlsx",
+    "file_path": "/root/INBICST_hack80/доки/Анкета_для_поселения_сотрудников.xlsx",
     "file_format": "xlsx",
     "sha256": "c448bb5fdaa328294a29700aa881f3a5364afdf929cb460052781e1985b949f0",
     "doc_number": "",
@@ -11573,11 +10816,14 @@
     "chunk_count": 3,
     "tables_count": 1,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:27:35Z",
+    "indexed_at": "2026-11-14T16:16:24Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "form::анкета для поселения сотрудников",
       "clause_page_map": {
         "Таблица": [
           1
@@ -11593,16 +10839,17 @@
         ]
       },
       "norm_sections_sha256": "e43c8e6f703c8b7cacbe7b67aa79b0bc1832795d8320affd2561291c757a7b3f",
-      "norm_text_sha256": "e43c8e6f703c8b7cacbe7b67aa79b0bc1832795d8320affd2561291c757a7b3f",
-      "norm_text_char_len": 1317,
+      "norm_chunks_sha256": "5298e2a981287f808ac79e4196ba2ce004205786f10e8460afe7f7395be81861",
+      "norm_blocks_sha256": "59548848c732a6eb87e14bdeb1abecc289ffd682c20320592348c0a4b4c99cd3",
       "chunk_content_hashes": [
         "1d26937647973ddaae6d5fa6a841bde0633d5a0499035b22fcc7f3a74fa289ac",
         "a1a3b6725fa4932c5367e4b6bc9ea5109a82a2f384a4e8a0bfa09bc2957f3f06",
         "fd1bdac78bb024d4baa0c256ff04cea44db7161bb9332690ea561a2e6afea5ff"
-      ],
-      "edition_date": "",
-      "version_family": "form::анкета для поселения сотрудников"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "form::анкета для поселения сотрудников",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -11619,15 +10866,12 @@
       "п. Таблица (ч. 3)": [
         1
       ]
-    },
-    "edition_date": "",
-    "edition_number": null,
-    "version_family": "form::анкета для поселения сотрудников"
+    }
   },
   "doc_00a8b0e0e4": {
     "doc_id": "doc_00a8b0e0e4",
     "file_name": "документы_для_регистрации_граждан_РФ_по_месту_пребывания.docx",
-    "file_path": "/home/arz/hac2/data/uploads/документы_для_регистрации_граждан_РФ_по_месту_пребывания.docx",
+    "file_path": "/root/INBICST_hack80/доки/документы_для_регистрации_граждан_РФ_по_месту_пребывания.docx",
     "file_format": "docx",
     "sha256": "716a88b13a85836ce4732d8333cea8cfe317a7e644b558755c82a35f33ad4a18",
     "doc_number": "",
@@ -11648,11 +10892,14 @@
     "chunk_count": 6,
     "tables_count": 0,
     "also_in_files": [],
-    "indexed_at": "2026-11-13T00:28:52Z",
+    "indexed_at": "2026-11-14T16:24:18Z",
     "metadata": {
       "edo_number": "",
       "edo_date": "",
       "is_edo_stamp": false,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::документы для регистрации граждан рф по месту пребывания",
       "clause_page_map": {
         "п. б/н (ч. 1)": [
           1
@@ -11674,8 +10921,8 @@
         ]
       },
       "norm_sections_sha256": "a5687fac4db5cc18bb51f7bd7db2c6fc2bf792e0bed04d6aaa8d926c6abdfc0f",
-      "norm_text_sha256": "a5687fac4db5cc18bb51f7bd7db2c6fc2bf792e0bed04d6aaa8d926c6abdfc0f",
-      "norm_text_char_len": 4368,
+      "norm_chunks_sha256": "b8d65a56e25e6aa866fb8b3087a212c443dd2a2a8d984ac52d2693d73207b156",
+      "norm_blocks_sha256": "c96cc355fc644c5c286393bc20175e4e4e17a2943cbe930b0e037bf33f69dfc9",
       "chunk_content_hashes": [
         "543172db97ea5f24f2990cd53d5da47ed5368552ff0ab35dc8f2c60b9c63c479",
         "6701dba125f73556215412b8eb1e962dd7efa9581431e8ece74cce7e1c02c8f4",
@@ -11683,10 +10930,11 @@
         "aa0b2c32c5b3249d0a3c5288a60cc6a2a779f98046ca2b276977ef010a28b8ef",
         "de374044f8b7675d7691e1dc4f083bcdf244b259ba64eb885349ae20e4e91887",
         "e3450f2bdc158c5a514a69a11f7104d9213792b1aa0d0d4e5587e8b0ba2a4ee8"
-      ],
-      "edition_date": "",
-      "version_family": "normative::документы для регистрации граждан рф по месту пребывания"
+      ]
     },
+    "edition_date": "",
+    "edition_number": null,
+    "version_family": "normative::документы для регистрации граждан рф по месту пребывания",
     "edo_number": "",
     "edo_date": "",
     "is_edo_stamp": false,
@@ -11709,9 +10957,755 @@
       "п. б/н (ч. 6)": [
         1
       ]
+    }
+  },
+  "reg_concert_hall_booking": {
+    "doc_id": "reg_concert_hall_booking",
+    "file_name": "Регламент бронирования конц зала.pdf",
+    "file_path": "/root/INBICST_hack80/доки/Регламент бронирования конц зала.pdf",
+    "file_format": "pdf",
+    "sha256": "2a8080d448c07b891954b7666e734d93c9feb37523027b27f4bf6a89736d940f",
+    "doc_number": "3897-1",
+    "doc_date": "",
+    "doc_type": "Регламент",
+    "title": "Регламент бронирования конц зала",
+    "status": "active",
+    "applicable_years": [
+      2025
+    ],
+    "supersedes": [],
+    "superseded_by": [],
+    "amends": [],
+    "amended_by": [],
+    "version_note": "",
+    "quality_warning": "",
+    "pages_total": 14,
+    "ocr_pages": 14,
+    "parent_count": 10,
+    "chunk_count": 74,
+    "tables_count": 0,
+    "also_in_files": [],
+    "indexed_at": "2026-11-14T17:13:32Z",
+    "metadata": {
+      "edo_number": "3897-1",
+      "edo_date": "",
+      "is_edo_stamp": true,
+      "edition_date": "",
+      "edition_number": null,
+      "version_family": "normative::регламент бронирования конц зала",
+      "clause_page_map": {
+        "1.1": [
+          1
+        ],
+        "1.2": [
+          1
+        ],
+        "1.3": [
+          1
+        ],
+        "1.4": [
+          1
+        ],
+        "1.3, 1.4": [
+          1
+        ],
+        "1.5": [
+          1
+        ],
+        "1.6": [
+          1
+        ],
+        "1.5, 1.6": [
+          1
+        ],
+        "1.7": [
+          1
+        ],
+        "2.1": [
+          1
+        ],
+        "2.2": [
+          1
+        ],
+        "2.3": [
+          1
+        ],
+        "2.4": [
+          1
+        ],
+        "2.3, 2.4": [
+          1
+        ],
+        "2.5": [
+          1
+        ],
+        "2.6": [
+          1
+        ],
+        "2.7": [
+          2
+        ],
+        "2.8": [
+          2
+        ],
+        "3.1": [
+          2
+        ],
+        "3.2": [
+          2
+        ],
+        "3.3": [
+          2
+        ],
+        "3.2, 3.3": [
+          2
+        ],
+        "3.4": [
+          2
+        ],
+        "3.5": [
+          2
+        ],
+        "3.6": [
+          2
+        ],
+        "3.7": [
+          2
+        ],
+        "3.8": [
+          2
+        ],
+        "3.9": [
+          2
+        ],
+        "3.10": [
+          2
+        ],
+        "3.9, 3.10": [
+          2
+        ],
+        "4.1": [
+          2
+        ],
+        "4.2": [
+          2
+        ],
+        "4.3": [
+          3
+        ],
+        "4.2, 4.3": [
+          2,
+          3
+        ],
+        "4.4": [
+          3
+        ],
+        "4.5": [
+          3
+        ],
+        "4.6": [
+          3
+        ],
+        "4.7": [
+          3
+        ],
+        "4.6, 4.7": [
+          3
+        ],
+        "4.8": [
+          3
+        ],
+        "4.9": [
+          3
+        ],
+        "5.1": [
+          3
+        ],
+        "5.2": [
+          3
+        ],
+        "5.3": [
+          3
+        ],
+        "5.4": [
+          3
+        ],
+        "5.5": [
+          3
+        ],
+        "5.4, 5.5": [
+          3
+        ],
+        "6.1": [
+          3
+        ],
+        "Таблица (табл. ч. 1)": [
+          4,
+          6
+        ],
+        "п. Таблица (табл. ч. 1) (ч. 1)": [
+          4,
+          6
+        ],
+        "п. Таблица (табл. ч. 1) (ч. 2)": [
+          4,
+          6
+        ],
+        "Таблица (табл. ч. 2)": [
+          4,
+          6
+        ],
+        "п. Таблица (табл. ч. 2) (ч. 1)": [
+          4
+        ],
+        "п. Таблица (табл. ч. 2) (ч. 2)": [
+          4
+        ],
+        "6.2": [
+          5
+        ],
+        "6.3": [
+          5
+        ],
+        "6.4": [
+          5
+        ],
+        "6.5": [
+          5
+        ],
+        "7": [
+          5
+        ],
+        "1": [
+          5,
+          10,
+          11
+        ],
+        "7, 1": [
+          5
+        ],
+        "2": [
+          5,
+          10,
+          11,
+          12,
+          13,
+          14
+        ],
+        "7, 1, 2": [
+          5
+        ],
+        "6.5, 7, 1, 2": [
+          5
+        ],
+        "п. б/н (ч. 1)": [
+          8,
+          9,
+          10
+        ],
+        "п. б/н (ч. 2)": [
+          8,
+          9,
+          10
+        ],
+        "п. б/н (ч. 3)": [
+          8,
+          9,
+          10
+        ],
+        "п. б/н (ч. 4)": [
+          8,
+          9,
+          10
+        ],
+        "п. б/н (ч. 5)": [
+          8,
+          9,
+          10
+        ],
+        "п. б/н (ч. 6)": [
+          8,
+          9,
+          10
+        ],
+        "п. б/н (ч. 7)": [
+          8,
+          9,
+          10
+        ],
+        "3": [
+          10,
+          11
+        ],
+        "4": [
+          10
+        ],
+        "5": [
+          10
+        ],
+        "4, 5": [
+          10
+        ],
+        "п. 2 (ч. 1)": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "п. 2 (ч. 2)": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "п. 2 (ч. 3)": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "п. 2 (ч. 4)": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "п. 2 (ч. 5)": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "п. 2 (ч. 6)": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "п. 2 (ч. 7)": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "п. 2 (ч. 8)": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "п. 2 (ч. 9)": [
+          11,
+          12,
+          13,
+          14
+        ],
+        "п. 2 (ч. 10)": [
+          11,
+          12,
+          13,
+          14
+        ]
+      },
+      "norm_sections_sha256": "79a8a2c01c3ffeca60327b4bacbb83e67006106ba82058c88871167c7b6f11a0",
+      "norm_chunks_sha256": "b610165e9147611695f4d849571a44bf602b8bee861bab1a6631b48ec84652b8",
+      "norm_blocks_sha256": "d297a82fbf19c706aee58af9fc7a8b4afb56f552fd8e481ffd4c50eb341275d1",
+      "chunk_content_hashes": [
+        "0006c3c37142fc2455bfac34d848fd3633fb74a4b8969c0a3a500298a006784f",
+        "00a59280e55ddf8cc8e1e91556aa279ff72432140f9124bcb9ced3002d0abdbd",
+        "024e30d8463746e141ff5ad314b676cdff32ab0097c73e8353a75291c484514d",
+        "03c4cb24539f8c0825fa0b0521d215c240c90df9291a0db68fbba571bcab743d",
+        "0bd251d4a3faaf3b0c499b835a86f04af29f6fe00301e5453d4b8ff076956042",
+        "0d3d2dbae42e47625d917919292e41d6a696882edcc504a2c5e87148806aae04",
+        "0f5aba9794dde88ae416f14d3b03fe2ebf260a6b70d0ee1bc42df5b41d24f3b6",
+        "0f8057358c5407272a3425d9a7cb33783310faae8e9a9f412bc37381a21f978c",
+        "0f8755ab574a597327c25fa300d4d3c69083d8f93175d0a1f8ed0bc9bc54acd9",
+        "134ad0c847c2089e60226f295d962229bf03fd8b2f8308afa070a3eb5e5e612b",
+        "22c98745a3be458d973bd547ca02c04e16ccab066e91cd8c7a1e3e0b8f1ee93b",
+        "2494653e3ba7d4fd55fc41012571f98d95d6fce698ae070e9c4bbf46eda3956c",
+        "25c169320b9fbe596f44b37927adece81cc775624996b035dd885269b0636a65",
+        "2c6a7257cd786805d1c27918ab739f41488f5b8fac53f7520f5a72538225b470",
+        "326f6a0e375b57dd4e32df5faf90cb7a3fb429e4e8ae3cc2d4fe901f11e69a72",
+        "36ffb2c11cf1cbe1a59f5ea0aad4e4a47dbace8571304dd7faf3865a3118c743",
+        "3d4f099c1cfef2936000557a47079e7df5b513a19ed6d7e253c9b072b1115354",
+        "3e8f79eb4aa0a507d1a80e8c3011483faf4f78b4ac3697d7cf81ea779da3f368",
+        "46514120a494f81e7031f8321aee0fb8b80915f96387be702c3c505d24282c0c",
+        "47adf2af099ade08fc18470fe6cd93ef914eda48f17bc978c2879e08cd86d6b8",
+        "49dfd2ec97b4d0ba7fec75baaa95bfcf849b56be30e43a426116d25c51feff33",
+        "4a87211174eea6b741d79ce2fd2796d88ea71380942d54ccb1c13f8fbd31c282",
+        "52ebe0549f33a5044024ea122097cdb3f7e4d4eed627bce63646e030a92cfd5f",
+        "544f0688f768bc2e6ccfdbede0df4922f413b41a99221c920c785f0185bab6fb",
+        "5b171159194cb51abba88096693e0c18b392451ea38c87d29b7239b5965432c7",
+        "5b22ef3e9c7f9afb7e693c8a233b101d0646efe14fa692d9ce6a3ce7826f4579",
+        "71579fa2c362f2fa73db401c1b6a43116cdc3e40be82c19b8c075bff4f07f991",
+        "772146fb9355611e650d1d22d076ab77db9300ff7bbd14402af110ba7ed3e366",
+        "77a3f5aceba5d972a67e2f2c305187a54fba753f3c6cdb5faf515cf86ca80fe9",
+        "7e835f77f473d64f18fbc2270ae81f2ee4013b9d59e7b2ef4c54e9aad11b87ad",
+        "845d142fb6e0ce09445c210823d5746249b2dfd01cc212c6d542637079127772",
+        "87dae9c82e916f17b85191a62052e7c0e865010a0f7aa4961a1b4b6afa0749cb",
+        "88aa80c42ef77092f43988b568e784b45fe1b0bd1a558e03edf4c75bf03721a3",
+        "8b1c41fc0d6fc11f850990bd738533c52e7759b6d097db85cbdc7e3978264dbf",
+        "8c8c357c5f22ed16acbd89be445fea3f79424f875e5980fd34ba5dac5cfeac8f",
+        "8e67f04f610716434a5922839ff70e21adae0f4af635b77eaa19ae3829d20a32",
+        "8ebc0928f54fc4a0e23f91f8bfbd8c65e56d608a733621f1ffd6cb71fb1e289c",
+        "90b88a28a3ae99d78ac72964b8cf0ac92d6961e595cdf3896a5ff9a1067eb2f7",
+        "9195ec7e6d985140731e2f9d23b7a29994aa3b0b559aad151dcc27abf8f6b0db",
+        "97037be32f5472362fae2f2e23b13c39062c8e2916e477a070b621d75a89b474",
+        "98505b4896f657e874275a55ee8f6529760132aa2ffb1a868a61c191445c2dcf",
+        "9aedcfc9e04468adee66c216432a044bb5726b78cbe809ef0ed62805b94ecb56",
+        "9e2b4b0755480540669425ff1f71623bdec2fecddd57f56e3b3f56110ad4d784",
+        "a02c1e9d12015050ea7af6e2147ce707842f8e8f5da643170e4fd30ea0171419",
+        "a15a3d0615804c389b4824e9b93eb69677d6db0132d61a3c8f1fcba85e5297fd",
+        "a3d62a2987298e3af4dab848fd7b9d7d799aab0646602fcfa175afb0db721a66",
+        "a586b789293ba59e95b740d6bba6026f477f04bbcda2ae48c90a1d25ef2c875d",
+        "b15053834e2160b28e0c02c4fc7b72b16de2c369bbc02ab17d6a359192c8389b",
+        "b7773f973cab4d9b02c7cb50112b6dfccc3737eaede09eeaa6d2e65bfac9cfec",
+        "c107d322459b5aaaceb672901b7d6c9f4314ee6f17e09f42a85f0f0308572c92",
+        "c5513c3d10b96c886c70e893532780c4e3025d005f1c6fb3516e4913d897004b",
+        "c89e8fee917636e57b67d812db160e204f35b7ae09934bcbfcff068bedf68515",
+        "c9c5d01c1321dbce7e0bc5e870cf03170abbb9c250ab43017b92b645f82acafb",
+        "ca095b12fe7d1b022baeae3c1e305b30054e108c8c7e25a2999feab116899642",
+        "ccab57e7e63edc8fe1c768309a555cc361a83d2374daed8ea36d7cc40edf1daa",
+        "cccde51af3629fb53cf795c35fad111d9c2e6eba97edfbe445f3d4f13451e2e9",
+        "cdac70f59013da3802253b7940d154752668685a7546ed0d528d0c3d3a7f88a0",
+        "d297cac72a0217d86590c717313af9d2c58a67f68c46ecd2231ebc17c5e45728",
+        "d403ca5f5fa1a3318a651eeecca4553da132db9d5b5d23f31841e9ce971e3529",
+        "d42467c879674a8d2f521ca95c8feea25000aa0d506d5f9d8d538e236800dc18",
+        "d758360dfb57e093bc6d67d6aaa08b56d89ae066c92d3720378807372fc909e3",
+        "d97a773ffafa37e09d3ca61397b1dc5e09e95c1567f51dcc7b7d4580079a04c7",
+        "da7da69bbd7f9391cfa60d2932787472b1d5b2ce72b2bb735e2fe4782cc87a85",
+        "da9cec216721387b0da11f31be042bb4b9455259dea61ac5c891594120f40e16",
+        "db320b39acf76399160b28f1f9c0871fe8e9d161c75b073318fb56274f074b31",
+        "dc5700a82873ea16a859d505384348e1ec91cc5329b433cba9e0712c4d5d61df",
+        "e5143efa5d429c8f915f81a1dded755e5f6d5860540c888ff41fda8c89522999",
+        "e7cd68d85fdfeaf4fd48d69ff3c5a443a250af9ee685c3c39204cfe856c14904",
+        "e84128b7c0b796d1505430a66e0d2e8799304352af0f51ce4888b4b321a1ca50",
+        "ebaa6c43d287ef91c877178bfd81fde1037aa71269f381ce42ebda9ed6139312",
+        "eeee0ab247b9b0c1f098837d58d084296e940e8f6c8715898bbc3f373ace5818",
+        "fc14d33db14a1e970828730b545fb608c6b69f7a861716f7032e16e49ed5eac6",
+        "ff005567448b21cb0e27dd29053f6feaee880d9171097a5f5f8d4591be78b981",
+        "ff7e26ce115afc8408614f5418e7c8b7cfc7a925451d584697633a070a5b7e5c"
+      ]
     },
     "edition_date": "",
     "edition_number": null,
-    "version_family": "normative::документы для регистрации граждан рф по месту пребывания"
+    "version_family": "normative::регламент бронирования конц зала",
+    "edo_number": "3897-1",
+    "edo_date": "",
+    "is_edo_stamp": true,
+    "clause_page_map": {
+      "1.1": [
+        1
+      ],
+      "1.2": [
+        1
+      ],
+      "1.3": [
+        1
+      ],
+      "1.4": [
+        1
+      ],
+      "1.3, 1.4": [
+        1
+      ],
+      "1.5": [
+        1
+      ],
+      "1.6": [
+        1
+      ],
+      "1.5, 1.6": [
+        1
+      ],
+      "1.7": [
+        1
+      ],
+      "2.1": [
+        1
+      ],
+      "2.2": [
+        1
+      ],
+      "2.3": [
+        1
+      ],
+      "2.4": [
+        1
+      ],
+      "2.3, 2.4": [
+        1
+      ],
+      "2.5": [
+        1
+      ],
+      "2.6": [
+        1
+      ],
+      "2.7": [
+        2
+      ],
+      "2.8": [
+        2
+      ],
+      "3.1": [
+        2
+      ],
+      "3.2": [
+        2
+      ],
+      "3.3": [
+        2
+      ],
+      "3.2, 3.3": [
+        2
+      ],
+      "3.4": [
+        2
+      ],
+      "3.5": [
+        2
+      ],
+      "3.6": [
+        2
+      ],
+      "3.7": [
+        2
+      ],
+      "3.8": [
+        2
+      ],
+      "3.9": [
+        2
+      ],
+      "3.10": [
+        2
+      ],
+      "3.9, 3.10": [
+        2
+      ],
+      "4.1": [
+        2
+      ],
+      "4.2": [
+        2
+      ],
+      "4.3": [
+        3
+      ],
+      "4.2, 4.3": [
+        2,
+        3
+      ],
+      "4.4": [
+        3
+      ],
+      "4.5": [
+        3
+      ],
+      "4.6": [
+        3
+      ],
+      "4.7": [
+        3
+      ],
+      "4.6, 4.7": [
+        3
+      ],
+      "4.8": [
+        3
+      ],
+      "4.9": [
+        3
+      ],
+      "5.1": [
+        3
+      ],
+      "5.2": [
+        3
+      ],
+      "5.3": [
+        3
+      ],
+      "5.4": [
+        3
+      ],
+      "5.5": [
+        3
+      ],
+      "5.4, 5.5": [
+        3
+      ],
+      "6.1": [
+        3
+      ],
+      "Таблица (табл. ч. 1)": [
+        4,
+        6
+      ],
+      "п. Таблица (табл. ч. 1) (ч. 1)": [
+        4,
+        6
+      ],
+      "п. Таблица (табл. ч. 1) (ч. 2)": [
+        4,
+        6
+      ],
+      "Таблица (табл. ч. 2)": [
+        4,
+        6
+      ],
+      "п. Таблица (табл. ч. 2) (ч. 1)": [
+        4
+      ],
+      "п. Таблица (табл. ч. 2) (ч. 2)": [
+        4
+      ],
+      "6.2": [
+        5
+      ],
+      "6.3": [
+        5
+      ],
+      "6.4": [
+        5
+      ],
+      "6.5": [
+        5
+      ],
+      "7": [
+        5
+      ],
+      "1": [
+        5,
+        10,
+        11
+      ],
+      "7, 1": [
+        5
+      ],
+      "2": [
+        5,
+        10,
+        11,
+        12,
+        13,
+        14
+      ],
+      "7, 1, 2": [
+        5
+      ],
+      "6.5, 7, 1, 2": [
+        5
+      ],
+      "п. б/н (ч. 1)": [
+        8,
+        9,
+        10
+      ],
+      "п. б/н (ч. 2)": [
+        8,
+        9,
+        10
+      ],
+      "п. б/н (ч. 3)": [
+        8,
+        9,
+        10
+      ],
+      "п. б/н (ч. 4)": [
+        8,
+        9,
+        10
+      ],
+      "п. б/н (ч. 5)": [
+        8,
+        9,
+        10
+      ],
+      "п. б/н (ч. 6)": [
+        8,
+        9,
+        10
+      ],
+      "п. б/н (ч. 7)": [
+        8,
+        9,
+        10
+      ],
+      "3": [
+        10,
+        11
+      ],
+      "4": [
+        10
+      ],
+      "5": [
+        10
+      ],
+      "4, 5": [
+        10
+      ],
+      "п. 2 (ч. 1)": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "п. 2 (ч. 2)": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "п. 2 (ч. 3)": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "п. 2 (ч. 4)": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "п. 2 (ч. 5)": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "п. 2 (ч. 6)": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "п. 2 (ч. 7)": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "п. 2 (ч. 8)": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "п. 2 (ч. 9)": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "п. 2 (ч. 10)": [
+        11,
+        12,
+        13,
+        14
+      ]
+    }
   }
 }

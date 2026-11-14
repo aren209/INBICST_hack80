@@ -2611,25 +2611,43 @@ class IndexingPipeline:
     def get_health(self) -> dict[str, Any]:
         """Return comprehensive health status for GET /api/health."""
         qdrant_health = self.qdrant.check_health()
-        polza_health = self.embedder.check_health()
+        embed_health = self.embedder.check_health()
         llm_health = {
             "provider": settings.llm_provider,
+            "backend": settings.LLM_BACKEND,
+            "quantization": settings.LLM_QUANTIZATION,
             "configured": bool(settings.llm_api_key),
             "base_url": settings.llm_base_url,
             "model": settings.llm_model,
+            "quantized_repo": settings.LOCAL_LLM_HF_QUANTIZED_REPO,
+        }
+        ocr_health = {
+            "backend": settings.OCR_BACKEND,
+            "vl_model": settings.OCR_VL_MODEL,
+            "device": settings.OCR_VL_DEVICE,
+            "fallback": "local_rapidocr (PP-OCRv5 ESLAV)",
         }
         structured_tables_count = (
             self.table_store.count_tables() if self._has_active_table_store() else 0
         )
         overall_ok = (
             bool(qdrant_health.get("connected"))
-            and bool(polza_health.get("configured"))
+            and bool(embed_health.get("configured"))
             and bool(settings.llm_api_key)
         )
         return {
             "status": "ok" if overall_ok else "degraded",
             "qdrant": qdrant_health,
-            "polza_api": polza_health,
+            "local_models": {
+                "ocr_vl": settings.OCR_VL_MODEL,
+                "embeddings": settings.EMBEDDING_MODEL,
+                "llm": settings.LOCAL_LLM_MODEL,
+                "llm_quantization": settings.LLM_QUANTIZATION,
+                "llm_quantized_repo": settings.LOCAL_LLM_HF_QUANTIZED_REPO,
+            },
+            "ocr": ocr_health,
+            "embeddings": embed_health,
+            "polza_api": embed_health,
             "llm": llm_health,
             "llm_provider": settings.llm_provider,
             "llm_model": settings.llm_model,

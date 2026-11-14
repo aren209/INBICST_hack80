@@ -29,6 +29,7 @@ from openai import OpenAI
 
 from src.config import NON_ANSWER_ZONES, settings
 from src.indexing.embedder import tokenize_bm25
+from src.retrieval.local_llm import LOCAL_QWEN_MODELS, create_llm_client, strip_thinking_tags
 from src.retrieval.search_service import SearchService, decompose_complex_query, get_search_service
 from src.schemas import (
     ChunkRerankVerdict,
@@ -127,7 +128,7 @@ RERANKER_SYSTEM_PROMPT = """Ты — строгий ИИ-верификатор 
    - Если что-то потенциально существующее в базе упущено, установи `"needs_followup": true`, перечисли упущенные аспекты в `"missing_aspects"` и сформулируй `1–3` точечных поисковых запроса в `"followup_queries"` (не дублируя уже выполненные запросы).
    - Установи `"all_irrelevant_out_of_scope": true` ТОЛЬКО тогда, когда НИ ОДИН из фрагментов вообще не имеет отношения к теме вопроса (`max score < 0.25`) и сам вопрос явно выходит за рамки представленных в базе тем (в этом случае ставь `"needs_followup": false`, если базовые запросы уже прямо искали тему вопроса).
 
-Верни ответ СТРОГО в формате компактного JSON-объекта (поле `reason` не длиннее 3–4 слов):
+Верни ответ СТРОГО в формате компактного JSON-объекта (для `irrelevant` ставь `"reason": ""`, для остальных — 1–3 слова):
 {
   "items": [
     {"idx": 0, "chunk_id": "...", "score": 0.88, "verdict": "essential", "reason": "точный пункт"}
@@ -204,8 +205,8 @@ def is_meta_assistant_query(query: str) -> bool:
 
 
 def _extract_json_dict(raw_text: str) -> dict[str, Any]:
-    """Robustly parse a JSON object from LLM text output (stripping markdown fences if present)."""
-    cleaned = (raw_text or "").strip()
+    """Robustly parse a JSON object from LLM text output (stripping <think> tags and markdown fences if present)."""
+    cleaned = strip_thinking_tags(raw_text or "").strip()
     if not cleaned:
         raise ValueError("Empty LLM JSON response")
 
@@ -276,7 +277,7 @@ class QueryPipeline:
         api_key: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
-        timeout: float = 35.0,
+        timeout: float = 120.0,
         max_followup_rounds: int = 2,
     ) -> None:
         self.search_service: SearchService = search_service or get_search_service()
@@ -284,29 +285,30 @@ class QueryPipeline:
         self._has_custom_client: bool = llm_client is not None
         self.api_key: str = settings.llm_api_key if api_key is None else api_key
         self.base_url: str = (base_url or settings.llm_base_url).rstrip("/")
-        self.default_model: str = (model or settings.llm_model or "deepseek-chat").strip()
-        self.llm_provider: str = (
-            "deepseek"
-            if "deepseek.com" in self.base_url.lower()
-            or (base_url is None and settings.llm_provider == "deepseek")
-            else "polza"
-        )
+        self.default_model: str = (model or settings.llm_model or "Qwen/Qwen3.8-27B").strip()
+        if "deepseek.com" in self.base_url.lower() or (base_url is None and settings.llm_provider == "deepseek"):
+            self.llm_provider: str = "deepseek"
+        elif "polza.ai" in self.base_url.lower() or (base_url is None and settings.llm_provider == "polza"):
+            self.llm_provider = "polza"
+        else:
+            self.llm_provider = "local"
         self.timeout: float = timeout
         self.max_followup_rounds: int = max(0, min(int(max_followup_rounds), 2))
         self._verified_model: str | None = None
 
     @property
     def client(self) -> Any:
-        """Return injected or lazily initialized OpenAI-compatible client."""
+        """Return injected or lazily initialized local Qwen3.8-27B (4-bit) / OpenAI-compatible client."""
         if self._client is not None:
             return self._client
         if not self.api_key:
             return None
-        self._client = OpenAI(
+        self._client = create_llm_client(
             api_key=self.api_key,
             base_url=self.base_url,
             timeout=self.timeout,
-            max_retries=1,
+            max_retries=0 if self.llm_provider == "local" else 1,
+            llm_provider=self.llm_provider,
         )
         return self._client
 
@@ -325,6 +327,12 @@ class QueryPipeline:
                     explicit,
                     self.default_model,
                 )
+            elif self.llm_provider == "local" and explicit not in LOCAL_QWEN_MODELS and not self._has_custom_client:
+                logger.info(
+                    "Mapping requested model '%s' to local 4-bit model '%s'.",
+                    explicit,
+                    self.default_model,
+                )
             else:
                 ordered.append(explicit)
         elif self._verified_model:
@@ -332,11 +340,12 @@ class QueryPipeline:
         if self.default_model and self.default_model not in ordered:
             ordered.append(self.default_model)
         if not self._has_custom_client:
-            fallbacks = (
-                DEEPSEEK_PIPELINE_MODELS
-                if self.llm_provider == "deepseek"
-                else PIPELINE_FALLBACK_MODELS
-            )
+            if self.llm_provider == "local":
+                fallbacks: tuple[str, ...] = LOCAL_QWEN_MODELS
+            elif self.llm_provider == "deepseek":
+                fallbacks = DEEPSEEK_PIPELINE_MODELS
+            else:
+                fallbacks = PIPELINE_FALLBACK_MODELS
             for m in fallbacks:
                 if m not in ordered:
                     ordered.append(m)
@@ -388,11 +397,18 @@ class QueryPipeline:
                     break
                 except Exception as exc:
                     last_exc = exc
-                    if use_json_mode and "response_format" in str(exc).lower():
+                    err_low = str(exc).lower()
+                    if use_json_mode and "response_format" in err_low:
                         continue
                     logger.warning("QueryPipeline JSON LLM call failed on model '%s': %s", model_name, exc)
                     break
             if self._has_custom_client:
+                break
+            if (
+                self.llm_provider == "local"
+                and last_exc is not None
+                and not any(k in str(last_exc).lower() for k in ("not found", "does not exist", "404"))
+            ):
                 break
 
         assert last_exc is not None
