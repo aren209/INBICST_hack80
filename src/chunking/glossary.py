@@ -486,6 +486,39 @@ ANNUAL_TARGET_YEAR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Applicable years extraction (1995-2050) with guards against order numbers and budget codes
+_YEAR_CANDIDATE_RE = re.compile(r"(?<!\d)(199[5-9]|20[0-4]\d|2050)(?!\d)")
+_YEAR_PREFIX_GUARD_RE = re.compile(
+    r"(?:№\s*|(?:^|[^A-Za-zА-ЯЁа-яё0-9])(?:N(?:[oо°]\.?)?|КОСГУ|КВР|КФО|сч\.?)[\s:]*)$",
+    re.IGNORECASE,
+)
+_YEAR_SUFFIX_ISO_DATE_RE = re.compile(r"^-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])(?!\d)")
+_YEAR_SUFFIX_ORDER_INDEX_RE = re.compile(r"^[-–—]\d{1,3}(?:\b|(?=[а-яёa-z]\b))", re.IGNORECASE)
+
+
+def _extract_applicable_years(year_probe: str) -> list[int]:
+    """
+    Extract applicable years in 1995..2050 from `year_probe`, ignoring 4-digit order numbers
+    (e.g. `№ 2025-1`, `N 1998-1`, `№ 2026`, `2025-1`) and budget/account codes (`КОСГУ 2026`,
+    `КВР 2020`, `КФО ...`, `сч. ...`) while preserving year ranges (`2025-2031`, `2026–2030`)
+    and suffixed years (`2031г.`).
+    """
+    if not year_probe:
+        return []
+    found: list[int] = []
+    for m in _YEAR_CANDIDATE_RE.finditer(year_probe):
+        prefix = year_probe[: m.start()]
+        suffix = year_probe[m.end() :]
+        if _YEAR_PREFIX_GUARD_RE.search(prefix):
+            continue
+        if not _YEAR_SUFFIX_ISO_DATE_RE.match(suffix) and _YEAR_SUFFIX_ORDER_INDEX_RE.match(suffix):
+            continue
+        y_int = int(m.group(1))
+        if 1995 <= y_int <= 2050 and y_int not in found:
+            found.append(y_int)
+    found.sort()
+    return found
+
 _ORDER_PREAMBLE_START_RE = re.compile(
     r"^\s*(?:В\s+целях|С\s+целью|На\s+основании|В\s+связи\s+с|Во\s+исполнение|В\s+соответствии\s+с|Руководствуясь|"
     r"ПРИКАЗЫВАЮ|РАСПОРЯЖАЮСЬ|ОБЯЗЫВАЮ|ПОСТАНОВЛЯЮ)\b",
@@ -1649,13 +1682,8 @@ class GlossaryManager:
         amends = list(auto_rels["amends"])
 
         # Extract applicable years strictly from normalized filename + header_zone + resolved doc_date/edo_date
-        found_years: list[int] = []
         year_probe = f"{norm_fname}\n{header_zone}\n{doc_date[:4] if doc_date else ''}\n{edo_date[:4] if edo_date else ''}"
-        for ym in re.findall(r"\b(20(?:19|2\d))\b", year_probe):
-            y_int = int(ym)
-            if 2018 <= y_int <= 2030 and y_int not in found_years:
-                found_years.append(y_int)
-        found_years.sort()
+        found_years = _extract_applicable_years(year_probe)
 
         # 8. Merge with config/registry_overrides.yaml (by filename first, then by doc_number)
         yaml_override: dict[str, Any] = {}

@@ -1203,6 +1203,7 @@ class QueryPipeline:
                 linked_tables=[],
                 table_context=[],
                 version_alerts=[],
+                discrepancy_alerts=[],
                 quality_alerts=[],
                 is_out_of_scope=True,
                 confidence_score=conf_oos,
@@ -1474,10 +1475,19 @@ class QueryPipeline:
 
         # 4. Alerts strictly for kept hits + kept amendment_chunks
         version_alerts: list[str] = []
+        discrepancy_alerts: list[str] = []
         quality_alerts: list[str] = []
         collect_alerts_fn = getattr(svc, "_collect_alerts", None)
         if callable(collect_alerts_fn) and not self._is_mock_object(collect_alerts_fn):
-            version_alerts, quality_alerts = collect_alerts_fn(hits_out, amendment_chunks)
+            raw_alerts = collect_alerts_fn(hits_out, amendment_chunks)
+            if isinstance(raw_alerts, (tuple, list)):
+                if len(raw_alerts) >= 3:
+                    version_alerts = list(raw_alerts[0] or [])
+                    discrepancy_alerts = list(raw_alerts[1] or [])
+                    quality_alerts = list(raw_alerts[2] or [])
+                elif len(raw_alerts) == 2:
+                    version_alerts = list(raw_alerts[0] or [])
+                    quality_alerts = list(raw_alerts[1] or [])
 
         # 5. Hydrate ParentSectionRecords for kept section_ids + compact-unit sibling sections (<= 20,000 chars)
         #    ONLY when >= 1 chunk in `(doc_id, unit_id)` was verified as `essential`!
@@ -1501,6 +1511,7 @@ class QueryPipeline:
             linked_tables=linked_tables,
             table_context=table_context,
             version_alerts=version_alerts,
+            discrepancy_alerts=discrepancy_alerts,
             quality_alerts=quality_alerts,
             is_out_of_scope=False,
             confidence_score=confidence,

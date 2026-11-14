@@ -14,7 +14,15 @@ from openai import OpenAI
 from src.config import settings
 from src.indexing.table_store import OPENAI_TABLE_TOOLS, StructuredTableStore
 from src.retrieval.query_pipeline import QueryPipeline, is_meta_assistant_query
-from src.retrieval.quote_verifier import clean_clause, clean_doc_number, context_docs_from_search, verify_quotes
+from src.retrieval.quote_verifier import (
+    build_source_label,
+    clean_clause,
+    clean_doc_number,
+    context_docs_from_search,
+    normalize_tokens,
+    strip_placeholders,
+    verify_quotes,
+)
 from src.retrieval.search_service import SearchService, get_search_service
 from src.schemas import (
     AgentAskRequest,
@@ -61,7 +69,7 @@ SYSTEM_PROMPT_RU = """Ты — экспертный ИИ-ассистент по
 
 2) `### Порядок действий`
    - **СТРОГО УСЛОВНЫЙ РАЗДЕЛ (включай ТОЛЬКО для процедурных вопросов!):**
-   - КОГДА НУЖЕН ПОШАГОВЫЙ ПЛАН (`### Порядок действий`): включай этот раздел ТОЛЬКО тогда, когда вопрос пользователя прямо спрашивает или подразумевает последовательность действий для выполнения процедуры (например: «как оформить…», «как согласовать…», «как подать…», «как зарегистрировать…», «как обжаловать…», «что нужно сделать, чтобы…», «какой порядок…», «как действовать при…») И в найденных документах есть конкретные этапы. Приведи 2–6 кратких конкретных нумерованных шагов (`1.`, `2.`, `3.`...) — что сделать, какие документы подготовить, куда направить и в какой срок. Пошаговый план действий оформляй СТРОГО под заголовком `### Порядок действий`.
+   - КОГДА НУЖЕН ПОШАГОВЫЙ ПЛАН (`### Порядок действий`): включай этот раздел ТОЛЬКО тогда, когда вопрос пользователя прямо спрашивает или подразумевает последовательность действий для выполнения процедуры (например: «как оформить…», «как согласовать…», «как подать…», «как зарегистрировать…», «как обжаловать…», «что нужно сделать, чтобы…», «какой порядок…», «как действовать при…») И в найденных документах есть конкретные этапы. Приведи 2–6 кратких конкретных нумерованных шагов (`1.`, `2.`, `3.`...) — что сделать, какие документы подготовить, куда направить и в какой срок. Пошаговый план действий оформляй СТРОГО под заголовком `### Порядок действий`. В конце КАЖДОГО нумерованного шага обязательно добавляй краткую ссылку на источник в круглых скобках, например: `(Приказ № 3897-1, п. 2.5, стр. 1)` или `(Название документа, Лист: Имя листа, стр. 1)` (если номер документа или страница отсутствуют — опускай их, без заглушек).
    - КОГДА ПЛАН ДЕЛАТЬ НЕ НУЖНО (ВАЖНОЕ ОГРАНИЧЕНИЕ — далеко не для каждого запроса нужен план!): на фактические, числовые, датовые, терминологические, статусные вопросы, проверку актуальности/версии документа или табличные выборки/расчеты (например: «какой лимит / сумма / ставка…», «сколько подразделений…», «кто финансодержатель…», «какой номер, дата или статус приказа…», «какая формула используется…», «перечисли подразделения / статьи расходов…», «в чем разница…», «что означает…») **ПОЛНОСТЬЮ ОПУСКАЙ заголовок `### Порядок действий`** и отвечай **БЕЗ составления пошагового плана** (сразу переходи от `### Краткий ответ` к `### Подробный ответ и цитаты`).
 
 3) `### Подробный ответ и цитаты`
@@ -94,16 +102,19 @@ SYSTEM_PROMPT_RU = """Ты — экспертный ИИ-ассистент по
    - Если первый вызов `filters` вернул `matched_count == 0`, НИКОГДА не делай вывод об отсутствии данных сразу — обязательно повтори вызов с `search_text` по ключевому слову/корню или полному наименованию без узкого фильтра по одному столбцу!
    - Для подсчета количества или сумм используй `operation="aggregate"` (`agg_func="count"` или `"sum"`, при необходимости `group_by="..."`), либо `operation="filter_rows"` с достаточным `limit` (до 200), чтобы перечислить все найденные строки.
    - Для извлечения расчетных формул Excel используй `operation="get_formulas"` (можно совмещать с `search_text` или `filters`).
-5. Дословные цитаты из документов — доказательная база ответа (обязательно в разделе `### Подробный ответ и цитаты`, когда ответ опирается на текст документов):
-   - Каждый ключевой вывод, шаг, срок, условие, обязанность или факт ответа подкрепляй ДОСЛОВНОЙ цитатой того пункта, из которого он взят. Всего до 5 цитат; одна цитата может подтверждать несколько соседних положений.
+5. Дословные цитаты из документов — доказательная база ответа (обязательно в разделе `### Подробный ответ и цитаты`, когда ответ опирается на текст документов или таблиц):
+   - **Каждый** ключевой вывод, правило, срок, условие, обязанность, факт и **каждый** процедурный шаг из раздела `### Порядок действий` подкрепляй ДОСЛОВНОЙ цитатой соответствующего пункта документа в разделе `### Подробный ответ и цитаты` (ориентир: 3–8 цитат по числу реальных шагов и тезисов ответа, без дублирования полностью идентичных фрагментов).
    - Цитируй ДЕЙСТВУЮЩИЙ (операционный) текст пункта: полное предложение или несколько предложений пункта целиком, включая полный перечень подпунктов/элементов списка, если правило опирается на список (обычно 1–4 предложения, до ~700 символов). Не обрывай цитату на полуслове. Многоточие «…» используй только чтобы пропустить явно не относящуюся к вопросу середину.
    - НЕ цитируй названия документов и разделов, преамбулы, пункты об области применения («Настоящий регламент… является…», «устанавливает порядок…»), определения терминов и общие положения — если только вопрос не именно о них. Цитата должна показывать, ГДЕ в документе написано конкретное правило из ответа.
    - Размещай дословные цитаты в разделе `### Подробный ответ и цитаты` сразу после тезиса/разбора, который они подтверждают.
-   - Текст внутри кавычек копируй из контекста символ в символ: без перефразирования, без изменения падежей, порядка слов, сокращений и опечаток. Никогда не выдумывай цитаты и не цитируй то, чего нет в контексте; не цитируй служебные заголовки фрагментов, метаданные и результаты табличных инструментов.
+   - Текст внутри кавычек копируй из контекста символ в символ: без перефразирования, без изменения падежей, порядка слов, сокращений и опечаток. Никогда не выдумывай цитаты и не цитируй то, чего нет в контексте; не цитируй служебные заголовки фрагментов, внутренние метаданные и имена служебных полей (`table_id`, `matched_count`, `SQLite`, `delivery_mode`, `tool_query`).
+   - Разрешается и рекомендуется цитировать фактические значения, правила и расчетные формулы из таблиц Excel и Word в разделе `### Подробный ответ и цитаты` с указанием листа и страницы:
+     > «значение, правило или формула из таблицы»
+     > — Название документа, Лист: Имя листа, стр. Y
    - Каждую цитату оформляй ОТДЕЛЬНЫМ блоком строго в таком формате — ровно две строки, каждая начинается с `> `, с пустой строкой до и после блока:
      > «точный текст из документа»
      > — Название документа, № номер, п. X, стр. Y
-   - В строке источника указывай только то, что есть в заголовке фрагмента (название документа, номер, пункт, страницу); отсутствующие части опускай. Если номер документа или пункта неизвестен либо в тексте стоит заглушка (`[___]`, `___`, `б/н`, `№ ____`), НЕ пиши «№» вообще — никаких заглушек и пустых номеров. Не используй `>` для чего-либо, кроме цитат.
+   - В строке источника указывай только то, что есть в заголовке фрагмента (название документа, номер, пункт или `Лист: Имя листа`, страницу); отсутствующие части опускай. Если номер документа или пункта неизвестен либо в тексте стоит заглушка (`[___]`, `___`, `б/н`, `№ ____`), НЕ пиши «№» вообще — никаких заглушек и пустых номеров. Не используй `>` для чего-либо, кроме цитат.
    - Свои выводы, пояснения и пересказ пиши обычным текстом вне блоков цитат — цитата должна только подтверждать сказанное.
 6. Строгий контроль структуры разделов H3 (`### Краткий ответ`, условный `### Порядок действий`, `### Подробный ответ и цитаты`):
    - Никогда не пропускай `### Краткий ответ` и `### Подробный ответ и цитаты` в ответах по нормативным документам.
@@ -155,6 +166,189 @@ def _parse_tool_arguments(raw_args: dict[str, Any] | str | None) -> dict[str, An
         except json.JSONDecodeError:
             return {"_raw_invalid_json": stripped[:500]}
     return {}
+
+
+_PROCEDURAL_FALLBACK_RE = re.compile(
+    r"(?:как\s+(?:оформить|подать|согласовать|забронировать|получить|зарегистрировать|провести|обжаловать|открыть|закрыть|сдать|направить|оплатить|пройти)|"
+    r"порядок\s+действий|пошагов|инструкци|алгоритм|этапы|процедур|что\s+нужно\s+сделать)",
+    re.IGNORECASE,
+)
+_TECH_LINE_RE = re.compile(
+    r"\b(?:table_id|matched_count|returned_count|total_table_rows|delivery_mode|tool_query|inline_parent|SQLite)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_title_ru(raw: str) -> str:
+    title = strip_placeholders(str(raw or "")).strip()
+    return re.sub(r"\.(pdf|docx?|xlsx?|xlsm|rtf)$", "", title, flags=re.IGNORECASE).strip()
+
+
+def _strip_chunk_artifacts(text: str) -> str:
+    s = re.sub(r"(?im)^[ \t]*\(Продолжение[^\n]*\)[ \t]*$", "", str(text or ""))
+    s = re.sub(r"\[\s*Стр\.?\s*\d+\s*\]", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\*\*|__", "", s)
+    s = re.sub(r"(\w)[\-\u00ad][ \t]*\n[ \t]*(\w)", r"\1\2", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _extract_verbatim_quote_from_text(raw_text: str, max_chars: int = 440) -> str:
+    """Extract a contiguous verbatim snippet from `clean_text` (no `(Продолжение ...)` or `[Стр. N]` breaks)."""
+    cleaned = re.sub(r"(?im)^[ \t]*\(Продолжение[^\n]*\)[ \t]*$", "", str(raw_text or "")).strip()
+    if not cleaned:
+        return ""
+    segments = [seg.strip() for seg in re.split(r"\[\s*Стр\.?\s*\d+\s*\]", cleaned) if seg.strip()]
+    chosen = ""
+    for seg in segments:
+        if len(normalize_tokens(seg)) >= 3:
+            chosen = seg
+            break
+    if not chosen:
+        chosen = max(segments, key=lambda s: len(normalize_tokens(s)), default="")
+    if not chosen:
+        return ""
+    # Preserve exact token sequence while collapsing line wraps into one clean blockquote line
+    line = re.sub(r"(\w)[\-\u00ad][ \t]*\n[ \t]*(\w)", r"\1\2", chosen)
+    line = re.sub(r"[ \t]*\n+[ \t]*", " ", line)
+    line = re.sub(r"[ \t]{2,}", " ", line).strip()
+    if len(line) <= max_chars:
+        return line
+    head = line[:max_chars]
+    last_sent = -1
+    for m in re.finditer(r"[.!?…](?=\s|$)", head):
+        last_sent = m.end()
+    if last_sent > 60 and len(normalize_tokens(head[:last_sent])) >= 3:
+        return head[:last_sent].strip()
+    cut = head.rfind(" ")
+    if cut > 60 and len(normalize_tokens(head[:cut])) >= 3:
+        return head[:cut].rstrip(" ,;:") + "…"
+    return head.strip()
+
+
+def _format_table_qresp_lines(q_resp: TableQueryResponse, max_items: int = 8) -> list[str]:
+    """Format TableQueryResponse rows, formulas, or aggregation into clean Russian bullet lines."""
+    lines: list[str] = []
+    if q_resp.formulas:
+        for item in q_resp.formulas[:max_items]:
+            if not isinstance(item, dict):
+                continue
+            row_lbl = str(item.get("row_label") or "").strip()
+            col = str(item.get("column") or "").strip()
+            formula = str(item.get("formula") or "").strip()
+            cell_txt = str(item.get("cell_text") or item.get("cell") or "").strip()
+            segs = [p for p in (row_lbl, f"{col}: {formula}" if col and formula else formula) if p]
+            entry = " — ".join(segs)
+            if entry and cell_txt and formula not in cell_txt:
+                entry += f" ({cell_txt})"
+            elif not entry and cell_txt:
+                entry = cell_txt
+            if entry:
+                lines.append(f"- {entry}")
+        return lines
+
+    if q_resp.rows:
+        for row in q_resp.rows[:max_items]:
+            if not isinstance(row, dict):
+                continue
+            cells = [f"{k}: {v}" for k, v in row.items() if str(v or "").strip() and not _TECH_LINE_RE.search(str(k))]
+            if cells:
+                lines.append("- " + "; ".join(cells))
+        return lines
+
+    if q_resp.aggregation_result is not None:
+        agg = q_resp.aggregation_result
+        if isinstance(agg, dict):
+            for k, v in list(agg.items())[:max_items]:
+                if not _TECH_LINE_RE.search(str(k)):
+                    lines.append(f"- {k}: {v}")
+        elif isinstance(agg, list):
+            for v in agg[:max_items]:
+                lines.append(f"- {v}")
+        else:
+            lines.append(f"- Итоговое значение: {agg}")
+    return lines
+
+
+def _extract_procedural_steps(
+    hits: list[SearchHit],
+    tables_by_id: dict[str, TablePassport],
+    max_steps: int = 5,
+) -> list[str]:
+    """Extract 2–5 numbered action steps with parenthetical source locators from top hits."""
+    steps: list[str] = []
+    seen_step_norms: set[str] = set()
+
+    def _hit_step_locator(h: SearchHit) -> str:
+        title = _clean_title_ru(h.title or h.file_name)
+        num = clean_doc_number(h.doc_number)
+        h_meta = h.metadata or {}
+        tid = str(h.table_id or h_meta.get("table_id") or "").strip()
+        tp = tables_by_id.get(tid) if tid else None
+        sheet = str(getattr(h, "sheet_name", "") or h_meta.get("sheet_name") or (tp.sheet_name if tp else "") or "").strip()
+        cl = clean_clause(h.clause_no)
+        pg = str(h.page_numbers[0]) if h.page_numbers else ""
+
+        loc_parts: list[str] = []
+        if num:
+            if title and num in title:
+                loc_parts.append(title)
+            else:
+                num_lbl = (
+                    num
+                    if re.match(r"^(?:№|приказ\b|распоряжен|постановлен|указ\b|N\s*\d)", num, re.IGNORECASE)
+                    else f"№ {num}"
+                )
+                if title:
+                    loc_parts.append(f"{title}, {num_lbl}")
+                elif re.match(r"^(?:приказ|распоряжен|постановлен|указ)\b", num_lbl, re.IGNORECASE):
+                    loc_parts.append(num_lbl)
+                else:
+                    loc_parts.append(f"Приказ {num_lbl}")
+        elif title:
+            loc_parts.append(title)
+        if cl:
+            loc_parts.append(f"п. {cl}")
+        elif sheet:
+            loc_parts.append(f"Лист: {sheet}")
+        if pg:
+            loc_parts.append(f"стр. {pg}")
+        return f"({', '.join(loc_parts)})" if loc_parts else ""
+
+    sources_pool: list[tuple[SearchHit, str]] = []
+    for h in hits[:4]:
+        sources_pool.append((h, h.clean_text or ""))
+    # If hits' clean_text yielded < 2 candidate sentences, also inspect top hit's parent text
+    for h in hits[:2]:
+        pt = (h.parent_section.clean_text if h.parent_section else h.parent_text) or ""
+        if pt and pt != h.clean_text:
+            sources_pool.append((h, pt))
+
+    for h, raw_txt in sources_pool:
+        cleaned = _strip_chunk_artifacts(raw_txt)
+        if not cleaned:
+            continue
+        loc = _hit_step_locator(h)
+        # Split into candidate sentences / clause lines
+        raw_cands = re.split(r"(?<=[.!?;])\s+|\n+", cleaned)
+        for cand in raw_cands:
+            s = cand.strip(" \t-•—–")
+            s = re.sub(r"^\d{1,2}(?:\.\d{1,3})*\.?\s+", "", s).strip()
+            if len(s) < 20 or len(normalize_tokens(s)) < 4:
+                continue
+            norm_k = " ".join(normalize_tokens(s)[:8])
+            if norm_k in seen_step_norms:
+                continue
+            seen_step_norms.add(norm_k)
+            if len(s) > 220:
+                cut = s[:220].rfind(" ")
+                s = (s[:cut] if cut > 80 else s[:220]).rstrip(" ,;:") + "…"
+            s = s.rstrip(".")
+            step_line = f"{len(steps) + 1}. {s}." + (f" {loc}" if loc else "")
+            steps.append(step_line)
+            if len(steps) >= max_steps:
+                return steps
+    return steps
 
 
 class TableAwareRAGAgent:
@@ -356,8 +550,11 @@ class TableAwareRAGAgent:
         if ver_note:
             header_parts.append(f"version_note: {ver_note}")
         clause = clean_clause(hit.clause_no)
+        sheet_name = str(getattr(hit, "sheet_name", "") or (hit.metadata or {}).get("sheet_name") or "").strip()
         if clause:
             header_parts.append(f"п. {clause}")
+        elif sheet_name:
+            header_parts.append(f"Лист: {sheet_name}")
         elif hit.section_title:
             header_parts.append(f"раздел: {hit.section_title}")
         if hit.page_numbers:
@@ -644,28 +841,35 @@ class TableAwareRAGAgent:
         """
         q_norm = query.lower().replace("ё", "е")
         parts: list[str] = []
+        tables_by_id: dict[str, TablePassport] = {
+            tp.table_id: tp for tp in (search_resp.linked_tables or []) if tp.table_id
+        }
+        tables_by_doc: dict[str, list[TablePassport]] = {}
+        for tp in search_resp.linked_tables or []:
+            if tp.doc_id:
+                tables_by_doc.setdefault(tp.doc_id, []).append(tp)
 
-        top_hit = search_resp.hits[0] if search_resp.hits else None
-        parts.append("### Краткий ответ")
-        if top_hit is not None:
-            top_cite = f"{top_hit.title or top_hit.file_name}"
-            if top_hit.doc_number:
-                top_cite += f" (№ {top_hit.doc_number})"
-            if top_hit.clause_no:
-                top_cite += f", п. {top_hit.clause_no}"
-            parts.append(
-                f"По вашему запросу найдены релевантные положения в документе **{top_cite}**: "
-                f"{_truncate_text(top_hit.clean_text.strip(), 260)}"
-            )
-        else:
-            parts.append("Ниже приведены найденные сведения из базы знаний.")
+        def _hit_locator_parts(hit: SearchHit) -> tuple[str, str, str, str, str]:
+            title = _clean_title_ru(hit.title or hit.file_name)
+            num = clean_doc_number(hit.doc_number)
+            h_meta = hit.metadata or {}
+            tid = str(hit.table_id or h_meta.get("table_id") or "").strip()
+            tp_hit = tables_by_id.get(tid) if tid else None
+            sheet = str(
+                getattr(hit, "sheet_name", "")
+                or h_meta.get("sheet_name")
+                or (tp_hit.sheet_name if tp_hit else "")
+                or ""
+            ).strip()
+            cl = clean_clause(hit.clause_no)
+            if not cl and sheet and (tid or sheet):
+                cl = f"Лист: {sheet}"
+            pg = str(hit.page_numbers[0]) if hit.page_numbers else ""
+            if not pg and (tid or sheet) and len(tables_by_doc.get(hit.doc_id, [])) <= 1:
+                pg = "1"
+            return title, num, cl, sheet, pg
 
-        parts.append("### Подробный ответ и цитаты")
-        if search_resp.version_alerts:
-            parts.append("**Предупреждения об актуальности и редакциях:**")
-            for va in search_resp.version_alerts:
-                parts.append(f"- {va}")
-
+        fallback_table_results: list[tuple[TablePassport, TableQueryResponse]] = []
         if (
             enable_table_tools
             and search_resp.linked_tables
@@ -707,31 +911,114 @@ class TableAwareRAGAgent:
                     latency_ms=call_ms,
                 )
             )
+            if q_resp is not None:
+                fallback_table_results.append((tp, q_resp))
 
-        if traces:
-            parts.append("**Результаты запроса к структурированным таблицам:**")
+        top_hit = search_resp.hits[0] if search_resp.hits else None
+        parts.append("### Краткий ответ")
+        if top_hit is not None:
+            t_title, t_num, t_cl, t_sheet, _ = _hit_locator_parts(top_hit)
+            cite_label = build_source_label(t_title, t_num, t_cl, "")
+            clean_summary = _strip_chunk_artifacts(top_hit.clean_text)
+            sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean_summary) if s.strip()]
+            brief_body = " ".join(sents[:2]) if sents else clean_summary
+            if len(brief_body) > 280:
+                cut = brief_body[:280].rfind(" ")
+                brief_body = (brief_body[:cut] if cut > 80 else brief_body[:280]).rstrip(" ,;:") + "…"
+            if fallback_table_results and not brief_body:
+                tp0, qr0 = fallback_table_results[0]
+                t_lines0 = _format_table_qresp_lines(qr0, max_items=2)
+                brief_body = "; ".join(ln.lstrip("- ") for ln in t_lines0)
+            parts.append(f"Согласно документу **{cite_label}**: {brief_body}")
+        else:
+            parts.append("Ниже приведены найденные сведения из базы знаний.")
+
+        if _PROCEDURAL_FALLBACK_RE.search(q_norm) and search_resp.hits:
+            proc_steps = _extract_procedural_steps(search_resp.hits, tables_by_id, max_steps=5)
+            if proc_steps:
+                parts.append("### Порядок действий")
+                parts.append("\n".join(proc_steps))
+
+        parts.append("### Подробный ответ и цитаты")
+
+        discrepancy_alerts = list(getattr(search_resp, "discrepancy_alerts", None) or [])
+        if discrepancy_alerts:
+            parts.append("**Выявленные расхождения:**\n" + "\n".join(f"- {da}" for da in discrepancy_alerts))
+        if search_resp.version_alerts:
+            parts.append("**Актуальность документов:**\n" + "\n".join(f"- {va}" for va in search_resp.version_alerts))
+        if search_resp.quality_alerts:
+            parts.append("**Примечания к источникам:**\n" + "\n".join(f"- {qa}" for qa in search_resp.quality_alerts))
+
+        if fallback_table_results:
+            for tp, qr in fallback_table_results:
+                tp_title = _clean_title_ru(tp.table_title or tp.section_title or tp.file_name)
+                sheet_note = f" (Лист: {tp.sheet_name})" if tp.sheet_name else ""
+                tbl_lines = _format_table_qresp_lines(qr, max_items=8)
+                if tbl_lines:
+                    parts.append(f"**Сведения из таблицы «{tp_title}»{sheet_note}:**\n" + "\n".join(tbl_lines))
+        elif search_resp.table_context:
+            for tc in search_resp.table_context[:3]:
+                tp = tables_by_id.get(tc.table_id)
+                tp_title = _clean_title_ru(
+                    (tp.table_title or tp.section_title or tp.file_name if tp else "")
+                    or tc.table_title
+                    or "Таблица"
+                )
+                sheet_note = f" (Лист: {tp.sheet_name})" if (tp and tp.sheet_name) else ""
+                tbl_lines = _format_table_qresp_lines(tc, max_items=8)
+                if tbl_lines:
+                    parts.append(f"**Сведения из таблицы «{tp_title}»{sheet_note}:**\n" + "\n".join(tbl_lines))
+        elif traces:
+            trace_lines: list[str] = []
             for tr in traces:
-                parts.append(f"- {tr.summary}")
-                if tr.result_preview:
-                    parts.append(tr.result_preview)
+                if tr.result_preview and not _TECH_LINE_RE.search(tr.result_preview) and not tr.result_preview.lstrip().startswith(("{", "[")):
+                    trace_lines.append(tr.result_preview)
+            if trace_lines:
+                parts.append("**Сведения из таблиц:**\n" + "\n".join(trace_lines))
 
-        parts.append("**Релевантные положения нормативных документов МФТИ:**")
-        for idx, hit in enumerate(search_resp.hits[:3], start=1):
-            cite = f"{hit.title or hit.file_name}"
-            if hit.doc_number:
-                cite += f" (№ {hit.doc_number})"
-            if hit.clause_no:
-                cite += f", п. {hit.clause_no}"
-            snippet = _truncate_text(
-                hit.parent_text if (hit.metadata or {}).get("table_delivery_mode") == "inline_parent" and hit.parent_text else hit.clean_text,
-                900,
-            )
-            parts.append(f"{idx}. **{cite}** [{hit.file_name}]:\n{snippet}")
+        quote_hits = list(search_resp.hits[:4]) + list(search_resp.amendment_chunks[:2])
+        seen_quotes: set[tuple[tuple[str, ...], str]] = set()
+        for hit in quote_hits:
+            q_text = _extract_verbatim_quote_from_text(hit.clean_text)
+            if len(normalize_tokens(q_text)) < 3 and hit.parent_text:
+                q_text = _extract_verbatim_quote_from_text(hit.parent_text)
+            if len(normalize_tokens(q_text)) < 3:
+                continue
+            h_title, h_num, h_cl, _, h_pg = _hit_locator_parts(hit)
+            src_label = build_source_label(h_title, h_num, h_cl, h_pg)
+            dedup_key = (tuple(normalize_tokens(q_text)), src_label)
+            if dedup_key in seen_quotes:
+                continue
+            seen_quotes.add(dedup_key)
+            if src_label:
+                parts.append(f"> «{q_text}»\n> — {src_label}")
+            else:
+                parts.append(f"> «{q_text}»")
 
-        for amd in search_resp.amendment_chunks[:2]:
-            parts.append(
-                f"- **Изменяющий акт — {amd.title} (№ {amd.doc_number})**: {_truncate_text(amd.clean_text, 500)}"
+        # Also emit a verifiable quote block for table rows/formulas if fallback executed a table query
+        for tp, qr in fallback_table_results[:1]:
+            t_lines = _format_table_qresp_lines(qr, max_items=2)
+            if not t_lines:
+                continue
+            q_tbl = t_lines[0].lstrip("- ").strip()
+            if len(normalize_tokens(q_tbl)) < 2:
+                continue
+            tp_title = _clean_title_ru(tp.table_title or tp.section_title or tp.file_name)
+            tp_num = clean_doc_number(tp.doc_number)
+            tp_cl = f"Лист: {tp.sheet_name}" if tp.sheet_name else ""
+            tp_pg = next(
+                (
+                    str(h.page_numbers[0])
+                    for h in search_resp.hits
+                    if h.doc_id == tp.doc_id and h.page_numbers
+                ),
+                "1" if tp.sheet_name or len(tables_by_doc.get(tp.doc_id, [])) <= 1 else "",
             )
+            src_label = build_source_label(tp_title, tp_num, tp_cl, tp_pg)
+            dedup_key = (tuple(normalize_tokens(q_tbl)), src_label)
+            if dedup_key not in seen_quotes and src_label:
+                seen_quotes.add(dedup_key)
+                parts.append(f"> «{q_tbl}»\n> — {src_label}")
 
         return "\n\n".join(parts)
 
@@ -802,9 +1089,19 @@ class TableAwareRAGAgent:
         answer: str,
         search_resp: SearchResponse,
         messages: list[dict[str, Any]] | None = None,
+        traces: list[ToolCallTrace] | None = None,
+        linked_tables: list[TablePassport] | None = None,
     ) -> list[dict[str, Any]]:
         """Extract `> «…»` quote blocks from the answer and verify them against the retrieved context."""
-        if not answer or ">" not in answer:
+        if not answer:
+            return []
+        has_blockquotes = ">" in answer
+        used_table_traces = [
+            tr for tr in (traces or [])
+            if getattr(tr, "tool_name", "") == "query_structured_table"
+            and not str(getattr(tr, "summary", "") or "").startswith("Ошибка")
+        ]
+        if not has_blockquotes and not used_table_traces:
             return []
         try:
             tool_texts = [
@@ -812,8 +1109,75 @@ class TableAwareRAGAgent:
                 for m in (messages or [])
                 if isinstance(m, dict) and m.get("role") == "tool"
             ]
+            # Merge linked tables from search_resp and runtime tool execution
+            merged_tables: list[TablePassport] = []
+            seen_tids: set[str] = set()
+            for tp in list(getattr(search_resp, "linked_tables", None) or []) + list(linked_tables or []):
+                tid = str(getattr(tp, "table_id", "") or "").strip()
+                if tid and tid not in seen_tids:
+                    seen_tids.add(tid)
+                    merged_tables.append(tp)
+            tables_by_id = {tp.table_id: tp for tp in merged_tables if tp.table_id}
+            tables_by_doc: dict[str, list[TablePassport]] = {}
+            for tp in merged_tables:
+                if tp.doc_id:
+                    tables_by_doc.setdefault(tp.doc_id, []).append(tp)
+
+            # In deterministic fallback mode, `traces` can hold tool previews without `role=="tool"` messages
+            seen_tool_tids: set[str] = set()
+            for tt in tool_texts:
+                m_tid = re.search(r'"table_id"\s*:\s*"([^"]+)"', tt)
+                if m_tid:
+                    seen_tool_tids.add(m_tid.group(1))
+            for tr in used_table_traces:
+                tr_tid = str((tr.arguments or {}).get("table_id") or "").strip()
+                if tr_tid and tr_tid not in seen_tool_tids and tr.result_preview:
+                    tp_tr = tables_by_id.get(tr_tid)
+                    synth_payload: dict[str, Any] = {
+                        "table_id": tr_tid,
+                        "table_title": (tp_tr.table_title if tp_tr else "") or "",
+                        "sheet_name": (tp_tr.sheet_name if tp_tr else "") or "",
+                        "markdown_preview": tr.result_preview if "|" in tr.result_preview else "",
+                    }
+                    if synth_payload["markdown_preview"]:
+                        pipe_lines = [ln.strip() for ln in synth_payload["markdown_preview"].splitlines() if "|" in ln]
+                        parsed_rows_md: list[dict[str, str]] = []
+                        hdr_cells: list[str] = []
+                        for pln in pipe_lines:
+                            cells = [c.strip() for c in pln.strip().strip("|").split("|")]
+                            if cells and all(re.match(r"^[-:\s]*$", c) for c in cells if c):
+                                continue
+                            if not hdr_cells:
+                                hdr_cells = cells
+                            elif cells:
+                                parsed_rows_md.append(
+                                    {
+                                        hdr_cells[idx]: cells[idx]
+                                        for idx in range(min(len(hdr_cells), len(cells)))
+                                        if hdr_cells[idx]
+                                    }
+                                )
+                        if hdr_cells:
+                            synth_payload["columns"] = hdr_cells
+                        if parsed_rows_md:
+                            synth_payload["rows"] = parsed_rows_md
+                    else:
+                        try:
+                            parsed_prev = json.loads(tr.result_preview)
+                            if isinstance(parsed_prev, list):
+                                synth_payload["formulas"] = parsed_prev
+                            elif isinstance(parsed_prev, dict):
+                                synth_payload["aggregation_result"] = parsed_prev
+                        except Exception:
+                            synth_payload["markdown_preview"] = tr.result_preview
+                    tool_texts.append(json.dumps(synth_payload, ensure_ascii=False))
+                    seen_tool_tids.add(tr_tid)
+
             # Expose any extra compact-unit sibling sections in search_resp.parent_sections to quote_verifier
             verify_resp = search_resp
+            updates: dict[str, Any] = {}
+            if merged_tables and len(merged_tables) != len(search_resp.linked_tables or []):
+                updates["linked_tables"] = merged_tables
             if search_resp.parent_sections:
                 all_existing = list(search_resp.hits) + list(search_resp.amendment_chunks)
                 covered_secs = {
@@ -848,24 +1212,59 @@ class TableAwareRAGAgent:
                         )
                     )
                 if extra_carriers:
-                    verify_resp = search_resp.model_copy(
-                        update={"hits": list(search_resp.hits) + extra_carriers}
-                    )
-            docs = context_docs_from_search(verify_resp, extra_texts=tool_texts)
-            verified = verify_quotes(answer, docs)
+                    updates["hits"] = list(search_resp.hits) + extra_carriers
+            if updates:
+                verify_resp = search_resp.model_copy(update=updates)
+
+            verified: list[dict[str, Any]] = []
+            if has_blockquotes:
+                docs = context_docs_from_search(verify_resp, extra_texts=tool_texts)
+                verified = verify_quotes(answer, docs)
+
             all_hits = list(verify_resp.hits) + list(verify_resp.amendment_chunks)
-            known_doc_ids = {h.doc_id for h in all_hits if h.doc_id}
+            known_doc_ids = {h.doc_id for h in all_hits if h.doc_id} | {tp.doc_id for tp in merged_tables if tp.doc_id}
             unique_doc_id = next(iter(known_doc_ids)) if len(known_doc_ids) == 1 else ""
+
+            def _resolve_tp_page(tp: TablePassport) -> str:
+                sheet_low = str(tp.sheet_name or "").strip().lower()
+                for h in all_hits:
+                    if h.doc_id != tp.doc_id or not h.page_numbers:
+                        continue
+                    h_tid = str(h.table_id or (h.metadata or {}).get("table_id") or "").strip()
+                    if h_tid and h_tid == tp.table_id:
+                        return str(h.page_numbers[0])
+                if sheet_low:
+                    for h in all_hits:
+                        if h.doc_id != tp.doc_id or not h.page_numbers:
+                            continue
+                        h_sh = str(getattr(h, "sheet_name", "") or (h.metadata or {}).get("sheet_name") or "").strip().lower()
+                        if h_sh and h_sh == sheet_low:
+                            return str(h.page_numbers[0])
+                for h in all_hits:
+                    if h.doc_id == tp.doc_id and h.page_numbers:
+                        return str(h.page_numbers[0])
+                fmt = (tp.file_format or "").lower().lstrip(".")
+                fname = (tp.file_name or "").lower()
+                if (
+                    (tp.sheet_name or fmt in {"xlsx", "xls", "xlsm"} or fname.endswith((".xlsx", ".xls", ".xlsm")))
+                    and len(tables_by_doc.get(tp.doc_id, [])) <= 1
+                    and not re.search(r"::tbl_0*([2-9]|\d{2,})$", tp.table_id or "")
+                ):
+                    return "1"
+                return ""
 
             for q in verified:
                 raw_matched = str(q.get("matched_doc_id") or "").strip()
                 resolved_doc_id = ""
                 if raw_matched and not raw_matched.startswith("tool_result_"):
-                    resolved_doc_id = (
-                        raw_matched
-                        if raw_matched in known_doc_ids
-                        else raw_matched.split("::", 1)[0]
-                    )
+                    if raw_matched in tables_by_id:
+                        resolved_doc_id = tables_by_id[raw_matched].doc_id
+                    else:
+                        resolved_doc_id = (
+                            raw_matched
+                            if raw_matched in known_doc_ids
+                            else raw_matched.split("::", 1)[0]
+                        )
 
                 if not resolved_doc_id:
                     q_num = clean_doc_number(str(q.get("doc_number") or ""))
@@ -874,6 +1273,11 @@ class TableAwareRAGAgent:
                             if clean_doc_number(h.doc_number) == q_num and h.doc_id:
                                 resolved_doc_id = h.doc_id
                                 break
+                        if not resolved_doc_id:
+                            for tp in merged_tables:
+                                if clean_doc_number(tp.doc_number) == q_num and tp.doc_id:
+                                    resolved_doc_id = tp.doc_id
+                                    break
 
                 if not resolved_doc_id:
                     q_title = str(q.get("source_title") or "").strip().lower().replace("ё", "е")
@@ -883,23 +1287,60 @@ class TableAwareRAGAgent:
                             if cand_t and (q_title in cand_t or cand_t in q_title) and h.doc_id:
                                 resolved_doc_id = h.doc_id
                                 break
+                        if not resolved_doc_id:
+                            for tp in merged_tables:
+                                cand_t = (tp.table_title or tp.section_title or tp.file_name or "").lower().replace("ё", "е")
+                                if cand_t and (q_title in cand_t or cand_t in q_title) and tp.doc_id:
+                                    resolved_doc_id = tp.doc_id
+                                    break
 
                 if not resolved_doc_id and unique_doc_id:
                     resolved_doc_id = unique_doc_id
 
                 q["doc_id"] = resolved_doc_id
-                if resolved_doc_id and not q.get("matched_doc_id") and q.get("verified"):
+                if resolved_doc_id and (not q.get("matched_doc_id") or str(q.get("matched_doc_id")).startswith("tool_result_")) and q.get("verified"):
                     q["matched_doc_id"] = resolved_doc_id
 
-                # Backfill page string when missing using best matching SearchHit for resolved_doc_id
+                # Resolve clean source_title / doc_number / sheet_name if missing
+                if resolved_doc_id:
+                    donor_h = next((h for h in all_hits if h.doc_id == resolved_doc_id), None)
+                    donor_tps = tables_by_doc.get(resolved_doc_id, [])
+                    if not q.get("source_title"):
+                        raw_t = (
+                            (donor_h.title or donor_h.file_name if donor_h else "")
+                            or (donor_tps[0].table_title or donor_tps[0].section_title or donor_tps[0].file_name if donor_tps else "")
+                        )
+                        q["source_title"] = _clean_title_ru(raw_t)
+                    if not q.get("doc_number"):
+                        raw_num = (
+                            (donor_h.doc_number if donor_h else "")
+                            or (donor_tps[0].doc_number if donor_tps else "")
+                        )
+                        q["doc_number"] = clean_doc_number(raw_num)
+                    if not q.get("sheet_name"):
+                        cl_str = str(q.get("clause") or "")
+                        m_sh = re.match(r"^Лист:\s*(.+)$", cl_str, re.IGNORECASE)
+                        if m_sh:
+                            q["sheet_name"] = m_sh.group(1).strip()
+                        elif len(donor_tps) == 1 and donor_tps[0].sheet_name and q.get("verified"):
+                            # Only attach sheet_name if quote wasn't matched to a prose clause
+                            if not cl_str or not re.match(r"^\d", cl_str):
+                                q["sheet_name"] = donor_tps[0].sheet_name
+
+                # Backfill page string when missing using best matching SearchHit or TablePassport
                 page_str = str(q.get("page") or "").strip()
                 if not page_str and resolved_doc_id:
                     q_clause = clean_clause(str(q.get("clause") or ""))
+                    q_sheet = str(q.get("sheet_name") or "").strip().lower()
                     q_snippet = re.sub(r"\s+", " ", str(q.get("text") or "").strip().lower().replace("ё", "е"))[:48]
                     best_hit: SearchHit | None = None
                     for h in all_hits:
                         if h.doc_id != resolved_doc_id or not h.page_numbers:
                             continue
+                        h_sheet = str(getattr(h, "sheet_name", "") or (h.metadata or {}).get("sheet_name") or "").strip().lower()
+                        if q_sheet and h_sheet == q_sheet:
+                            best_hit = h
+                            break
                         if q_clause and clean_clause(h.clause_no) == q_clause:
                             best_hit = h
                             break
@@ -914,10 +1355,139 @@ class TableAwareRAGAgent:
                         )
                     if best_hit is not None and best_hit.page_numbers:
                         page_str = str(best_hit.page_numbers[0])
+                    else:
+                        for tp in tables_by_doc.get(resolved_doc_id, []):
+                            if not q_sheet or (tp.sheet_name or "").strip().lower() == q_sheet:
+                                page_str = _resolve_tp_page(tp)
+                                if page_str:
+                                    break
+                    if page_str:
                         q["page"] = page_str
 
                 m_pnum = re.search(r"\d+", page_str)
                 q["page_num"] = int(m_pnum.group(0)) if m_pnum else None
+                q["source_label"] = build_source_label(
+                    str(q.get("source_title") or ""),
+                    str(q.get("doc_number") or ""),
+                    str(q.get("clause") or ""),
+                    str(q.get("page") or ""),
+                )
+
+            # Append clean verified clickable source record for any used query_structured_table without a quote
+            if used_table_traces:
+                # Build readable preview texts keyed by table_id from tool_texts
+                tool_data_by_tid: dict[str, dict[str, Any]] = {}
+                for tt in tool_texts:
+                    try:
+                        parsed_tt = json.loads(tt)
+                    except Exception:
+                        continue
+                    if isinstance(parsed_tt, dict) and parsed_tt.get("table_id"):
+                        tool_data_by_tid[str(parsed_tt["table_id"])] = parsed_tt
+
+                emitted_keys: set[tuple[str, str]] = set()
+                for tr in used_table_traces:
+                    tid = str((tr.arguments or {}).get("table_id") or "").strip()
+                    tp = tables_by_id.get(tid)
+                    if tp is None or not tp.doc_id:
+                        continue
+                    sheet = str(tp.sheet_name or "").strip()
+                    dedup_tp_key = (tp.doc_id, sheet.lower() or tid)
+                    if dedup_tp_key in emitted_keys:
+                        continue
+
+                    already_covered = False
+                    for vq in verified:
+                        if vq.get("verified") is not True or vq.get("doc_id") != tp.doc_id:
+                            continue
+                        if sheet:
+                            vq_sheet = str(vq.get("sheet_name") or "").strip().lower()
+                            vq_cl = str(vq.get("clause") or "").strip().lower()
+                            if vq_sheet == sheet.lower() or f"лист: {sheet.lower()}" in vq_cl:
+                                already_covered = True
+                                break
+                        else:
+                            # Word/PDF table without sheet_name: check if quote tokens appear in table rows/formulas/preview
+                            td = tool_data_by_tid.get(tid, {})
+                            preview_blob = " ".join(
+                                [str(td.get("markdown_preview") or ""), str(tr.result_preview or "")]
+                                + [str(r) for r in (td.get("rows") or tp.preview_rows or [])[:5]]
+                                + [str(f) for f in (td.get("formulas") or [])[:5]]
+                            )
+                            q_toks = set(normalize_tokens(str(vq.get("text") or "")))
+                            p_toks = set(normalize_tokens(preview_blob))
+                            if q_toks and len(q_toks & p_toks) >= max(2, len(q_toks) // 2):
+                                already_covered = True
+                                break
+                    if already_covered:
+                        continue
+
+                    emitted_keys.add(dedup_tp_key)
+                    donor_h = next((h for h in all_hits if h.doc_id == tp.doc_id), None)
+                    src_title = _clean_title_ru(
+                        (donor_h.title or donor_h.file_name if donor_h else "")
+                        or tp.table_title
+                        or tp.section_title
+                        or tp.file_name
+                    )
+                    doc_num = clean_doc_number(tp.doc_number or (donor_h.doc_number if donor_h else ""))
+                    doc_date = str(tp.doc_date or (donor_h.doc_date if donor_h else "") or "")
+                    clause_val = f"Лист: {sheet}" if sheet else str(tp.section_title or "").strip()
+                    page_str = _resolve_tp_page(tp)
+                    m_pnum = re.search(r"\d+", page_str)
+                    page_num_val = int(m_pnum.group(0)) if m_pnum else None
+
+                    # Build clean human-readable snippet & clause_text without technical field names
+                    td = tool_data_by_tid.get(tid, {})
+                    readable_lines: list[str] = []
+                    for f_item in (td.get("formulas") or [])[:6]:
+                        if isinstance(f_item, dict):
+                            rl = str(f_item.get("row_label") or "").strip()
+                            cl_n = str(f_item.get("column") or "").strip()
+                            fm = str(f_item.get("formula") or "").strip()
+                            seg = " — ".join(p for p in (rl, f"{cl_n}: {fm}" if cl_n and fm else fm) if p)
+                            if seg:
+                                readable_lines.append(seg)
+                    if not readable_lines:
+                        for row_item in (td.get("rows") or tp.preview_rows or [])[:5]:
+                            if isinstance(row_item, dict):
+                                cells = [
+                                    f"{k}: {v}"
+                                    for k, v in row_item.items()
+                                    if str(v or "").strip() and not _TECH_LINE_RE.search(str(k))
+                                ]
+                                if cells:
+                                    readable_lines.append("; ".join(cells))
+                    if not readable_lines and tr.result_preview and not _TECH_LINE_RE.search(tr.result_preview) and not tr.result_preview.lstrip().startswith(("{", "[")):
+                        readable_lines.append(tr.result_preview.strip()[:300])
+                    if not readable_lines:
+                        readable_lines.append(tp.table_title or tp.section_title or src_title)
+
+                    snippet_txt = readable_lines[0][:280]
+                    clause_txt = "\n".join(readable_lines)[:1200]
+                    source_lbl = build_source_label(src_title, doc_num, clause_val, page_str)
+
+                    rec: dict[str, Any] = {
+                        "text": snippet_txt,
+                        "source_raw": source_lbl,
+                        "source_title": src_title,
+                        "doc_number": doc_num,
+                        "doc_date": doc_date,
+                        "clause": clause_val,
+                        "page": page_str,
+                        "page_num": page_num_val,
+                        "doc_id": tp.doc_id,
+                        "matched_doc_id": tp.doc_id,
+                        "verified": True,
+                        "score": 1.0,
+                        "clause_text": clause_txt,
+                        "clause_highlights": [],
+                        "metadata_source": "table_tool",
+                        "source_label": source_lbl,
+                    }
+                    if sheet:
+                        rec["sheet_name"] = sheet
+                    verified.append(rec)
 
             return verified
         except Exception as exc:  # pragma: no cover - verification must never break answering
@@ -1126,6 +1696,9 @@ class TableAwareRAGAgent:
                     "parent_sections": [],
                     "amendment_chunks": [],
                     "linked_tables": [],
+                    "version_alerts": [],
+                    "discrepancy_alerts": [],
+                    "quality_alerts": [],
                     "is_out_of_scope": False,
                 }
             )
@@ -1139,6 +1712,9 @@ class TableAwareRAGAgent:
                 linked_tables=[],
                 latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
                 quotes=[],
+                version_alerts=[],
+                discrepancy_alerts=[],
+                quality_alerts=[],
                 pipeline_trace=pipeline_trace,
             )
 
@@ -1150,6 +1726,9 @@ class TableAwareRAGAgent:
                     "parent_sections": [],
                     "amendment_chunks": [],
                     "linked_tables": [],
+                    "version_alerts": [],
+                    "discrepancy_alerts": [],
+                    "quality_alerts": [],
                     "is_out_of_scope": True,
                 }
             )
@@ -1163,6 +1742,9 @@ class TableAwareRAGAgent:
                 linked_tables=[],
                 latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
                 quotes=[],
+                version_alerts=[],
+                discrepancy_alerts=[],
+                quality_alerts=[],
                 pipeline_trace=pipeline_trace,
             )
 
@@ -1288,6 +1870,9 @@ class TableAwareRAGAgent:
                     linked_tables=final_linked_tables,
                     latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
                     quotes=[],
+                    version_alerts=[],
+                    discrepancy_alerts=[],
+                    quality_alerts=[],
                     pipeline_trace=pipeline_trace,
                 )
 
@@ -1300,7 +1885,16 @@ class TableAwareRAGAgent:
             search_response=search_resp,
             linked_tables=final_linked_tables,
             latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
-            quotes=self._verify_answer_quotes(final_answer, search_resp, messages),
+            quotes=self._verify_answer_quotes(
+                final_answer,
+                search_resp,
+                messages,
+                traces=traces,
+                linked_tables=final_linked_tables,
+            ),
+            version_alerts=list(search_resp.version_alerts or []),
+            discrepancy_alerts=list(getattr(search_resp, "discrepancy_alerts", None) or []),
+            quality_alerts=list(search_resp.quality_alerts or []),
             pipeline_trace=pipeline_trace,
         )
 
@@ -1311,6 +1905,9 @@ class TableAwareRAGAgent:
     @staticmethod
     def _hit_source_payload(hit: SearchHit) -> dict[str, Any]:
         """Lightweight hit projection for the UI «Источники» panel (no heavy text fields)."""
+        h_meta = hit.metadata or {}
+        sheet_name = str(getattr(hit, "sheet_name", "") or h_meta.get("sheet_name") or "").strip()
+        table_id = str(getattr(hit, "table_id", "") or h_meta.get("table_id") or "").strip()
         return {
             "chunk_id": hit.chunk_id,
             "doc_id": hit.doc_id,
@@ -1321,6 +1918,8 @@ class TableAwareRAGAgent:
             "status": hit.status,
             "section_title": hit.section_title,
             "clause_no": hit.clause_no,
+            "table_id": table_id,
+            "sheet_name": sheet_name,
             "page_numbers": list(hit.page_numbers or []),
             "score": hit.score,
         }
@@ -1475,6 +2074,8 @@ class TableAwareRAGAgent:
                 {
                     "hits": [],
                     "version_alerts": [],
+                    "discrepancy_alerts": [],
+                    "quality_alerts": [],
                     "is_out_of_scope": False,
                     "confidence_score": 1.0,
                 },
@@ -1535,6 +2136,8 @@ class TableAwareRAGAgent:
                 {
                     "hits": [],
                     "version_alerts": [],
+                    "discrepancy_alerts": [],
+                    "quality_alerts": [],
                     "is_out_of_scope": True,
                     "confidence_score": search_resp.confidence_score,
                 },
@@ -1552,6 +2155,8 @@ class TableAwareRAGAgent:
             {
                 "hits": [self._hit_source_payload(h) for h in search_resp.hits],
                 "version_alerts": list(search_resp.version_alerts or []),
+                "discrepancy_alerts": list(getattr(search_resp, "discrepancy_alerts", None) or []),
+                "quality_alerts": list(search_resp.quality_alerts or []),
                 "is_out_of_scope": False,
                 "confidence_score": search_resp.confidence_score,
             },
@@ -1578,7 +2183,18 @@ class TableAwareRAGAgent:
 
         def _quotes_event(extra_text: str = "") -> tuple[str, dict[str, Any]]:
             full_answer = "".join(answer_parts) + extra_text
-            return ("quotes", {"quotes": self._verify_answer_quotes(full_answer, search_resp, messages)})
+            return (
+                "quotes",
+                {
+                    "quotes": self._verify_answer_quotes(
+                        full_answer,
+                        search_resp,
+                        messages,
+                        traces=traces,
+                        linked_tables=final_linked_tables,
+                    )
+                },
+            )
 
         if self.client is None:
             fallback = self._synthesize_fallback_answer(

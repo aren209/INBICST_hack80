@@ -171,9 +171,9 @@ TABLE_OVERLAP_MAX_CHARS: int = 48
 NON_ANSWER_ZONES: set[str] = {"approval", "meta"}
 
 # Numeric bounds for Clause vs Date disambiguation
-SINGLE_LEVEL_CLAUSE_MAX: int = 65
-MULTI_LEVEL_FIRST_MAX: int = 30
-MULTI_LEVEL_PART_MAX: int = 60
+SINGLE_LEVEL_CLAUSE_MAX: int = 300
+MULTI_LEVEL_FIRST_MAX: int = 120
+MULTI_LEVEL_PART_MAX: int = 200
 MAX_SECTION_HEADER_CHARS: int = 180
 
 # ---------------------------------------------------------------------------

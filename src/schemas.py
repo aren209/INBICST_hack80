@@ -509,6 +509,7 @@ class SearchResponse(BaseModel):
     linked_tables: list[TablePassport] = Field(default_factory=list)
     table_context: list[TableQueryResponse] = Field(default_factory=list)
     version_alerts: list[str] = Field(default_factory=list)
+    discrepancy_alerts: list[str] = Field(default_factory=list)
     quality_alerts: list[str] = Field(default_factory=list)
     is_out_of_scope: bool = False
     confidence_score: float = 0.0
@@ -543,6 +544,7 @@ class ChatbotContextResponse(BaseModel):
     parent_sections: list[ParentSectionRecord] = Field(default_factory=list)
     amendment_chunks: list[SearchHit] = Field(default_factory=list)
     version_alerts: list[str] = Field(default_factory=list)
+    discrepancy_alerts: list[str] = Field(default_factory=list)
     quality_alerts: list[str] = Field(default_factory=list)
     linked_tables: list[TablePassport] = Field(default_factory=list)
     table_context: list[TableQueryResponse] = Field(default_factory=list)
@@ -598,6 +600,9 @@ class AgentAskResponse(BaseModel):
     # Verbatim quotes parsed from `answer` ({text, source_title, doc_number, clause, page, page_num, doc_id, verified,
     # matched_doc_id, clause_text, clause_highlights, source_label, ...}); source fields come from the matched chunk metadata
     quotes: list[dict[str, Any]] = Field(default_factory=list)
+    version_alerts: list[str] = Field(default_factory=list)
+    discrepancy_alerts: list[str] = Field(default_factory=list)
+    quality_alerts: list[str] = Field(default_factory=list)
     pipeline_trace: QueryPipelineTrace | None = None
 
 

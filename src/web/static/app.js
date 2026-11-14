@@ -230,7 +230,7 @@
       .join("");
   }
 
-  function fillMarkdown(box, text, { allowQuotes = true } = {}) {
+  function fillMarkdown(box, text, { allowQuotes = true, stepCite = null } = {}) {
     box.innerHTML = markdownHtml(text);
     box.querySelectorAll("table").forEach((t) => {
       const wrap = el("div", "table-wrap");
@@ -242,6 +242,7 @@
       a.rel = "noopener noreferrer";
     });
     if (allowQuotes) decorateQuotes(box);
+    if (stepCite) decorateActionStepSources(box, stepCite);
     return box;
   }
 
@@ -287,8 +288,8 @@
     target.appendChild(el("span", "caret"));
   }
 
-  function patchMarkdown(box, text, withCaret, { allowQuotes = true } = {}) {
-    const next = fillMarkdown(el("div"), text, { allowQuotes });
+  function patchMarkdown(box, text, withCaret, { allowQuotes = true, stepCite = null } = {}) {
+    const next = fillMarkdown(el("div"), text, { allowQuotes, stepCite });
     if (withCaret) placeCaret(next);
     morph(box, next);
     return box;
@@ -448,17 +449,12 @@
       }
     }
 
-    // Relocate any verbatim quote blocks accidentally emitted inside Brief or Actions into Details
+    // Relocate any verbatim quote blocks accidentally emitted inside Brief into Details
+    // (Quotes inside Actions are kept and converted into compact .step-src-chip buttons)
     const briefSplit = extractStrayQuoteBlocks(briefMd);
     if (briefSplit.quotesMd && briefSplit.cleaned) {
       briefMd = briefSplit.cleaned;
       detailsMd = [briefSplit.quotesMd, detailsMd].filter(Boolean).join("\n\n");
-      sawDetailsHeading = true;
-    }
-    const actionsSplit = extractStrayQuoteBlocks(actionsMd);
-    if (actionsSplit.quotesMd) {
-      actionsMd = actionsSplit.cleaned;
-      detailsMd = [actionsSplit.quotesMd, detailsMd].filter(Boolean).join("\n\n");
       sawDetailsHeading = true;
     }
 
@@ -515,7 +511,103 @@
     }
   }
 
-  function updateStructuredAnswerDom(mdBox, text, { isStreaming = false, quotes = null } = {}) {
+  /** Sanitize version, discrepancy, and quality alerts for user-facing display. */
+  function sanitizeAlertText(raw) {
+    let s = String(raw || "").replace(/\u00a0/g, " ").trim();
+    if (!s) return "";
+    // Strip leading ALL-CAPS "ВНИМАНИЕ (...):" or "ВНИМАНИЕ:"
+    s = s.replace(/^\s*ВНИМАНИЕ\s*(?:\([^)]*\))?\s*:\s*/u, "");
+    // Translate residual technical enum statuses & OCR tags
+    s = s
+      .replace(/\bsuperseded_template_reference\b/gi, "справочный шаблон")
+      .replace(/\bsuperseded\b/gi, "утратил силу")
+      .replace(/\bactive\b/gi, "действует")
+      .replace(
+        /\bOCR[-–—]?\s*(?:распознавани[ея]|текст[а]?|сло[йя])(?=$|[^A-Za-zА-Яа-яЁё0-9_])/giu,
+        "скан-копия"
+      )
+      .replace(/\bOCR\b/g, "скан-копия")
+      .replace(/(?:скан-копи[яиейю])(?:\s*\(\s*скан-копи[яиейю]\s*\)|\s+скан-копи[яиейю])+/giu, "скан-копия");
+    // Strip uploads/ paths and source origin boilerplate (keep balanced filename if present)
+    s = s
+      .replace(/,?\s*источник:\s*загруженный документ\s*`?[\w./-]*\/?uploads\/[^`\s,;)]*`?/giu, "")
+      .replace(/`[\w./-]*\/?uploads\/([^`\s]*)`/giu, "$1")
+      .replace(/[\w./-]*\/?uploads\//giu, "");
+    // Strip snake_case doc_ids (safely preserving filenames that carry extensions via trailing \b)
+    s = s
+      .replace(
+        /(?:заменен|отменен)(?:\s*\/\s*(?:заменен|отменен))?\s+(?:документом|актом)\s*:?\s*`?\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b(?![.\w/])`?\.?/giu,
+        "заменен более новым актом"
+      )
+      .replace(/\s*\(\s*`?\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b(?![.\w/])`?\s*\)/g, "")
+      .replace(/\bdoc_id\s*[:=]\s*`?[a-z0-9_.-]+`?/gi, "")
+      .replace(/\bdoc_id\b/gi, "идентификатор документа")
+      .replace(/\s*`?\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b(?![.\w/])`?/g, "");
+    // Clean dangling punctuation & whitespace artifacts
+    s = s
+      .replace(/:\s*(?=[.,;)]|$)/g, "")
+      .replace(/\(\s*[,;:\s]*\)/g, "")
+      .replace(/\(\s*[,;:]+\s*/g, "(")
+      .replace(/\s*[,;:]+\s*\)/g, ")")
+      .replace(/\s*,(?:\s*,)+/g, ",")
+      .replace(/\s+([,.;:!?])/g, "$1")
+      .replace(/\s{2,}/g, " ")
+      .replace(/^[\s,;:-]+|[\s,;:-]+$/g, "")
+      .trim();
+    if (!s) return "";
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  function sanitizeAlertList(list) {
+    const out = [];
+    const seen = new Set();
+    for (const item of Array.isArray(list) ? list : []) {
+      const clean = sanitizeAlertText(item);
+      if (!clean) continue;
+      const key = normQ(clean) || clean.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(clean);
+    }
+    return out;
+  }
+
+  function collectSanitizedAlerts({ discrepancyAlerts, versionAlerts, qualityAlerts } = {}) {
+    const items = [];
+    const seen = new Set();
+    const pushGroup = (rawList, kind, badge) => {
+      for (const clean of sanitizeAlertList(rawList)) {
+        const key = normQ(clean) || clean.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        items.push({ kind, badge, text: clean });
+      }
+    };
+    pushGroup(discrepancyAlerts, "discrepancy", "Расхождение");
+    pushGroup(versionAlerts, "version", "Актуальность");
+    pushGroup(qualityAlerts, "quality", "Источник");
+    return items;
+  }
+
+  function buildAlertBadgeIcon(kind) {
+    if (kind === "discrepancy") return ICONS.warn;
+    if (kind === "quality") return ICONS.doc;
+    return ICONS.alert;
+  }
+
+  function updateStructuredAnswerDom(
+    mdBox,
+    text,
+    {
+      isStreaming = false,
+      quotes = null,
+      sources = null,
+      hits = null,
+      versionAlerts = null,
+      discrepancyAlerts = null,
+      qualityAlerts = null,
+    } = {}
+  ) {
     mdBox.classList.add("md", "ans-structured");
     if (typeof mdBox._detailsExpanded !== "boolean") {
       mdBox._detailsExpanded = true;
@@ -526,6 +618,7 @@
         briefBody: null,
         actionsBox: null,
         actionsBody: null,
+        alertsPlate: null,
         detailsWrap: null,
         toggleBtn: null,
         pulseEl: null,
@@ -540,6 +633,13 @@
     if (parsed.waitingFirstHeading) {
       return false;
     }
+
+    const effectiveHits = Array.isArray(hits) ? hits : currentStreamHits;
+    const effectiveSources = Array.isArray(sources)
+      ? sources
+      : Array.isArray(effectiveHits) && effectiveHits.length
+        ? buildSources(effectiveHits)
+        : [];
 
     // 1. Framed Short Answer (.ans-brief-frame) — always present when non-empty
     const effectiveBrief =
@@ -580,8 +680,14 @@
         box.append(head, aBody);
         parts.actionsBox = box;
         parts.actionsBody = aBody;
-        if (parts.detailsWrap && parts.detailsWrap.parentNode === mdBox) {
-          mdBox.insertBefore(box, parts.detailsWrap);
+        const anchor =
+          parts.alertsPlate && parts.alertsPlate.parentNode === mdBox
+            ? parts.alertsPlate
+            : parts.detailsWrap && parts.detailsWrap.parentNode === mdBox
+              ? parts.detailsWrap
+              : null;
+        if (anchor) {
+          mdBox.insertBefore(box, anchor);
         } else {
           mdBox.appendChild(box);
         }
@@ -589,11 +695,67 @@
       const showActionsCaret = Boolean(
         isStreaming && parsed.activeSection === "actions" && !parsed.hasDetails
       );
-      patchMarkdown(parts.actionsBody, parsed.actionsMd, showActionsCaret, { allowQuotes: false });
+      patchMarkdown(parts.actionsBody, parsed.actionsMd, showActionsCaret, {
+        allowQuotes: false,
+        stepCite: {
+          quotes,
+          sources: effectiveSources,
+          hits: effectiveHits,
+          isStreaming,
+        },
+      });
     } else if (parts.actionsBox) {
       parts.actionsBox.remove();
       parts.actionsBox = null;
       parts.actionsBody = null;
+    }
+
+    // 2.5. Refined Alert Plate (.ans-alerts-plate) right above .ans-details-wrap
+    const alertItems = collectSanitizedAlerts({
+      discrepancyAlerts,
+      versionAlerts,
+      qualityAlerts,
+    });
+    if (alertItems.length > 0) {
+      const sig = JSON.stringify(alertItems);
+      if (!parts.alertsPlate) {
+        const plate = el("aside", "ans-alerts-plate");
+        plate.setAttribute("aria-label", "Примечания по актуальности и качеству источников");
+        const list = el("ul", "ans-alerts-list");
+        plate.appendChild(list);
+        parts.alertsPlate = plate;
+        if (parts.detailsWrap && parts.detailsWrap.parentNode === mdBox) {
+          mdBox.insertBefore(plate, parts.detailsWrap);
+        } else {
+          mdBox.appendChild(plate);
+        }
+      }
+      if (mdBox._alertsSig !== sig) {
+        mdBox._alertsSig = sig;
+        parts.alertsPlate.classList.toggle(
+          "has-discrepancy",
+          alertItems.some((a) => a.kind === "discrepancy")
+        );
+        parts.alertsPlate.classList.toggle(
+          "has-version",
+          alertItems.some((a) => a.kind === "version")
+        );
+        const list = parts.alertsPlate.querySelector(".ans-alerts-list");
+        list.innerHTML = "";
+        for (const item of alertItems) {
+          const li = el("li", `ans-alert-item is-${item.kind}`);
+          const badge = el("span", `ans-alert-badge is-${item.kind}`);
+          badge.innerHTML = buildAlertBadgeIcon(item.kind);
+          badge.appendChild(el("span", null, item.badge));
+          const txt = el("span", "ans-alert-text", item.text);
+          li.append(badge, txt);
+          list.appendChild(li);
+        }
+      }
+    } else if (parts.alertsPlate) {
+      parts.alertsPlate.remove();
+      parts.alertsPlate = null;
+      mdBox._alertsSig = "";
     }
 
     // 3. Collapsible Full Answer & Quotes (.ans-details-wrap) — open by default
@@ -764,10 +926,19 @@
 
   function parsePageFromCitationLabel(label) {
     if (!label) return null;
-    const m = String(label).match(/(?:стр\.|страниц[а-я]*|с\.|лист[а-я]*)\s*(\d+)/iu);
+    const str = String(label);
+    const m =
+      str.match(/(?:^|[\s,;(\u00a0])(?:стр\.|страниц[а-я]*|с\.)\s*(\d+)/iu) ||
+      str.match(/(?:^|[\s,;(\u00a0])лист\s+(\d+)(?!\s*:)/iu);
     if (!m) return null;
     const n = parseInt(m[1], 10);
     return Number.isFinite(n) && n >= 1 ? n : null;
+  }
+
+  function parseSheetFromLabel(label) {
+    if (!label) return "";
+    const m = String(label).match(/(?:^|[\s,;(\u00a0])лист\s*:\s*([^,;()\]]+)/iu);
+    return m ? m[1].trim() : "";
   }
 
   function parseDocNumberFromLabel(label) {
@@ -791,7 +962,7 @@
   function stripCitationLocators(raw) {
     let s = cleanSource(raw || "").replace(/\.(pdf|docx?|xlsx?)$/i, "");
     const tailRe =
-      /\s*[,;]\s*(?:№\s*[^,;]+|от\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}(?:\s*г\.?)?|(?:пп?\.|пункт[а-я]*|подпункт[а-я]*|разд(?:ел)?\.?|глав[а-я]*|ст\.|стать[яие]|ч\.|част[ьи]|абз(?:ац)?\.?|стр\.?|страниц[а-я]*|с\.|лист[а-я]*|табл(?:ица)?\.?)(?:\s+|\s*(?=[0-9IVXLCDM№]))[^,;]*)\s*$/iu;
+      /\s*[,;]\s*(?:№\s*[^,;]+|от\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}(?:\s*г\.?)?|лист\s*:[^,;]*|(?:пп?\.|пункт[а-я]*|подпункт[а-я]*|разд(?:ел)?\.?|глав[а-я]*|ст\.|стать[яие]|ч\.|част[ьи]|абз(?:ац)?\.?|стр\.?|страниц[а-я]*|с\.|лист[а-я]*|табл(?:ица)?\.?)(?:\s+|\s*(?=[0-9IVXLCDM№]))[^,;]*)\s*$/iu;
     let guard = 0;
     while (guard++ < 10 && tailRe.test(s)) {
       s = s.replace(tailRe, "").trim();
@@ -924,9 +1095,16 @@
       parsePageFromCitationLabel(rawLabel) ||
       (bestSrc && Array.isArray(bestSrc.pages) && bestSrc.pages[0]) ||
       null;
+    const sheetName =
+      (q && q.sheet_name) ||
+      parseSheetFromLabel(rawLabel) ||
+      parseSheetFromLabel(q && q.clause) ||
+      (bestSrc && bestSrc.sheetName) ||
+      "";
     const clause =
       (q && q.clause) ||
       parseClauseFromLabel(rawLabel) ||
+      (sheetName ? `Лист: ${sheetName}` : "") ||
       (bestSrc && bestSrc.rawClause) ||
       "";
     const quote = (q && q.text) || cardQuoteText || "";
@@ -942,7 +1120,459 @@
       (bestSrc && bestSrc.name) ||
       cleanSource(rawLabel) ||
       "";
-    return { docId, page, quote, clause, docNumber, fallbackTitle };
+    return { docId, page, quote, clause, sheetName, docNumber, fallbackTitle };
+  }
+
+  /* ---------------- Clickable Step Source Chips (### Порядок действий) ---------------- */
+  const STEP_CITE_STRIP_PREFIX_RE =
+    /^(?:см\.?\s+|согласно\s+|в\s+соответствии\s+с\s+|на\s+основании\s+|источник\s*:\s*)/iu;
+
+  function isCitationExpression(rawInner) {
+    const s = cleanSource(String(rawInner || "").replace(STEP_CITE_STRIP_PREFIX_RE, "")).trim();
+    if (!s || s.length < 3 || s.length > 240) return false;
+    if (/https?:\/\/|mailto:|www\./i.test(s)) return false;
+
+    const hasDocNum = /№\s*[0-9А-Яа-яЁёA-Za-z][0-9А-Яа-яЁёA-Za-z./-]*/u.test(s);
+    const hasClause =
+      /(?:^|[\s,;«"„(])(?:пп?\.|пункт[а-я]*|подпункт[а-я]*)\s*\d+(?:\.\d+)*/iu.test(s);
+    const hasPage =
+      /(?:^|[\s,;«"„(])(?:стр\.|страниц[а-я]*|с\.)\s*\d+/iu.test(s);
+    const hasSheet =
+      /(?:^|[\s,;«"„(])(?:лист\s*:\s*[^\s,;()[\]]|лист\s+\d+(?:\s*(?:,|$)))/iu.test(s);
+    const hasStructPart =
+      /(?:^|[\s,;«"„(])(?:разд(?:ел[а-я]*)?\.?|глав[а-я]*|табл(?:иц[а-я]*)?\.?|прил(?:ожени[еяюий]*)?\.?)\s*(?:№\s*)?(?:\d+|[IVXLCDM]+\b)/iu.test(
+        s
+      );
+    const hasDocDate =
+      /(?:^|[^A-Za-zА-Яа-яЁё0-9_])(?:приказ[а-я]*|распоряжени[еяю]|регламент[а-я]*|положени[еяю]|поряд[оа-я]*|инструкци[яию]|устав[а-я]*|правил[а-я]*)(?=$|[^A-Za-zА-Яа-яЁё0-9_])/iu.test(
+        s
+      ) &&
+      (/(?:^|[^A-Za-zА-Яа-яЁё0-9_])от\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}/iu.test(s) ||
+        hasDocNum ||
+        hasClause ||
+        hasPage ||
+        hasSheet ||
+        hasStructPart);
+
+    if (!hasDocNum && !hasClause && !hasPage && !hasSheet && !hasStructPart && !hasDocDate) {
+      return false;
+    }
+    if (
+      !hasDocNum &&
+      /^(?:например|т\.?\s*е\.|если|когда|кроме)(?=$|[^A-Za-zА-Яа-яЁё0-9_])/iu.test(s) &&
+      s.length > 55
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function findBalancedCitationSpans(str) {
+    const spans = [];
+    const s = String(str || "");
+    let i = 0;
+    while (i < s.length) {
+      const ch = s[i];
+      if (ch !== "(" && ch !== "[") {
+        i++;
+        continue;
+      }
+      const openCh = ch;
+      const closeCh = openCh === "(" ? ")" : "]";
+      let depth = 1;
+      let j = i + 1;
+      while (j < s.length && j - i <= 260 && depth > 0) {
+        if (s[j] === openCh) depth++;
+        else if (s[j] === closeCh) depth--;
+        j++;
+      }
+      if (depth === 0) {
+        const closeIdx = j - 1;
+        const inner = s.slice(i + 1, closeIdx);
+        if (isCitationExpression(inner)) {
+          spans.push({ start: i, end: closeIdx + 1, inner });
+          i = closeIdx + 1;
+          continue;
+        }
+        if (/[(\[]/.test(inner)) {
+          i++;
+          continue;
+        }
+        i = closeIdx + 1;
+      } else {
+        i++;
+      }
+    }
+    return spans;
+  }
+
+  function resolveStepCitationTarget(rawCitation, { quotes, sources, hits, quoteText = "" } = {}) {
+    const cleaned = cleanSource(
+      String(rawCitation || "").replace(STEP_CITE_STRIP_PREFIX_RE, "")
+    ).trim();
+    const docNumber = cleanDocNo(parseDocNumberFromLabel(cleaned));
+    const clause = parseClauseFromLabel(cleaned);
+    const sheetName = parseSheetFromLabel(cleaned);
+    const page = parsePageFromCitationLabel(cleaned);
+    const titleQuery = stripCitationLocators(cleaned);
+
+    const normClause = String(clause || "")
+      .replace(/^(?:пп?\.|пункт[а-я]*)\s*/iu, "")
+      .replace(/\.$/, "")
+      .trim();
+    const normSheet = normQ(sheetName);
+    const wantNum = normQ(docNumber);
+    const wantQuote = normQ(quoteText);
+
+    const candidates = [];
+    for (const q of quotes || []) {
+      const qPages = [];
+      const p1 = parseFirstPageInt(q.page_num);
+      const p2 = parseFirstPageInt(q.page);
+      if (p1) qPages.push(p1);
+      if (p2 && !qPages.includes(p2)) qPages.push(p2);
+      candidates.push({
+        docId: q.doc_id || q.matched_doc_id || "",
+        docNumber: cleanDocNo(q.doc_number || parseDocNumberFromLabel(q.source_label || "")),
+        title: stripCitationLocators(q.source_title || q.source_label || ""),
+        clause: String(q.clause || parseClauseFromLabel(q.source_label || "") || "").trim(),
+        sheetName: q.sheet_name || parseSheetFromLabel(q.source_label || q.clause || "") || "",
+        pages: qPages,
+        quoteText: q.text || "",
+      });
+    }
+    for (const s of sources || []) {
+      candidates.push({
+        docId: s.docId || "",
+        docNumber: cleanDocNo(s.docNumber || ""),
+        title: s.name || "",
+        clause: String(s.rawClause || s.clause || "").trim(),
+        sheetName: s.sheetName || parseSheetFromLabel(s.rawClause || s.clause || "") || "",
+        pages: Array.isArray(s.pages) ? s.pages : [],
+        quoteText: "",
+      });
+    }
+    for (const h of hits || []) {
+      const hTitle = String(h.title || h.file_name || "").replace(/\.(pdf|docx?|xlsx?)$/i, "");
+      const hSheet = String(h.sheet_name || (h.metadata && h.metadata.sheet_name) || "").trim();
+      candidates.push({
+        docId: h.doc_id || "",
+        docNumber: cleanDocNo(h.doc_number || ""),
+        title: hTitle,
+        clause: String(h.clause_no || "").trim(),
+        sheetName: hSheet,
+        pages: Array.isArray(h.page_numbers) ? h.page_numbers : [],
+        quoteText: h.clean_text || "",
+      });
+    }
+
+    let best = null;
+    let bestSc = 0;
+    for (const c of candidates) {
+      let sc = 0;
+      const cNum = normQ(c.docNumber);
+      if (wantNum && cNum) {
+        if (cNum === wantNum) sc += 8;
+        else if (wantNum.length >= 3 && (cNum.includes(wantNum) || wantNum.includes(cNum))) sc += 5;
+      }
+      if (titleQuery) {
+        sc += scoreTitleSimilarity(titleQuery, c.title);
+      }
+      const cCl = String(c.clause || "")
+        .replace(/^(?:пп?\.|пункт[а-я]*)\s*/iu, "")
+        .replace(/\.$/, "")
+        .trim();
+      if (normClause && cCl) {
+        if (cCl === normClause) sc += 3.5;
+        else if (cCl.startsWith(normClause + ".") || normClause.startsWith(cCl + ".")) sc += 2.0;
+      }
+      const cSheet = normQ(c.sheetName);
+      if (normSheet && cSheet) {
+        if (cSheet === normSheet) sc += 3.5;
+        else if (cSheet.includes(normSheet) || normSheet.includes(cSheet)) sc += 2.0;
+      }
+      if (page && Array.isArray(c.pages) && c.pages.includes(page)) {
+        sc += 1.5;
+      }
+      if (wantQuote && c.quoteText) {
+        const cQ = normQ(c.quoteText);
+        if (cQ && (cQ === wantQuote || cQ.includes(wantQuote.slice(0, 36)))) sc += 6;
+      }
+      if (sc > bestSc) {
+        bestSc = sc;
+        best = c;
+      }
+    }
+
+    const hasDocSpec = Boolean(wantNum || (titleQuery && titleQuery.length >= 4));
+    const minScore = hasDocSpec ? 2.0 : 1.5;
+    if (bestSc < minScore) {
+      best = null;
+    }
+    if (!best && !hasDocSpec) {
+      const uniqueIds = [...new Set(candidates.map((c) => c.docId).filter(Boolean))];
+      if (uniqueIds.length === 1) {
+        best = candidates.find((c) => c.docId === uniqueIds[0]) || null;
+      }
+    }
+
+    const resDocId = (best && best.docId) || "";
+    const resPage = page || (best && best.pages && best.pages[0]) || null;
+    const resSheet = sheetName || (best && best.sheetName) || "";
+    const resClause =
+      clause ||
+      (resSheet ? `Лист: ${resSheet}` : "") ||
+      (best && best.clause) ||
+      "";
+    const resDocNumber = docNumber || (best && best.docNumber) || "";
+    const resTitle =
+      (best && best.title) ||
+      titleQuery ||
+      "";
+    const resQuote = quoteText || (best && best.quoteText) || "";
+
+    return {
+      docId: resDocId,
+      page: resPage,
+      clause: resClause,
+      sheetName: resSheet,
+      docNumber: resDocNumber,
+      fallbackTitle: resTitle,
+      quote: !resPage ? resQuote : quoteText || "",
+    };
+  }
+
+  function compactStepChipLabel(raw) {
+    const clean = cleanSource(String(raw || "").replace(STEP_CITE_STRIP_PREFIX_RE, "")).trim();
+    if (!clean) return "Открыть источник";
+    let display = clean;
+    if (display.length > 56) {
+      const locMatch = display.match(
+        /(?:,\s*|\s+)(?:№\s*[0-9А-Яа-яЁёA-Za-z]|от\s+\d{1,2}[./-]\d|пп?\.|пункт|лист\s*:|разд\.|табл\.|прил\.|стр\.|с\.\s*\d)/iu
+      );
+      if (locMatch && locMatch.index >= 18) {
+        const head = display.slice(0, locMatch.index).trim();
+        const tail = display.slice(locMatch.index).replace(/^\s*,\s*/, "").trim();
+        if (head.length > 30) {
+          display = `${head.slice(0, 28).trimEnd()}…, ${tail}`;
+        }
+      } else if (display.length > 64) {
+        display = display.slice(0, 62).trimEnd() + "…";
+      }
+    }
+    return display.replace(/(№|пп?\.|стр\.|с\.|разд\.|табл\.|прил\.)\s+(?=\S)/giu, "$1\u00a0");
+  }
+
+  function stepTargetKey(t) {
+    if (!t) return "";
+    return `${t.docId || ""}|${normQ(t.docNumber || "")}|${String(t.clause || "").trim()}|${t.page || ""}`;
+  }
+
+  function readStepChipTarget(chip) {
+    if (!chip) return {};
+    const d = chip.dataset || {};
+    const hasDatasetTarget = Boolean(
+      d.docId || d.page || d.clause || d.sheetName || d.docNumber || d.fallbackTitle || d.quote
+    );
+    if (hasDatasetTarget) {
+      return {
+        docId: d.docId || "",
+        page: d.page ? Number(d.page) : null,
+        clause: d.clause || "",
+        sheetName: d.sheetName || "",
+        docNumber: d.docNumber || "",
+        fallbackTitle: d.fallbackTitle || "",
+        quote: d.quote || "",
+      };
+    }
+    return chip._viewerTarget || {};
+  }
+
+  function createStepChipElement(rawLabel, target, { pending = false } = {}) {
+    const fullText = cleanSource(
+      String(rawLabel || "").replace(STEP_CITE_STRIP_PREFIX_RE, "")
+    ).trim();
+    const displayText = compactStepChipLabel(fullText || "Открыть источник");
+    const btn = el("button", "step-src-chip" + (pending ? " is-pending" : ""));
+    btn.type = "button";
+    btn.innerHTML = ICONS.openDoc;
+    btn.appendChild(el("span", "step-src-label", displayText));
+
+    const canOpen = Boolean(
+      !pending && target && (target.docId || target.docNumber || target.fallbackTitle)
+    );
+    btn.disabled = !canOpen;
+    if (target) {
+      btn._viewerTarget = target;
+      if (target.docId) btn.dataset.docId = target.docId;
+      if (target.page) btn.dataset.page = String(target.page);
+      if (target.clause) btn.dataset.clause = target.clause;
+      if (target.sheetName) btn.dataset.sheetName = target.sheetName;
+      if (target.docNumber) btn.dataset.docNumber = target.docNumber;
+      if (target.fallbackTitle) btn.dataset.fallbackTitle = target.fallbackTitle;
+      if (target.quote) btn.dataset.quote = String(target.quote).slice(0, 500);
+    }
+    const pageHint = target && target.page ? ` (стр. ${target.page})` : "";
+    const ariaTitle = fullText ? `Открыть источник: ${fullText}${pageHint}` : "Открыть документ";
+    btn.title = ariaTitle;
+    btn.setAttribute("aria-label", ariaTitle);
+    return btn;
+  }
+
+  function decorateActionStepSources(box, { quotes, sources, hits, isStreaming = false } = {}) {
+    // 1. Convert any inline parenthetical/bracketed citations in text nodes into .step-src-chip
+    const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let cur;
+    while ((cur = walker.nextNode())) {
+      const parent = cur.parentElement;
+      if (!parent || parent.closest("code, pre, a, button, blockquote, .step-src-chip, .step-src-chips")) {
+        continue;
+      }
+      if (cur.nodeValue && /[(\[]/.test(cur.nodeValue)) {
+        textNodes.push(cur);
+      }
+    }
+
+    for (const tNode of textNodes) {
+      const str = tNode.nodeValue || "";
+      const spans = findBalancedCitationSpans(str);
+      if (!spans.length) continue;
+
+      const resolvedSpans = [];
+      for (const sp of spans) {
+        const target = resolveStepCitationTarget(sp.inner, { quotes, sources, hits });
+        if (target && (target.docId || target.docNumber || target.fallbackTitle)) {
+          resolvedSpans.push({ ...sp, target });
+        }
+      }
+      if (!resolvedSpans.length) continue;
+
+      const frag = document.createDocumentFragment();
+      let cursor = 0;
+      for (const sp of resolvedSpans) {
+        if (sp.start > cursor) {
+          let before = str.slice(cursor, sp.start);
+          if (before && !/[\s(«"„]$/.test(before)) before += " ";
+          frag.appendChild(document.createTextNode(before));
+        } else if (cursor === 0 && sp.start === 0) {
+          /* starts right at citation */
+        }
+        frag.appendChild(createStepChipElement(sp.inner, sp.target));
+        cursor = sp.end;
+      }
+      if (cursor < str.length) {
+        frag.appendChild(document.createTextNode(str.slice(cursor)));
+      }
+      tNode.replaceWith(frag);
+    }
+
+    // 2. Convert any <blockquote> inside ### Порядок действий into a compact .step-src-chip on its step <li>
+    const blockquotes = [...box.querySelectorAll("blockquote")];
+    for (const bq of blockquotes) {
+      if (bq.parentElement && bq.parentElement.closest("blockquote")) continue;
+      const raw = bq.textContent.replace(/^\s+/, "");
+      const joined = Array.from(bq.querySelectorAll("p"))
+        .map((p) => p.textContent)
+        .join("\n");
+      const { text, source } = splitQuote(joined || raw);
+      const looksLikeQuote = Boolean((raw && OPEN_Q.includes(raw[0])) || source);
+      if (!looksLikeQuote) continue;
+
+      const target = resolveStepCitationTarget(source, {
+        quotes,
+        sources,
+        hits,
+        quoteText: text,
+      });
+      const fallbackLabel =
+        source ||
+        [
+          target.fallbackTitle,
+          target.docNumber ? `№ ${target.docNumber}` : "",
+          target.clause
+            ? /^лист\s*:/iu.test(target.clause)
+              ? target.clause
+              : `п. ${target.clause}`
+            : "",
+          target.page ? `стр. ${target.page}` : "",
+        ]
+          .filter(Boolean)
+          .join(", ") ||
+        (isStreaming ? "Сверка источника…" : "Открыть источник");
+
+      const canOpen = Boolean(target.docId || target.docNumber || target.fallbackTitle);
+      const pending = Boolean(isStreaming && !canOpen);
+      const chip = createStepChipElement(fallbackLabel, target, { pending });
+
+      const findDirectChipsWrap = (li) =>
+        [...li.querySelectorAll(".step-src-chips")].find(
+          (w) => w.parentElement === li || (w.parentElement && w.parentElement.tagName === "P" && w.parentElement.parentElement === li)
+        ) || null;
+      const findLastDirectP = (li) => {
+        const ps = [...li.children].filter((c) => c.tagName === "P");
+        return ps.length ? ps[ps.length - 1] : null;
+      };
+
+      let hostLi = bq.closest("li");
+      if (hostLi) {
+        const key = stepTargetKey(target);
+        const alreadyHas =
+          key &&
+          [...hostLi.querySelectorAll(".step-src-chip")].some(
+            (existing) => stepTargetKey(readStepChipTarget(existing)) === key
+          );
+        if (alreadyHas) {
+          bq.remove();
+          continue;
+        }
+        let wrap = findDirectChipsWrap(hostLi);
+        if (!wrap) {
+          wrap = el("span", "step-src-chips");
+          const lastP = findLastDirectP(hostLi);
+          if (lastP && bq.previousElementSibling === lastP) {
+            lastP.append(" ", wrap);
+            bq.remove();
+          } else {
+            bq.replaceWith(wrap);
+          }
+        } else {
+          bq.remove();
+        }
+        wrap.appendChild(chip);
+      } else {
+        const prev = bq.previousElementSibling;
+        const next = bq.nextElementSibling;
+        if (prev && (prev.tagName === "OL" || prev.tagName === "UL") && prev.lastElementChild) {
+          hostLi = prev.lastElementChild;
+          const key = stepTargetKey(target);
+          const alreadyHas =
+            key &&
+            [...hostLi.querySelectorAll(".step-src-chip")].some(
+              (existing) => stepTargetKey(readStepChipTarget(existing)) === key
+            );
+          if (!alreadyHas) {
+            let wrap = findDirectChipsWrap(hostLi);
+            if (!wrap) {
+              wrap = el("span", "step-src-chips");
+              const lastP = findLastDirectP(hostLi);
+              if (lastP) lastP.append(" ", wrap);
+              else hostLi.append(" ", wrap);
+            }
+            wrap.appendChild(chip);
+          }
+          bq.remove();
+          if (next && next.tagName === "OL" && prev.tagName === "OL") {
+            while (next.firstElementChild) prev.appendChild(next.firstElementChild);
+            next.remove();
+          }
+        } else {
+          const wrap = el("div", "step-src-chips");
+          wrap.appendChild(chip);
+          bq.replaceWith(wrap);
+        }
+      }
+    }
   }
 
   /** Attach verification seals, normalized source metadata, full-clause disclosure & Document Viewer trigger. */
@@ -1025,7 +1655,9 @@
           tg.type = "button";
           tg.setAttribute("aria-expanded", "false");
           const closedLabel = q.clause
-            ? `Показать пункт ${q.clause} целиком`
+            ? /^лист\s*:/iu.test(String(q.clause))
+              ? `Показать ${q.clause} целиком`
+              : `Показать пункт ${q.clause} целиком`
             : "Показать пункт целиком";
           const lbl = el("span", null, closedLabel);
           tg.append(lbl);
@@ -1190,6 +1822,7 @@
       matched_doc_id: q.matched_doc_id || q.doc_id || "",
       doc_number: q.doc_number || "",
       clause: q.clause || "",
+      sheet_name: q.sheet_name || "",
       page: q.page != null ? q.page : "",
       page_num: q.page_num != null ? q.page_num : null,
       verified: Boolean(q.verified),
@@ -1371,6 +2004,9 @@
           answer: turn.markdown || "",
           sources: Array.isArray(turn.sources) ? turn.sources : [],
           quotes: Array.isArray(turn.quotes) ? turn.quotes : [],
+          versionAlerts: Array.isArray(turn.versionAlerts) ? turn.versionAlerts : [],
+          discrepancyAlerts: Array.isArray(turn.discrepancyAlerts) ? turn.discrepancyAlerts : [],
+          qualityAlerts: Array.isArray(turn.qualityAlerts) ? turn.qualityAlerts : [],
           latencyMs: turn.latencySec ? Number(turn.latencySec) * 1000 : 0,
           note: turn.stopped ? "Генерация остановлена" : null,
           noteKind: "stop",
@@ -1686,7 +2322,15 @@
     return best && bestSc >= 2 ? best.doc_id : "";
   }
 
-  async function openDocumentViewer({ docId, page, quote, clause, docNumber, fallbackTitle } = {}) {
+  async function openDocumentViewer({
+    docId,
+    page,
+    quote,
+    clause,
+    sheetName,
+    docNumber,
+    fallbackTitle,
+  } = {}) {
     const reqId = ++viewerState.reqId;
 
     // Open drawer immediately so interaction feels instantaneous
@@ -1741,7 +2385,7 @@
         `/api/documents/${encodeURIComponent(resolvedId)}/view${qs ? "?" + qs : ""}`
       );
       if (reqId !== viewerState.reqId) return;
-      renderViewerPayload(data, { requestedPage: page, quote, clause });
+      renderViewerPayload(data, { requestedPage: page, quote, clause, sheetName });
     } catch (err) {
       if (reqId !== viewerState.reqId) return;
       dvBody.innerHTML = "";
@@ -1755,7 +2399,7 @@
     }
   }
 
-  function renderViewerPayload(data, { requestedPage, quote, clause }) {
+  function renderViewerPayload(data, { requestedPage, quote, clause, sheetName }) {
     const fmt = String(data.format || data.file_format || "pdf").toLowerCase();
     const known = ["pdf", "docx", "doc", "xlsx", "xls"].includes(fmt);
     const isExcel = fmt === "xlsx" || fmt === "xls";
@@ -1771,10 +2415,44 @@
           Number(data.preview_pages_total) || Number(data.total_pages) || pages.length || 1
         )
       : Math.max(1, Number(data.total_pages) || pages.length || 1);
-    const targetPage = Math.min(
+    let targetPage = Math.min(
       total,
       Math.max(1, Number(data.target_page) || Number(requestedPage) || 1)
     );
+    if (isExcel) {
+      const normSheetLabel = (val) =>
+        normQ(String(val || "").replace(/^лист\s*:\s*/iu, "").trim());
+      const wantSheetRaw =
+        parseSheetFromLabel(sheetName) ||
+        String(sheetName || "")
+          .replace(/^лист\s*:\s*/iu, "")
+          .split(/[,;]/)[0]
+          .trim() ||
+        parseSheetFromLabel(clause) ||
+        (String(clause || "").match(/^лист\s*:\s*(.+)$/iu) || [])[1] ||
+        "";
+      const wantSheet = normSheetLabel(wantSheetRaw);
+      if (wantSheet) {
+        let matchedSheet = pages.find((p) => normSheetLabel(p.label) === wantSheet);
+        if (!matchedSheet) {
+          let bestLen = 0;
+          for (const p of pages) {
+            const lbl = normSheetLabel(p.label);
+            if (!lbl) continue;
+            if (lbl.includes(wantSheet) || wantSheet.includes(lbl)) {
+              const score = Math.min(lbl.length, wantSheet.length);
+              if (score > bestLen) {
+                bestLen = score;
+                matchedSheet = p;
+              }
+            }
+          }
+        }
+        if (matchedSheet && Number(matchedSheet.page_number) >= 1) {
+          targetPage = Math.min(total, Math.max(1, Number(matchedSheet.page_number)));
+        }
+      }
+    }
 
     viewerState.docId = data.doc_id || "";
     viewerState.format = fmt;
@@ -1932,15 +2610,30 @@
             }
             if (Array.isArray(b.rows) && b.rows.length) {
               const tbody = el("tbody");
+              const rowNeedles = isExcel && quote
+                ? [
+                    ...needles,
+                    ...String(quote)
+                      .split(/[|;\n]+/)
+                      .map((part) => normMatchString(part.includes(":") ? part.split(":").slice(1).join(":") : part))
+                      .filter((s) => s.length >= 4),
+                  ]
+                : needles;
               b.rows.forEach((row) => {
                 const tr = el("tr");
                 let rowMatched = false;
-                (Array.isArray(row) ? row : []).forEach((cell) => {
+                const rowCells = Array.isArray(row) ? row : [];
+                rowCells.forEach((cell) => {
                   const cellText = String(cell ?? "");
                   const td = el("td", null, cellText);
-                  if (textMatchesNeedles(cellText, needles)) rowMatched = true;
+                  if (textMatchesNeedles(cellText, rowNeedles)) rowMatched = true;
                   tr.appendChild(td);
                 });
+                if (!rowMatched && rowNeedles.length && rowCells.length) {
+                  if (textMatchesNeedles(rowCells.map((c) => String(c ?? "")).join(" "), rowNeedles)) {
+                    rowMatched = true;
+                  }
+                }
                 if (rowMatched || clauseMatched) markAnchor(tr);
                 tbody.appendChild(tr);
               });
@@ -2159,8 +2852,14 @@
     input.focus({ preventScroll: true });
   });
 
-  /* ---- Delegated Quote Citation Click (Works Mid-Stream & Post-Stream) ---- */
+  /* ---- Delegated Quote & Step Source Chip Click (Works Mid-Stream & Post-Stream) ---- */
   messages.addEventListener("click", (e) => {
+    const stepChip = e.target.closest(".step-src-chip");
+    if (stepChip && !stepChip.disabled && messages.contains(stepChip)) {
+      openDocumentViewer(readStepChipTarget(stepChip));
+      return;
+    }
+
     const trigger = e.target.closest(".dq-src, .dq-open-doc");
     if (!trigger || trigger.disabled || !messages.contains(trigger)) return;
     const card = trigger.closest(".doc-quote");
@@ -2262,12 +2961,19 @@
     const seen = new Map();
     for (const h of hits || []) {
       const name = (h.title || h.file_name || "Документ").replace(/\.(pdf|docx?|xlsx?)$/i, "");
+      const sheetName = cleanSource(h.sheet_name || (h.metadata && h.metadata.sheet_name) || "");
       let rawClause = String(h.clause_no || "").trim();
       if (rawClause && /б\/н|\[_*\]/i.test(rawClause)) rawClause = "";
       let clause = rawClause;
-      if (clause && !/^(п\.|пп\.|раздел|глава|ст\.)/i.test(clause)) clause = "п. " + clause;
+      if (clause && !/^(п\.|пп\.|раздел|глава|ст\.|лист\s*:|табл)/i.test(clause)) {
+        clause = "п. " + clause;
+      }
+      if (!clause && sheetName) {
+        clause = `Лист: ${sheetName}`;
+        rawClause = rawClause || clause;
+      }
       const docNumber = cleanDocNo(h.doc_number);
-      const key = `${h.doc_id || name}|${clause}`;
+      const key = `${h.doc_id || name}|${clause || sheetName}`;
       if (seen.has(key)) {
         seen.get(key).pages.push(...(h.page_numbers || []));
         continue;
@@ -2278,6 +2984,7 @@
         docNumber,
         clause,
         rawClause,
+        sheetName,
         pages: [...(h.page_numbers || [])],
         section: cleanSource(h.section_title || ""),
       });
@@ -2296,6 +3003,7 @@
         docNumber: s.docNumber || "",
         clause: s.clause || "",
         rawClause: s.rawClause || "",
+        sheetName: s.sheetName || "",
         pages: uniquePages,
       };
     });
@@ -2303,16 +3011,38 @@
 
   function renderAnswer(
     body,
-    { answer, hits, sources: prebuiltSources, quotes, latencyMs, note, noteKind, mdBox: liveBox }
+    {
+      answer,
+      hits,
+      sources: prebuiltSources,
+      quotes,
+      versionAlerts,
+      discrepancyAlerts,
+      qualityAlerts,
+      latencyMs,
+      note,
+      noteKind,
+      mdBox: liveBox,
+    }
   ) {
+    const sources = Array.isArray(prebuiltSources) ? prebuiltSources : buildSources(hits);
     let mdBox = liveBox;
     const effectiveAnswer = answer || (note ? "" : "_Текст справки не получен._");
+    const structOpts = {
+      isStreaming: false,
+      quotes,
+      sources,
+      hits,
+      versionAlerts,
+      discrepancyAlerts,
+      qualityAlerts,
+    };
     if (mdBox) {
-      updateStructuredAnswerDom(mdBox, effectiveAnswer, { isStreaming: false, quotes });
+      updateStructuredAnswerDom(mdBox, effectiveAnswer, structOpts);
       mdBox.classList.remove("streaming");
     } else {
       mdBox = el("div", "md ans-structured");
-      updateStructuredAnswerDom(mdBox, effectiveAnswer, { isStreaming: false, quotes });
+      updateStructuredAnswerDom(mdBox, effectiveAnswer, structOpts);
       body.appendChild(mdBox);
     }
 
@@ -2324,7 +3054,6 @@
     }
 
     const actions = el("div", "msg-actions");
-    const sources = Array.isArray(prebuiltSources) ? prebuiltSources : buildSources(hits);
     let panel = null;
 
     if (sources.length) {
@@ -2365,6 +3094,7 @@
             docId: s.docId,
             page: firstPage || 1,
             clause: s.rawClause || s.clause || "",
+            sheetName: s.sheetName || "",
             docNumber: s.docNumber || "",
             fallbackTitle: s.name,
           });
@@ -2511,6 +3241,9 @@
       text: "",
       hits: [],
       quotes: [],
+      versionAlerts: [],
+      discrepancyAlerts: [],
+      qualityAlerts: [],
       latencyMs: 0,
       stopped: false,
       error: null,
@@ -2532,6 +3265,10 @@
       updateStructuredAnswerDom(live, state.text, {
         isStreaming: true,
         quotes: state.quotes,
+        hits: state.hits,
+        versionAlerts: state.versionAlerts,
+        discrepancyAlerts: state.discrepancyAlerts,
+        qualityAlerts: state.qualityAlerts,
       });
     };
 
@@ -2551,11 +3288,24 @@
 
       if (res.status === 404 || res.status === 405) {
         const resp = await api("/api/ask", { method: "POST", body: payload, signal: ctrl.signal });
+        const sr = (resp && resp.search_response) || {};
         state.text = (resp && resp.answer) || "";
-        state.hits = (resp && resp.search_response && resp.search_response.hits) || [];
+        state.hits = (sr && sr.hits) || [];
         currentStreamHits = state.hits;
         state.latencyMs = (resp && resp.latency_ms) || 0;
         state.quotes = (resp && resp.quotes) || [];
+        state.versionAlerts =
+          (resp && Array.isArray(resp.version_alerts) && resp.version_alerts.length
+            ? resp.version_alerts
+            : sr.version_alerts) || [];
+        state.discrepancyAlerts =
+          (resp && Array.isArray(resp.discrepancy_alerts) && resp.discrepancy_alerts.length
+            ? resp.discrepancy_alerts
+            : sr.discrepancy_alerts) || [];
+        state.qualityAlerts =
+          (resp && Array.isArray(resp.quality_alerts) && resp.quality_alerts.length
+            ? resp.quality_alerts
+            : sr.quality_alerts) || [];
       } else if (!res.ok) {
         let detail = null;
         let errType = null;
@@ -2580,6 +3330,10 @@
           if (epoch !== chatEpoch) return;
           if (event === "sources") {
             state.hits = (data && data.hits) || [];
+            state.versionAlerts = (data && Array.isArray(data.version_alerts) && data.version_alerts) || [];
+            state.discrepancyAlerts =
+              (data && Array.isArray(data.discrepancy_alerts) && data.discrepancy_alerts) || [];
+            state.qualityAlerts = (data && Array.isArray(data.quality_alerts) && data.quality_alerts) || [];
             currentStreamHits = state.hits;
             typing.set("Подготовка текста справки…");
           } else if (event === "status") {
@@ -2629,6 +3383,9 @@
         answer: state.text,
         hits: state.hits,
         quotes: state.quotes,
+        versionAlerts: state.versionAlerts,
+        discrepancyAlerts: state.discrepancyAlerts,
+        qualityAlerts: state.qualityAlerts,
         latencyMs: state.stopped ? 0 : state.latencyMs,
         note,
         noteKind,
@@ -2641,6 +3398,9 @@
           markdown: state.text,
           quotes: sanitizeQuotesForStorage(state.quotes),
           sources: builtSources,
+          versionAlerts: sanitizeAlertList(state.versionAlerts),
+          discrepancyAlerts: sanitizeAlertList(state.discrepancyAlerts),
+          qualityAlerts: sanitizeAlertList(state.qualityAlerts),
           latencySec:
             state.stopped || !state.latencyMs ? 0 : Number((state.latencyMs / 1000).toFixed(1)),
           stopped: Boolean(state.stopped),
@@ -3143,7 +3903,13 @@
       );
       ui.set(10 + (Number(t.percent) || 0) * 0.9, msg);
       if (t.status === "completed") {
-        const st = (t.result && t.result.files && t.result.files[0]) || {};
+        const filesList = (t.result && Array.isArray(t.result.files) && t.result.files) || [];
+        const st =
+          filesList.find(
+            (f) => f && (f.status === "failed" || f.status === "error" || f.error_message || f.error)
+          ) ||
+          filesList[0] ||
+          {};
         if (onFileName && st.file_name) onFileName(st.file_name);
         if (st.status === "duplicate") {
           const warnText = formatDuplicateMessage(
@@ -3151,11 +3917,12 @@
           );
           ui.warnDuplicate(warnText);
           showToast(warnText, "warn", 5600);
-        } else if (st.status === "failed" || st.error_message) {
-          ui.finish(
-            false,
-            sanitizeUserErrorMessage(st.error_message || "Не удалось проиндексировать документ")
+        } else if (st.status === "failed" || st.status === "error" || st.error_message || st.error) {
+          const errMsg = sanitizeUserErrorMessage(
+            st.error_message || st.error || t.error || "Не удалось проиндексировать документ"
           );
+          ui.finish(false, errMsg);
+          toast(errMsg, "error");
         } else if (st.status === "skipped") {
           ui.finish(true, "Документ уже присутствует в реестре без изменений");
         } else {
@@ -3177,8 +3944,17 @@
         }
         return;
       }
-      if (t.status === "failed") {
-        ui.finish(false, sanitizeUserErrorMessage(t.error || "Ошибка индексации"));
+      if (t.status === "failed" || t.status === "error") {
+        const stFail = (t.result && Array.isArray(t.result.files) && t.result.files[0]) || {};
+        const errMsg = sanitizeUserErrorMessage(
+          t.error ||
+            stFail.error_message ||
+            stFail.error ||
+            t.message ||
+            "Не удалось проиндексировать документ"
+        );
+        ui.finish(false, errMsg);
+        toast(errMsg, "error");
         return;
       }
     }

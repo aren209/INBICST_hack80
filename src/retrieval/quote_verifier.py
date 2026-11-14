@@ -20,6 +20,7 @@ are taken from the matched chunk metadata instead of the model's source line. Pl
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -35,9 +36,16 @@ _SOURCE_LINE = re.compile(r"^\s*[—–-]{1,2}\s*(.+)$")
 _ELLIPSIS_SPLIT = re.compile(r"\s*(?:\.{3,}|…|\[\s*(?:\.{3}|…)\s*\]|\(\s*(?:\.{3}|…)\s*\))\s*")
 _DOC_NUM = re.compile(r"(?:№|(?<![A-Za-zА-Яа-яЁё])N(?=\s*\d))\s*([0-9A-Za-zА-Яа-яЁё][0-9A-Za-zА-Яа-яЁё./\-]*)")
 _CLAUSE = re.compile(r"(?<![А-Яа-яЁёA-Za-z])(?:пп?\.|пункт|раздел)\s*([^,;|]+)", re.IGNORECASE)
+_SHEET = re.compile(r"(?<![А-Яа-яЁёA-Za-z])лист\s*:\s*([^,;|]+)", re.IGNORECASE)
 _PAGE = re.compile(r"(?<![А-Яа-яЁёA-Za-z])(?:стр\.|с\.)\s*([0-9]+(?:\s*[–\-,]\s*[0-9]+)*)", re.IGNORECASE)
 _WORD = re.compile(r"[0-9a-zа-яё]+", re.IGNORECASE)
 _GLUE_GAP = re.compile(r"^(?:[\-\u00ad][ \t]*\n\s*|\u00ad)$")
+
+_KIND_PRIORITY: dict[str, int] = {"parent": 3, "chunk": 2, "table": 1, "tool": 0}
+_TECH_FIELD_TOKEN_RE = re.compile(
+    r"\b(?:table_id|matched_count|returned_count|total_table_rows|delivery_mode|tool_query|inline_parent|SQLite)\b",
+    re.IGNORECASE,
+)
 
 # Placeholder document numbers left by templates / OCR: «№ [___]», «№ ___», «б/н», «без номера»…
 _PLACEHOLDER_NUM = re.compile(
@@ -151,11 +159,15 @@ def _parse_source(src: str) -> dict[str, str]:
         out["doc_number"] = clean_doc_number(m.group(1))
     if m := _CLAUSE.search(src):
         out["clause"] = clean_clause(m.group(1))
+    if not out["clause"] and (m := _SHEET.search(src)):
+        sheet_val = m.group(1).strip(" ,;·|")
+        if sheet_val:
+            out["clause"] = f"Лист: {sheet_val}"
     if m := _PAGE.search(src):
         out["page"] = re.sub(r"\s+", "", m.group(1))
-    # Title = document name incl. number/date, without the clause/page locator
+    # Title = document name incl. number/date, without the clause/sheet/page locator
     cut = len(src)
-    for rx in (_CLAUSE, _PAGE):
+    for rx in (_CLAUSE, _SHEET, _PAGE):
         if m := rx.search(src):
             cut = min(cut, m.start())
     title = src[:cut].strip(" ,;·|—–-")
@@ -410,7 +422,15 @@ def _page_at(text: str, pos: int) -> str:
     return page
 
 
-def _resolve_page(text: str, qs: int, qe: int, meta: dict[str, Any], clause: str, model_page: str) -> str:
+def _resolve_page(
+    text: str,
+    qs: int,
+    qe: int,
+    meta: dict[str, Any],
+    clause: str,
+    model_page: str,
+    doc_id: str = "",
+) -> str:
     p1, p2 = _page_at(text, qs + 1), _page_at(text, qe)
     if p1:
         return p1 if not p2 or p2 == p1 else f"{p1}–{p2}"
@@ -431,6 +451,13 @@ def _resolve_page(text: str, qs: int, qe: int, meta: dict[str, Any], clause: str
         return model_page
     if pages and pages[-1] - pages[0] <= 1:
         return f"{pages[0]}–{pages[-1]}"
+    if (
+        not pages
+        and doc_id
+        and not doc_id.startswith("tool_result_")
+        and meta.get("is_single_sheet")
+    ):
+        return "1"
     return ""
 
 
@@ -452,6 +479,11 @@ def _highlights(clause_text: str, fragments: list[list[str]]) -> list[list[int]]
     return merged
 
 
+def _clean_doc_title(raw_title: str) -> str:
+    title = strip_placeholders(str(raw_title or "")).strip()
+    return re.sub(r"\.(pdf|docx?|xlsx?|xlsm|rtf)$", "", title, flags=re.IGNORECASE).strip()
+
+
 def _enrich(
     fragments: list[list[str]],
     q: ParsedQuote,
@@ -463,14 +495,14 @@ def _enrich(
     for d in candidates:
         for ti, sp in enumerate(d.spans()):
             kind = str(d.meta(ti).get("kind") or "")
-            if not sp or kind in {"tool", "table"}:
+            if not sp:
                 continue
             toks = d.tokens()[ti]
             locs = [_locate(toks, f) for f in fragments]
             if not locs or min(l[0] for l in locs) < threshold or any(l[1] < 0 for l in locs):
                 continue
             score = sum(l[0] for l in locs) / len(locs)
-            rank = (1 if kind == "parent" else 0, 1 if score >= 0.999 else 0, score)
+            rank = (_KIND_PRIORITY.get(kind, 1), 1 if score >= 0.999 else 0, score)
             if best is None or rank > best[0]:
                 best = (rank, d, ti, locs)
         if best is not None:
@@ -479,9 +511,20 @@ def _enrich(
         return {}
     _, d, ti, locs = best
     text, sp, meta = d.texts[ti], d.spans()[ti], d.meta(ti)
+    kind = str(meta.get("kind") or "")
+    sheet_name = str(meta.get("sheet_name") or "").strip()
     qs = min(sp[l[1]][1] for l in locs)
     qe = max(sp[l[2] - 1][2] for l in locs)
-    clause, cs, ce = _clause_bounds(text, qs, qe)
+    if kind in {"table", "tool"} and sheet_name:
+        clause = ""
+        ps = 0
+        for m in _PARA_BREAK.finditer(text, 0, qs):
+            ps = m.end()
+        m = _PARA_BREAK.search(text, qe)
+        pe = m.start() if m else len(text)
+        cs, ce = ps, max(pe, qe)
+    else:
+        clause, cs, ce = _clause_bounds(text, qs, qe)
     ws, we = _bounded_window(text, cs, ce, qs, qe, MAX_CLAUSE_CHARS)
     clause_text = _clean_clause_text(text[ws:we])
     if len(clause_text) > MAX_CLAUSE_CHARS + 200:  # cleaning never grows text; safety net only
@@ -493,26 +536,38 @@ def _enrich(
     if not clause:
         cl = clean_clause(meta.get("clause_no"))
         clause = cl if _SIMPLE_CLAUSE.match(cl) else ""
-    title = strip_placeholders(str(meta.get("title") or d.title or "")).strip()
-    title = re.sub(r"\.(pdf|docx?|xlsx?)$", "", title, flags=re.IGNORECASE)
-    return {
+    if not clause and kind in {"table", "tool"} and sheet_name:
+        clause = f"Лист: {sheet_name}"
+    title = _clean_doc_title(str(meta.get("title") or d.title or ""))
+    out: dict[str, Any] = {
         "source_title": title,
         "doc_number": clean_doc_number(meta.get("doc_number") or d.doc_number),
         "doc_date": str(meta.get("doc_date") or ""),
         "clause": clause,
-        "page": _resolve_page(text, qs, qe, meta, clause, q.page),
+        "page": _resolve_page(text, qs, qe, meta, clause, q.page, doc_id=d.doc_id),
         "clause_text": clause_text,
         "clause_highlights": _highlights(clause_text, fragments),
         "matched_doc_id": d.doc_id,
     }
+    if sheet_name:
+        out["sheet_name"] = sheet_name
+    return out
 
 
 def build_source_label(title: str, doc_number: str = "", clause: str = "", page: str = "") -> str:
     parts = [title.strip()] if title and title.strip() else []
-    if doc_number and not re.search(re.escape(doc_number), title or ""):
-        parts.append(f"№ {doc_number}")
+    dn = str(doc_number or "").strip()
+    if dn and not re.search(re.escape(dn), title or ""):
+        if re.match(r"^(?:№|приказ\b|распоряжен|постановлен|указ\b|N\s*\d)", dn, re.IGNORECASE):
+            parts.append(dn)
+        else:
+            parts.append(f"№ {dn}")
     if clause:
-        parts.append(f"п. {clause}")
+        cl_s = str(clause).strip()
+        if re.match(r"^(?:лист\s*:|пп?\.\s*|раздел\b|табл\.)", cl_s, re.IGNORECASE):
+            parts.append(cl_s)
+        else:
+            parts.append(f"п. {cl_s}")
     if page:
         parts.append(f"стр. {page}")
     return ", ".join(parts)
@@ -574,10 +629,113 @@ def verify_quotes(
     return results
 
 
+def _clean_table_preview_text(raw_text: str) -> str:
+    """Strip internal schema lines (table_id, SQLite, etc.) from markdown previews before indexing."""
+    lines: list[str] = []
+    for ln in str(raw_text or "").splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if _TECH_FIELD_TOKEN_RE.search(s) or re.search(r"::tbl_\d+", s):
+            continue
+        lines.append(ln)
+    return "\n".join(lines).strip()
+
+
+def _format_table_rows_lines(rows: Iterable[Any], columns: Iterable[Any] = ()) -> list[str]:
+    """Render structured table row dicts as clean human-readable lines without JSON keys."""
+    col_names: list[str] = []
+    for c in columns or ():
+        if isinstance(c, str) and c.strip():
+            col_names.append(c.strip())
+        elif isinstance(c, dict) and str(c.get("name") or "").strip():
+            col_names.append(str(c["name"]).strip())
+
+    out: list[str] = []
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        keys = [k for k in col_names if k in row] + [k for k in row if k not in col_names]
+        cells: list[str] = []
+        for k in keys:
+            v_str = str(row.get(k) or "").strip()
+            if not v_str:
+                continue
+            cells.append(f"{k}: {v_str}")
+        if cells:
+            out.append("; ".join(cells))
+    return out
+
+
+def _format_table_formulas_lines(formulas: Iterable[Any]) -> list[str]:
+    """Render structured Excel formula dicts as clean human-readable lines."""
+    out: list[str] = []
+    for item in formulas or ():
+        if not isinstance(item, dict):
+            continue
+        row_lbl = str(item.get("row_label") or "").strip()
+        col = str(item.get("column") or "").strip()
+        formula = str(item.get("formula") or "").strip()
+        cell_txt = str(item.get("cell_text") or item.get("cell") or "").strip()
+        parts: list[str] = []
+        if row_lbl:
+            parts.append(row_lbl)
+        if col and formula:
+            parts.append(f"{col}: {formula}")
+        elif formula:
+            parts.append(formula)
+        line = " — ".join(parts)
+        if line and cell_txt and formula not in cell_txt:
+            line += f" ({cell_txt})"
+        elif not line and cell_txt:
+            line = cell_txt
+        if line:
+            out.append(line)
+    return out
+
+
+def _format_aggregation_lines(agg_res: Any) -> list[str]:
+    """Render aggregation_result into readable lines without technical keys."""
+    if agg_res is None:
+        return []
+    if isinstance(agg_res, dict):
+        # Skip raw passport dump from get_schema (it has table_id / columns / preview_rows)
+        if "table_id" in agg_res or "preview_rows" in agg_res:
+            return []
+        lines = [f"{k}: {v}" for k, v in agg_res.items() if str(v or "").strip()]
+        return lines
+    if isinstance(agg_res, list):
+        return [str(x).strip() for x in agg_res if str(x or "").strip()]
+    return [f"Итог: {agg_res}"]
+
+
+def _parse_tool_json_payload(raw_txt: str) -> dict[str, Any] | None:
+    """Parse tool JSON output (handling truncated JSON gracefully when possible)."""
+    s = str(raw_txt or "").strip()
+    if not s.startswith("{"):
+        return None
+    try:
+        loaded = json.loads(s)
+        return loaded if isinstance(loaded, dict) else None
+    except json.JSONDecodeError:
+        extracted: dict[str, Any] = {}
+        for key in ("table_id", "table_title", "file_name", "sheet_name"):
+            m = re.search(rf'"{key}"\s*:\s*"([^"]*)"', s)
+            if m:
+                extracted[key] = m.group(1)
+        m_prev = re.search(r'"markdown_preview"\s*:\s*"((?:\\.|[^"\\])*)"', s)
+        if m_prev:
+            try:
+                extracted["markdown_preview"] = json.loads(f'"{m_prev.group(1)}"')
+            except Exception:
+                pass
+        return extracted or None
+
+
 def context_docs_from_search(search_resp: Any, extra_texts: Iterable[str] = ()) -> list[ContextDoc]:
     """Collect every text the LLM could have seen (grouped by doc_id) from a SearchResponse."""
     by_doc: dict[str, ContextDoc] = {}
-    seen_texts: set[int] = set()
+    seen_texts: set[tuple[str, int]] = set()
 
     def _add(doc_id: str, title: str, doc_number: str, text: str, meta: dict[str, Any]) -> None:
         text = (text or "").strip()
@@ -587,41 +745,248 @@ def context_docs_from_search(search_resp: Any, extra_texts: Iterable[str] = ()) 
             text = re.sub(r"\n{3,}", "\n\n", _CONT_PREFIX.sub("", text)).strip()
         if not text:
             return
-        key = hash(text)
+        key = (doc_id, hash(text))
         if key in seen_texts:
             return
         seen_texts.add(key)
         d = by_doc.get(doc_id)
         if d is None:
-            d = by_doc[doc_id] = ContextDoc(doc_id=doc_id, title=title, doc_number=clean_doc_number(doc_number))
+            d = by_doc[doc_id] = ContextDoc(
+                doc_id=doc_id,
+                title=_clean_doc_title(title),
+                doc_number=clean_doc_number(doc_number),
+            )
+        else:
+            if not d.title and title:
+                d.title = _clean_doc_title(title)
+            if not d.doc_number and doc_number:
+                d.doc_number = clean_doc_number(doc_number)
         d.texts.append(text)
         d.metas.append(meta)
 
+    tables_by_id: dict[str, Any] = {}
+    tables_by_doc: dict[str, list[Any]] = {}
+    for tp in getattr(search_resp, "linked_tables", None) or []:
+        tid = str(getattr(tp, "table_id", "") or "").strip()
+        did = str(getattr(tp, "doc_id", "") or "").strip()
+        if tid:
+            tables_by_id[tid] = tp
+        if did:
+            tables_by_doc.setdefault(did, []).append(tp)
+
     hits = list(getattr(search_resp, "hits", None) or []) + list(getattr(search_resp, "amendment_chunks", None) or [])
+    doc_info: dict[str, dict[str, Any]] = {}
+    table_hints: dict[str, dict[str, Any]] = {}
+    sheet_pages: dict[tuple[str, str], list[int]] = {}
+
     for h in hits:
-        doc_id = getattr(h, "doc_id", "") or getattr(h, "file_name", "") or "unknown"
-        title = getattr(h, "title", "") or getattr(h, "file_name", "")
-        num = getattr(h, "doc_number", "") or ""
-        base = {"title": title, "doc_number": num, "doc_date": getattr(h, "doc_date", "") or ""}
-        chunk_meta = {
+        h_doc_id = str(getattr(h, "doc_id", "") or getattr(h, "file_name", "") or "unknown")
+        h_title = str(getattr(h, "title", "") or getattr(h, "file_name", "") or "")
+        h_num = str(getattr(h, "doc_number", "") or "")
+        h_date = str(getattr(h, "doc_date", "") or "")
+        h_meta = getattr(h, "metadata", None) or {}
+        h_tid = str(getattr(h, "table_id", "") or h_meta.get("table_id") or "").strip()
+        h_sheet = str(getattr(h, "sheet_name", "") or h_meta.get("sheet_name") or "").strip()
+        if not h_sheet and h_tid in tables_by_id:
+            h_sheet = str(getattr(tables_by_id[h_tid], "sheet_name", "") or "").strip()
+        h_pages = [int(p) for p in (getattr(h, "page_numbers", None) or []) if str(p).isdigit()]
+
+        if h_doc_id not in doc_info:
+            doc_info[h_doc_id] = {
+                "title": h_title,
+                "doc_number": h_num,
+                "doc_date": h_date,
+                "file_name": str(getattr(h, "file_name", "") or ""),
+            }
+        if h_sheet and h_pages:
+            sheet_pages.setdefault((h_doc_id, h_sheet.lower()), []).extend(h_pages)
+        if h_tid:
+            hint = table_hints.setdefault(
+                h_tid,
+                {
+                    "doc_id": h_doc_id,
+                    "title": h_title,
+                    "doc_number": h_num,
+                    "doc_date": h_date,
+                    "sheet_name": h_sheet,
+                    "pages": [],
+                },
+            )
+            if h_sheet and not hint["sheet_name"]:
+                hint["sheet_name"] = h_sheet
+            hint["pages"].extend(h_pages)
+
+    def _is_single_sheet_doc(doc_id: str, tid: str, tp: Any) -> bool:
+        if not doc_id or doc_id.startswith("tool_result_"):
+            return False
+        if tid and re.search(r"::tbl_0*([2-9]|\d{2,})$", tid):
+            return False
+        doc_tbls = tables_by_doc.get(doc_id, [])
+        if len(doc_tbls) > 1:
+            return False
+        fmt = str(getattr(tp, "file_format", "") or "").lower().lstrip(".") if tp else ""
+        fname = str(getattr(tp, "file_name", "") or doc_info.get(doc_id, {}).get("file_name") or "").lower()
+        sh = str(getattr(tp, "sheet_name", "") or "").strip() if tp else ""
+        return bool(sh or fmt in {"xlsx", "xls", "xlsm"} or fname.endswith((".xlsx", ".xls", ".xlsm")))
+
+    def _resolve_table_meta(tid: str, payload_title: str = "", payload_sheet: str = "", payload_fname: str = "") -> tuple[str, dict[str, Any]]:
+        tp = tables_by_id.get(tid)
+        t_hint = table_hints.get(tid, {})
+        doc_id = (
+            (str(getattr(tp, "doc_id", "") or "").strip() if tp else "")
+            or str(t_hint.get("doc_id") or "").strip()
+            or (tid.split("::", 1)[0] if "::" in tid else "")
+        )
+        d_info = doc_info.get(doc_id, {})
+        title = (
+            str(d_info.get("title") or "").strip()
+            or (str(getattr(tp, "table_title", "") or getattr(tp, "section_title", "") or getattr(tp, "file_name", "") or "").strip() if tp else "")
+            or str(payload_title or "").strip()
+            or str(payload_fname or "").strip()
+            or str(t_hint.get("title") or "").strip()
+        )
+        num = (
+            (str(getattr(tp, "doc_number", "") or "").strip() if tp else "")
+            or str(d_info.get("doc_number") or "").strip()
+            or str(t_hint.get("doc_number") or "").strip()
+        )
+        date = (
+            (str(getattr(tp, "doc_date", "") or "").strip() if tp else "")
+            or str(d_info.get("doc_date") or "").strip()
+            or str(t_hint.get("doc_date") or "").strip()
+        )
+        sheet = (
+            (str(getattr(tp, "sheet_name", "") or "").strip() if tp else "")
+            or str(payload_sheet or "").strip()
+            or str(t_hint.get("sheet_name") or "").strip()
+        )
+        pages = sorted(set(int(p) for p in (t_hint.get("pages") or []) if str(p).isdigit()))
+        if not pages and doc_id and sheet:
+            pages = sorted(set(int(p) for p in sheet_pages.get((doc_id, sheet.lower()), []) if str(p).isdigit()))
+        single_sheet = _is_single_sheet_doc(doc_id, tid, tp)
+        if not pages and single_sheet:
+            pages = [1]
+        meta_out: dict[str, Any] = {
+            "title": title,
+            "doc_number": num,
+            "doc_date": date,
+            "table_id": tid,
+            "pages": pages,
+            "is_single_sheet": single_sheet,
+        }
+        if sheet:
+            meta_out["sheet_name"] = sheet
+        return doc_id, meta_out
+
+    for h in hits:
+        doc_id = str(getattr(h, "doc_id", "") or getattr(h, "file_name", "") or "unknown")
+        title = str(getattr(h, "title", "") or getattr(h, "file_name", "") or "")
+        num = str(getattr(h, "doc_number", "") or "")
+        h_meta = getattr(h, "metadata", None) or {}
+        h_tid = str(getattr(h, "table_id", "") or h_meta.get("table_id") or "").strip()
+        sheet_name = str(getattr(h, "sheet_name", "") or h_meta.get("sheet_name") or "").strip()
+        if not sheet_name and h_tid in tables_by_id:
+            sheet_name = str(getattr(tables_by_id[h_tid], "sheet_name", "") or "").strip()
+
+        base: dict[str, Any] = {
+            "title": title,
+            "doc_number": num,
+            "doc_date": getattr(h, "doc_date", "") or "",
+        }
+        if sheet_name:
+            base["sheet_name"] = sheet_name
+        if h_tid:
+            base["table_id"] = h_tid
+
+        tp_for_hit = tables_by_id.get(h_tid) if h_tid else None
+        h_pages = list(getattr(h, "page_numbers", None) or [])
+        single_sheet = _is_single_sheet_doc(doc_id, h_tid, tp_for_hit) if (h_tid or sheet_name) else False
+        if not h_pages and single_sheet:
+            h_pages = [1]
+
+        chunk_meta: dict[str, Any] = {
             **base,
-            "kind": "table" if getattr(h, "table_id", "") else "chunk",
+            "kind": "table" if h_tid else "chunk",
             "clause_no": getattr(h, "clause_no", "") or "",
-            "pages": list(getattr(h, "page_numbers", None) or []),
+            "pages": h_pages,
+            "is_single_sheet": single_sheet,
         }
         _add(doc_id, title, num, getattr(h, "clean_text", ""), chunk_meta)
         ps = getattr(h, "parent_section", None)
         if ps is not None:
-            _add(doc_id, title, num, getattr(ps, "clean_text", ""), {
+            ps_meta = getattr(ps, "metadata", None) or {}
+            ps_sheet = str(ps_meta.get("sheet_name") or sheet_name or "").strip()
+            ps_dict: dict[str, Any] = {
                 **base,
                 "kind": "parent",
                 "pages": list(getattr(ps, "page_numbers", None) or []),
-                "clause_page_map": (getattr(ps, "metadata", None) or {}).get("clause_page_map"),
-            })
+                "clause_page_map": ps_meta.get("clause_page_map"),
+            }
+            if ps_sheet:
+                ps_dict["sheet_name"] = ps_sheet
+            _add(doc_id, title, num, getattr(ps, "clean_text", ""), ps_dict)
         _add(doc_id, title, num, getattr(h, "parent_text", ""), {**base, "kind": "parent"})
         _add(doc_id, title, num, getattr(h, "raw_text", ""), {**chunk_meta})
+
     for t in getattr(search_resp, "table_context", None) or []:
-        _add(getattr(t, "table_id", "") or "table", "", "", getattr(t, "markdown_preview", "") or "", {"kind": "table"})
+        tid = str(getattr(t, "table_id", "") or "").strip()
+        resolved_doc_id, tbl_meta = _resolve_table_meta(
+            tid,
+            payload_title=str(getattr(t, "table_title", "") or ""),
+        )
+        target_doc_id = resolved_doc_id or tid or "table"
+        t_meta = {**tbl_meta, "kind": "table"}
+        row_lines = _format_table_rows_lines(
+            getattr(t, "rows", None) or [],
+            getattr(t, "columns", None) or [],
+        )
+        formula_lines = _format_table_formulas_lines(getattr(t, "formulas", None) or [])
+        agg_lines = _format_aggregation_lines(getattr(t, "aggregation_result", None))
+        md_prev = _clean_table_preview_text(getattr(t, "markdown_preview", "") or "")
+        for block_txt in (
+            "\n".join(row_lines),
+            "\n".join(formula_lines),
+            "\n".join(agg_lines),
+            md_prev,
+        ):
+            if block_txt.strip():
+                _add(target_doc_id, tbl_meta["title"], tbl_meta["doc_number"], block_txt, dict(t_meta))
+
     for i, txt in enumerate(extra_texts):
-        _add(f"tool_result_{i}", "", "", txt, {"kind": "tool"})
+        parsed = _parse_tool_json_payload(txt)
+        if parsed is not None:
+            tid = str(parsed.get("table_id") or "").strip()
+            resolved_doc_id, tbl_meta = _resolve_table_meta(
+                tid,
+                payload_title=str(parsed.get("table_title") or ""),
+                payload_sheet=str(parsed.get("sheet_name") or ""),
+                payload_fname=str(parsed.get("file_name") or ""),
+            )
+            target_doc_id = resolved_doc_id or f"tool_result_{i}"
+            tool_meta = {**tbl_meta, "kind": "tool"}
+            row_lines = _format_table_rows_lines(
+                parsed.get("rows") or parsed.get("preview_rows") or [],
+                parsed.get("columns") or [],
+            )
+            formula_lines = _format_table_formulas_lines(parsed.get("formulas") or [])
+            agg_lines = _format_aggregation_lines(parsed.get("aggregation_result"))
+            md_prev = _clean_table_preview_text(str(parsed.get("markdown_preview") or ""))
+            added_any = False
+            for block_txt in (
+                "\n".join(row_lines),
+                "\n".join(formula_lines),
+                "\n".join(agg_lines),
+                md_prev,
+            ):
+                if block_txt.strip():
+                    _add(target_doc_id, tbl_meta["title"], tbl_meta["doc_number"], block_txt, dict(tool_meta))
+                    added_any = True
+            if not added_any:
+                fallback_hdr = tbl_meta["title"] or tbl_meta.get("sheet_name") or ""
+                if fallback_hdr:
+                    _add(target_doc_id, tbl_meta["title"], tbl_meta["doc_number"], fallback_hdr, dict(tool_meta))
+        else:
+            clean_extra = _clean_table_preview_text(txt)
+            if clean_extra:
+                _add(f"tool_result_{i}", "", "", clean_extra, {"kind": "tool"})
     return list(by_doc.values())

@@ -418,6 +418,14 @@
   --ans-brief-kicker-fg: var(--color-accent);
   --ans-actions-bg: var(--color-bg-recessed);
   --ans-actions-border: var(--color-border-default);
+  --ans-alerts-bg: var(--color-bg-recessed);
+  --ans-alerts-border: var(--color-border-default);
+  --ans-alerts-spine: var(--color-accent);
+  --step-chip-bg: var(--color-bg-surface);
+  --step-chip-fg: var(--color-accent);
+  --step-chip-border: var(--color-accent-border);
+  --step-chip-hover-bg: var(--color-accent-tint);
+  --step-chip-hover-border: var(--color-accent);
   --ans-details-btn-bg: var(--color-bg-surface);
   --ans-details-btn-border: var(--color-border-default);
   --ans-details-btn-hover-bg: var(--color-bg-hover);
@@ -1443,6 +1451,152 @@ svg {
   font-family: var(--font-mono);
   font-weight: 600;
   color: var(--color-accent);
+}
+
+/* Clickable Step Source Chips inside ### Порядок действий */
+.ans-actions-body .step-src-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+  margin-left: var(--space-1);
+  vertical-align: baseline;
+}
+
+.ans-actions-body .step-src-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  min-height: 24px;
+  margin: 1px 2px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--step-chip-border);
+  background-color: var(--step-chip-bg);
+  color: var(--step-chip-fg);
+  font-family: var(--font-sans);
+  font-size: var(--prim-text-xs);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  text-align: left;
+  vertical-align: baseline;
+  transition: background-color var(--prim-dur-fast) var(--prim-ease-std),
+              border-color var(--prim-dur-fast) var(--prim-ease-std),
+              color var(--prim-dur-fast) var(--prim-ease-std);
+}
+
+.ans-actions-body .step-src-chip svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2;
+  flex-shrink: 0;
+}
+
+.ans-actions-body .step-src-chip .step-src-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ans-actions-body .step-src-chip:hover:not(:disabled) {
+  background-color: var(--step-chip-hover-bg);
+  border-color: var(--step-chip-hover-border);
+  color: var(--color-accent);
+}
+
+.ans-actions-body .step-src-chip:active:not(:disabled) {
+  background-color: var(--color-accent-solid);
+  border-color: var(--color-accent-solid);
+  color: var(--color-fg-on-accent);
+}
+
+.ans-actions-body .step-src-chip:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+/* Refined Alert Plate (Discrepancy, Edition/Version & Quality Notes) */
+.ans-alerts-plate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background-color: var(--ans-alerts-bg);
+  border: 1px solid var(--ans-alerts-border);
+  border-left: 3px solid var(--ans-alerts-spine);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  min-width: 0;
+}
+
+.ans-alerts-plate.has-discrepancy {
+  border-left-color: var(--color-warning-solid);
+}
+
+.ans-alerts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ans-alert-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2-5);
+  min-width: 0;
+  margin: 0;
+}
+
+.ans-alert-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-sans);
+  font-size: var(--prim-text-xs);
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.ans-alert-badge svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2;
+  flex-shrink: 0;
+}
+
+.ans-alert-badge.is-discrepancy {
+  color: var(--color-warning-fg);
+  background-color: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+}
+
+.ans-alert-badge.is-version {
+  color: var(--color-accent);
+  background-color: var(--color-accent-tint);
+  border: 1px solid var(--color-accent-border);
+}
+
+.ans-alert-badge.is-quality {
+  color: var(--color-fg-secondary);
+  background-color: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+}
+
+.ans-alert-text {
+  font-size: var(--prim-text-sm);
+  line-height: 1.5;
+  color: var(--color-fg-secondary);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .ans-details-wrap {
@@ -2522,6 +2676,16 @@ svg {
 .upload.duplicate .upload-pct,
 .upload.warn .upload-pct {
   color: var(--color-warning-fg);
+  font-weight: 600;
+}
+
+.upload.failed {
+  border-color: var(--color-danger-border);
+  background-color: var(--color-danger-bg);
+}
+
+.upload.failed .upload-pct {
+  color: var(--color-danger-fg);
   font-weight: 600;
 }
 
@@ -3663,8 +3827,24 @@ svg {
 
   .ans-brief-frame,
   .ans-actions-box,
+  .ans-alerts-plate,
   .md .doc-quote {
     padding: var(--space-3-5) var(--space-3-5);
+  }
+
+  .ans-alert-item {
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .ans-actions-body .step-src-chip {
+    min-height: 30px;
+    padding: var(--space-1) var(--space-2-5);
+  }
+
+  .ans-actions-body .step-src-chip .step-src-label {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .md .dq-expand {

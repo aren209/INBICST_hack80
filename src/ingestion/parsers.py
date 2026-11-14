@@ -1548,6 +1548,145 @@ def _format_excel_cell(val_cached: Any, val_formula: Any, number_format: str = "
     return _format_excel_scalar(chosen, number_format=number_format)
 
 
+_EXCEL_CELL_FORMULA_TAG_RE = re.compile(r"\[формула:\s*(=[^\]]+)\]", re.IGNORECASE)
+_EXCEL_HEADER_FORMULA_TAG_RE = re.compile(r"\s*\[формула:\s*=[^\]]+\]", re.IGNORECASE)
+
+
+def has_smeta_kvr_header(grid_cells: list[list[str]]) -> bool:
+    """
+    Return True iff at least one row (joined lowercase, `ё -> е`) contains
+    `"наименование показателя"` AND at least one of `("квр", "косгу", "вид затрат")`.
+    """
+    if not grid_cells:
+        return False
+    for row in grid_cells:
+        row_join = " ".join(str(c) for c in row if c).lower().replace("ё", "е")
+        if "наименование показателя" in row_join and any(
+            kw in row_join for kw in ("квр", "косгу", "вид затрат")
+        ):
+            return True
+    return False
+
+
+def _strip_excel_header_formula_tag(header: str) -> str:
+    """Strip `[формула: ...]` tag from an Excel header label while keeping readable header text."""
+    if not header:
+        return ""
+    return _EXCEL_HEADER_FORMULA_TAG_RE.sub("", str(header)).strip()
+
+
+def _extract_excel_cell_formulas(cell_val: str) -> list[str]:
+    """Extract Excel `=...` formulas from `[формула: =...]` tags or raw leading `=` cell strings."""
+    if not cell_val:
+        return []
+    tagged = [m.group(1).strip() for m in _EXCEL_CELL_FORMULA_TAG_RE.finditer(cell_val) if m.group(1).strip()]
+    if tagged:
+        return tagged
+    stripped = cell_val.strip()
+    if stripped.startswith("=") and len(stripped) > 1:
+        return [stripped]
+    return []
+
+
+def _extract_structured_formulas_from_rows(
+    headers: list[str],
+    rows: list[list[str]],
+) -> list[dict[str, Any]]:
+    """
+    Extract `{"row_index": r_idx, "column": col_name, "formula": f_str, "cell": cell_val}`
+    for every cell in `rows` containing `[формула: =...]` or a leading `=`.
+    """
+    structured_formulas: list[dict[str, Any]] = []
+    for r_idx, row in enumerate(rows):
+        for c_idx, cell_raw in enumerate(row):
+            cell_val = str(cell_raw) if cell_raw is not None else ""
+            cell_formulas = _extract_excel_cell_formulas(cell_val)
+            if not cell_formulas:
+                continue
+            col_name = (
+                headers[c_idx].strip()
+                if c_idx < len(headers) and headers[c_idx].strip()
+                else f"Колонка {c_idx + 1}"
+            )
+            for f_str in cell_formulas:
+                structured_formulas.append(
+                    {
+                        "row_index": r_idx,
+                        "column": col_name,
+                        "formula": f_str,
+                        "cell": cell_val,
+                    }
+                )
+    return structured_formulas
+
+
+def _build_excel_data_table_blocks(
+    sheet_name: str,
+    sheet_idx: int,
+    trimmed_grid: list[list[str]],
+    *,
+    include_page_or_sheet: bool = False,
+) -> list[ParsedBlock]:
+    """Build heading + structured `TABLE` ParsedBlocks for a non-smeta Excel data sheet."""
+    out_blocks: list[ParsedBlock] = []
+    banners, raw_headers, data_rows = _split_pre_header_banner_rows(trimmed_grid)
+    headers = [_strip_excel_header_formula_tag(h) for h in raw_headers]
+
+    for banner_txt in banners:
+        heading_meta = (
+            {"sheet_name": sheet_name, "page_or_sheet": sheet_name}
+            if include_page_or_sheet
+            else {}
+        )
+        out_blocks.append(
+            ParsedBlock(
+                text=banner_txt,
+                block_type=BlockType.HEADING.value,
+                zone=ZoneType.NORMATIVE.value,
+                page_num=sheet_idx,
+                page_numbers=[sheet_idx],
+                is_bold=True,
+                metadata=heading_meta,
+            )
+        )
+
+    if not headers and not data_rows:
+        return out_blocks
+
+    filled_rows, top_hier = _forward_fill_cfo_hierarchy(headers, data_rows)
+    md_str = _format_markdown_table(headers, filled_rows)
+    tbl_title = banners[-1] if banners else f"Лист: {sheet_name}"
+    structured_formulas = _extract_structured_formulas_from_rows(headers, filled_rows)
+
+    table_meta: dict[str, Any] = {
+        "sheet_name": sheet_name,
+        "table_title": tbl_title,
+        "structured_formulas": structured_formulas,
+        "has_formulas": bool(structured_formulas),
+        "formula_count": len(structured_formulas),
+    }
+    if include_page_or_sheet:
+        table_meta["page_or_sheet"] = sheet_name
+
+    # Keep sheet_name in metadata so table slices hash identically to matching DOCX tables (e.g. 3614-1)
+    out_blocks.append(
+        ParsedBlock(
+            text=md_str,
+            block_type=BlockType.TABLE.value,
+            zone=ZoneType.TABLE.value,
+            page_num=sheet_idx,
+            page_numbers=[sheet_idx],
+            is_ocr=False,
+            table_headers=headers,
+            table_rows=filled_rows,
+            parent_hierarchy=top_hier,
+            sheet_name=None,
+            metadata=table_meta,
+        )
+    )
+    return out_blocks
+
+
 def _parse_xlsx_smeta_form_sheet(
     sheet_title: str,
     page_num: int,
@@ -1570,11 +1709,13 @@ def _parse_xlsx_smeta_form_sheet(
     kosgu_col_idx: int = 4
 
     for r_idx, row in enumerate(grid_cells):
-        row_join = " ".join(row).lower()
-        if "наименование показателя" in row_join and ("квр" in row_join or "косгу" in row_join):
+        row_join = " ".join(str(c) for c in row if c).lower().replace("ё", "е")
+        if "наименование показателя" in row_join and any(
+            kw in row_join for kw in ("квр", "косгу", "вид затрат")
+        ):
             header_row_idx = r_idx
             for c_idx, cell_txt in enumerate(row):
-                cl = cell_txt.lower()
+                cl = str(cell_txt).lower().replace("ё", "е")
                 if "квр" in cl:
                     kvr_col_idx = c_idx
                 elif "косгу" in cl or "вид затрат" in cl:
@@ -1871,8 +2012,8 @@ def parse_xlsx(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]
                 if not trimmed_grid:
                     continue
 
-                # Determine whether this sheet is a formula-driven smeta/form or a relational data table
-                is_smeta_form = formula_count > 0 or "смет" in sheet_name.lower() or "форма" in sheet_name.lower()
+                # Determine whether this sheet is a KVR/KOSGU smeta form or a relational data table
+                is_smeta_form = has_smeta_kvr_header(trimmed_grid)
                 if is_smeta_form:
                     blocks.extend(
                         _parse_xlsx_smeta_form_sheet(
@@ -1884,37 +2025,12 @@ def parse_xlsx(file_path: str | Path) -> tuple[list[ParsedBlock], dict[str, Any]
                     continue
 
                 # Data Table Sheet (e.g. `2026` in `Приложение к приказу об утверждении фин. структуры 2026г..xlsx`)
-                banners, headers, data_rows = _split_pre_header_banner_rows(trimmed_grid)
-                for banner_txt in banners:
-                    blocks.append(
-                        ParsedBlock(
-                            text=banner_txt,
-                            block_type=BlockType.HEADING.value,
-                            zone=ZoneType.NORMATIVE.value,
-                            page_num=sheet_idx,
-                            page_numbers=[sheet_idx],
-                            is_bold=True,
-                        )
-                    )
-
-                filled_rows, top_hier = _forward_fill_cfo_hierarchy(headers, data_rows)
-                md_str = _format_markdown_table(headers, filled_rows)
-                tbl_title = banners[-1] if banners else f"Лист: {sheet_name}"
-
-                # Keep sheet_name in metadata so table slices hash identically to matching DOCX tables (e.g. 3614-1)
-                blocks.append(
-                    ParsedBlock(
-                        text=md_str,
-                        block_type=BlockType.TABLE.value,
-                        zone=ZoneType.TABLE.value,
-                        page_num=sheet_idx,
-                        page_numbers=[sheet_idx],
-                        is_ocr=False,
-                        table_headers=headers,
-                        table_rows=filled_rows,
-                        parent_hierarchy=top_hier,
-                        sheet_name=None,
-                        metadata={"sheet_name": sheet_name, "table_title": tbl_title},
+                blocks.extend(
+                    _build_excel_data_table_blocks(
+                        sheet_name=sheet_name,
+                        sheet_idx=sheet_idx,
+                        trimmed_grid=trimmed_grid,
+                        include_page_or_sheet=False,
                     )
                 )
 
@@ -1952,11 +2068,10 @@ def _grid_to_excel_sheet_blocks(
     formula_count: int = 0,
 ) -> list[ParsedBlock]:
     """Convert a cleaned 2D worksheet cell grid into ParsedBlock records identically to `parse_xlsx`."""
-    out_blocks: list[ParsedBlock] = []
     if not trimmed_grid:
-        return out_blocks
+        return []
 
-    is_smeta_form = formula_count > 0 or "смет" in sheet_name.lower() or "форма" in sheet_name.lower()
+    is_smeta_form = has_smeta_kvr_header(trimmed_grid)
     if is_smeta_form:
         form_blocks = _parse_xlsx_smeta_form_sheet(
             sheet_title=sheet_name,
@@ -1967,47 +2082,12 @@ def _grid_to_excel_sheet_blocks(
             fb.metadata.setdefault("page_or_sheet", sheet_name)
         return form_blocks
 
-    banners, headers, data_rows = _split_pre_header_banner_rows(trimmed_grid)
-    for banner_txt in banners:
-        out_blocks.append(
-            ParsedBlock(
-                text=banner_txt,
-                block_type=BlockType.HEADING.value,
-                zone=ZoneType.NORMATIVE.value,
-                page_num=sheet_idx,
-                page_numbers=[sheet_idx],
-                is_bold=True,
-                metadata={"sheet_name": sheet_name, "page_or_sheet": sheet_name},
-            )
-        )
-
-    if not headers and not data_rows:
-        return out_blocks
-
-    filled_rows, top_hier = _forward_fill_cfo_hierarchy(headers, data_rows)
-    md_str = _format_markdown_table(headers, filled_rows)
-    tbl_title = banners[-1] if banners else f"Лист: {sheet_name}"
-
-    out_blocks.append(
-        ParsedBlock(
-            text=md_str,
-            block_type=BlockType.TABLE.value,
-            zone=ZoneType.TABLE.value,
-            page_num=sheet_idx,
-            page_numbers=[sheet_idx],
-            is_ocr=False,
-            table_headers=headers,
-            table_rows=filled_rows,
-            parent_hierarchy=top_hier,
-            sheet_name=None,
-            metadata={
-                "sheet_name": sheet_name,
-                "page_or_sheet": sheet_name,
-                "table_title": tbl_title,
-            },
-        )
+    return _build_excel_data_table_blocks(
+        sheet_name=sheet_name,
+        sheet_idx=sheet_idx,
+        trimmed_grid=trimmed_grid,
+        include_page_or_sheet=True,
     )
-    return out_blocks
 
 
 def _format_xlrd_cell(wb: xlrd.Book, cell: Any) -> str:

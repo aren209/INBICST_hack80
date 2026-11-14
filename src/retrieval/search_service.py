@@ -268,6 +268,200 @@ GENERIC_QUERY_LEMMAS: frozenset[str] = frozenset(
     }
 )
 
+# Extra generic Russian administrative/structural lemmas excluded from dynamic corpus anchors and collision subtopic matching
+_DYNAMIC_ANCHOR_STOPWORDS: frozenset[str] = GENERIC_QUERY_LEMMAS | frozenset(
+    {
+        "приказ",
+        "распоряжение",
+        "регламент",
+        "положение",
+        "инструкция",
+        "порядок",
+        "правило",
+        "документ",
+        "приложение",
+        "таблица",
+        "пункт",
+        "подпункт",
+        "раздел",
+        "глава",
+        "лист",
+        "колонка",
+        "строка",
+        "столбец",
+        "ячейка",
+        "значение",
+        "наименование",
+        "название",
+        "показатель",
+        "итого",
+        "всего",
+        "примечание",
+        "описание",
+        "комментарий",
+        "статья",
+        "единица",
+        "измерение",
+        "ед",
+        "изм",
+        "руб",
+        "тыс",
+        "млн",
+        "год",
+        "годы",
+        "месяц",
+        "день",
+        "срок",
+        "дата",
+        "номер",
+        "версия",
+        "редакция",
+        "статус",
+        "утверждение",
+        "утвердить",
+        "утвержденный",
+        "утверждено",
+        "утверждена",
+        "введение",
+        "действие",
+        "изменение",
+        "внесение",
+        "внести",
+        "признание",
+        "признать",
+        "отмена",
+        "отменить",
+        "формирование",
+        "сформировать",
+        "реализация",
+        "организация",
+        "обеспечение",
+        "проведение",
+        "федеральный",
+        "государственный",
+        "автономный",
+        "образовательный",
+        "учреждение",
+        "высший",
+        "образование",
+        "российский",
+        "федерация",
+        "структурный",
+        "подразделение",
+        "работник",
+        "сотрудник",
+        "должность",
+        "руководитель",
+        "ответственный",
+        "исполнитель",
+        "лицо",
+        "настоящий",
+        "данный",
+        "указанный",
+        "соответствующий",
+        "следующий",
+        "прочий",
+        "иной",
+        "другой",
+        "некоторый",
+        "каждый",
+        "любой",
+        "часть",
+        "рамка",
+        "основа",
+        "основание",
+        "цель",
+        "задача",
+        "вид",
+        "тип",
+        "категория",
+        "группа",
+        "плановый",
+        "период",
+        "актуальность",
+        "незащищенный",
+        "печатный",
+        "тест",
+        "тестовый",
+        "файл",
+        "копия",
+        "скан",
+        "pdf",
+        "docx",
+        "doc",
+        "xlsx",
+        "xls",
+        # Function words / months that can leak from unlemmatized tokens
+        "для",
+        "при",
+        "если",
+        "нет",
+        "них",
+        "они",
+        "том",
+        "тот",
+        "только",
+        "весь",
+        "всех",
+        "далее",
+        "более",
+        "менее",
+        "также",
+        "либо",
+        "через",
+        "между",
+        "после",
+        "перед",
+        "около",
+        "кроме",
+        "включая",
+        "январь",
+        "февраль",
+        "март",
+        "апрель",
+        "май",
+        "июнь",
+        "июль",
+        "август",
+        "сентябрь",
+        "октябрь",
+        "ноябрь",
+        "декабрь",
+    }
+)
+
+_ALERT_SUBTOPIC_STOPWORDS: frozenset[str] = _DYNAMIC_ANCHOR_STOPWORDS | frozenset(
+    {
+        "мфти",
+        "физтех",
+        "университет",
+        "институт",
+        "установленный",
+        "предусмотренный",
+        "соответствии",
+        "служебный",
+        "записка",
+        "электронный",
+        "оплата",
+        "выплата",
+        "средство",
+        "сумма",
+        "расход",
+        "финансовый",
+        "согласование",
+    }
+)
+
+_DEADLINE_FACT_RE = re.compile(
+    r"\b(\d+(?:[.,]\d+)?)\s*(?:(рабоч\w+|календарн\w+)\s+)?(дн\w+|суток|сутк\w*|месяц\w*|час\w+)\b",
+    re.IGNORECASE,
+)
+_PERCENT_FACT_RE = re.compile(r"\b(\d+(?:[.,]\d+)?)\s*%")
+_RUBLE_FACT_RE = re.compile(
+    r"\b(\d{1,3}(?:[\s\u00a0]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)\s*(тыс\.?|млн)?\s*руб(?:\.|л[а-я]*)?\b",
+    re.IGNORECASE,
+)
+
 # Explicit non-MIPT out-of-scope stems (culinary, banking/mortgages, crypto, auto, travel, etc.)
 OUT_OF_SCOPE_STEMS: tuple[str, ...] = (
     "ипотек",
@@ -870,6 +1064,9 @@ class SearchService:
         self.pipeline = pipeline or get_pipeline()
         self.glossary = glossary or get_glossary_manager()
         self._table_store = table_store
+        self._dynamic_anchors_sig: tuple[Any, ...] | None = None
+        self._dynamic_anchors_cache: set[str] = set()
+        self._dynamic_doc_numbers_cache: set[str] = set()
 
     @property
     def table_store(self) -> StructuredTableStore:
@@ -1640,6 +1837,225 @@ class SearchService:
 
         return unique_hits
 
+    @staticmethod
+    def _is_mock_obj(obj: Any) -> bool:
+        return (getattr(type(obj), "__module__", "") or "").startswith("unittest.mock")
+
+    @classmethod
+    def _is_unconfigured_mock(cls, obj: Any) -> bool:
+        if not cls._is_mock_obj(obj):
+            return False
+        if getattr(obj, "side_effect", None) is not None:
+            return False
+        rv = getattr(obj, "_mock_return_value", None)
+        if rv is not None and not cls._is_mock_obj(rv) and type(rv).__name__ != "_SentinelObject":
+            return False
+        return True
+
+    @staticmethod
+    def _extract_dynamic_anchor_tokens(text: str) -> set[str]:
+        """Extract significant tokens and lemmas (len >= 3) excluding generic admin/stop words."""
+        out: set[str] = set()
+        if not text:
+            return out
+        norm = re.sub(r"\.[a-z0-9]{2,5}\b", " ", str(text).lower().replace("ё", "е")).replace("_", " ")
+        for t in tokenize_bm25(norm):
+            if len(t) < 3 or t.isdigit():
+                continue
+            if re.match(r"^(?:\d{1,2}\.\d{2}\.\d{2,4}|\d+(?:\.\d+)+|\d{4}г|лист\d*)$", t):
+                continue
+            if t in _DYNAMIC_ANCHOR_STOPWORDS:
+                continue
+            out.add(t)
+        for w in re.findall(r"[0-9a-zа-я]+(?:-[0-9a-zа-я]+)*", norm):
+            if len(w) < 3 or w.isdigit():
+                continue
+            if re.match(r"^(?:\d{4}г|лист\d*)$", w):
+                continue
+            lem = _lemmatize_ru_word(w)
+            if w in _DYNAMIC_ANCHOR_STOPWORDS or lem in _DYNAMIC_ANCHOR_STOPWORDS:
+                continue
+            out.add(w)
+            if len(lem) >= 3 and lem not in _DYNAMIC_ANCHOR_STOPWORDS:
+                out.add(lem)
+        return out
+
+    def _resolve_active_table_store_safe(self) -> Any:
+        """Resolve StructuredTableStore safely without failing on pipeline=None or MagicMock."""
+        ts = getattr(self, "_table_store", None)
+        if ts is not None and not self._is_unconfigured_mock(ts):
+            return ts
+        pipeline = getattr(self, "pipeline", None)
+        if pipeline is None:
+            return None
+        has_ts_fn = getattr(pipeline, "_has_active_table_store", None)
+        if callable(has_ts_fn) and not self._is_mock_obj(has_ts_fn):
+            try:
+                if has_ts_fn():
+                    cand = getattr(pipeline, "table_store", None)
+                    return cand if cand is not None and not self._is_unconfigured_mock(cand) else None
+            except Exception:
+                return None
+            return None
+        cand = getattr(pipeline, "table_store", None)
+        if cand is None:
+            return None
+        if self._is_mock_obj(cand):
+            list_fn = getattr(cand, "list_tables", None)
+            if callable(list_fn) and not self._is_unconfigured_mock(list_fn):
+                return cand
+            return None
+        return cand
+
+    def _get_dynamic_corpus_anchor_sets(self) -> tuple[set[str], set[str]]:
+        """
+        Return cached `(anchors, doc_numbers)` built from `pipeline.registry`, `sections_store`,
+        and `table_store`, automatically invalidated whenever registry signature or table count changes.
+        """
+        pipeline = getattr(self, "pipeline", None)
+        reg: dict[str, Any] = {}
+        sec_store: dict[str, Any] = {}
+        if pipeline is not None and not self._is_unconfigured_mock(pipeline):
+            raw_reg = getattr(pipeline, "registry", None)
+            if raw_reg is None:
+                load_reg = getattr(pipeline, "_load_registry", None)
+                if callable(load_reg) and not self._is_mock_obj(load_reg):
+                    try:
+                        raw_reg = load_reg()
+                        pipeline.registry = raw_reg
+                    except Exception:
+                        raw_reg = {}
+            if isinstance(raw_reg, dict):
+                reg = raw_reg
+            raw_secs = getattr(pipeline, "sections_store", None)
+            if isinstance(raw_secs, dict):
+                sec_store = raw_secs
+
+        reg_sig_items: list[tuple[str, str, str, str]] = []
+        for k, doc in sorted(reg.items(), key=lambda kv: str(kv[0])):
+            if isinstance(doc, dict):
+                d_id = str(doc.get("doc_id") or k)
+                d_ts = str(doc.get("indexed_at") or doc.get("sha256") or "")
+                d_title = str(doc.get("title") or "")
+                d_num = str(doc.get("doc_number") or "")
+            else:
+                d_id = str(getattr(doc, "doc_id", None) or k)
+                d_ts = str(getattr(doc, "indexed_at", None) or getattr(doc, "sha256", None) or "")
+                d_title = str(getattr(doc, "title", None) or "")
+                d_num = str(getattr(doc, "doc_number", None) or "")
+            reg_sig_items.append((d_id, d_ts, d_title, d_num))
+
+        ts = self._resolve_active_table_store_safe()
+        tbl_count = 0
+        prefetched_tables: list[Any] | None = None
+        if ts is not None:
+            count_fn = getattr(ts, "count_tables", None)
+            if callable(count_fn) and not self._is_unconfigured_mock(count_fn):
+                try:
+                    tbl_count = int(count_fn())
+                except Exception:
+                    tbl_count = 0
+            else:
+                list_fn = getattr(ts, "list_tables", None)
+                if callable(list_fn) and not self._is_unconfigured_mock(list_fn):
+                    try:
+                        prefetched_tables = list(list_fn() or [])
+                        tbl_count = len(prefetched_tables)
+                    except Exception:
+                        prefetched_tables = []
+                        tbl_count = 0
+
+        sig = (
+            len(reg),
+            tuple(reg_sig_items),
+            len(sec_store),
+            tbl_count,
+        )
+        if (
+            getattr(self, "_dynamic_anchors_sig", None) == sig
+            and getattr(self, "_dynamic_anchors_cache", None) is not None
+            and getattr(self, "_dynamic_doc_numbers_cache", None) is not None
+        ):
+            return self._dynamic_anchors_cache, self._dynamic_doc_numbers_cache
+
+        anchors: set[str] = set()
+        doc_numbers: set[str] = set()
+
+        def _get_field(obj: Any, name: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                val = obj.get(name)
+                if val is None:
+                    val = (obj.get("metadata") or {}).get(name)
+                return default if val is None else val
+            val = getattr(obj, name, None)
+            if val is None:
+                md = getattr(obj, "metadata", None)
+                if isinstance(md, dict):
+                    val = md.get(name)
+            return default if val is None else val
+
+        for doc in reg.values():
+            status_val = str(_get_field(doc, "status", "") or "").strip().lower()
+            if status_val == DocumentStatus.ERROR.value:
+                continue
+            for txt_field in ("title", "file_name"):
+                val = str(_get_field(doc, txt_field, "") or "")
+                if val:
+                    anchors.update(self._extract_dynamic_anchor_tokens(val))
+            for seq_field in ("topics", "terms"):
+                vals = _get_field(doc, seq_field, None) or []
+                if isinstance(vals, str):
+                    vals = [vals]
+                for item in vals:
+                    anchors.update(self._extract_dynamic_anchor_tokens(str(item)))
+            for num_field in ("doc_number", "edo_number"):
+                raw_num = str(_get_field(doc, num_field, "") or "").strip().lower().replace("ё", "е")
+                if raw_num and raw_num not in {"б/н", "-", "нет"} and len(raw_num) >= 2:
+                    doc_numbers.add(raw_num)
+                    anchors.add(raw_num)
+                    core_num = _core_doc_number(raw_num).lower()
+                    if core_num and len(core_num) >= 2:
+                        doc_numbers.add(core_num)
+                        anchors.add(core_num)
+
+        for sec in sec_store.values():
+            for sec_field in ("unit_title", "section_title"):
+                val = str(_get_field(sec, sec_field, "") or "")
+                if val:
+                    anchors.update(self._extract_dynamic_anchor_tokens(val))
+
+        if ts is not None:
+            tables_list = prefetched_tables
+            if tables_list is None:
+                list_fn = getattr(ts, "list_tables", None)
+                if callable(list_fn) and not self._is_unconfigured_mock(list_fn):
+                    try:
+                        tables_list = list(list_fn() or [])
+                    except Exception:
+                        tables_list = []
+                else:
+                    tables_list = []
+            for tp in tables_list:
+                for t_field in ("table_title", "sheet_name"):
+                    val = str(_get_field(tp, t_field, "") or "")
+                    if val:
+                        anchors.update(self._extract_dynamic_anchor_tokens(val))
+                cols = _get_field(tp, "columns", None) or []
+                for col in cols:
+                    col_name = col.get("name") if isinstance(col, dict) else getattr(col, "name", "")
+                    if col_name:
+                        anchors.update(self._extract_dynamic_anchor_tokens(str(col_name)))
+
+        self._dynamic_anchors_sig = sig
+        self._dynamic_anchors_cache = anchors
+        self._dynamic_doc_numbers_cache = doc_numbers
+        return anchors, doc_numbers
+
+    def _get_dynamic_corpus_anchors(self) -> set[str]:
+        """Return cached set of significant dynamic domain anchors extracted from the live corpus."""
+        anchors, _ = self._get_dynamic_corpus_anchor_sets()
+        return set(anchors)
+
     def _detect_out_of_scope(
         self,
         raw_query: str,
@@ -1656,7 +2072,11 @@ class SearchService:
 
         top_dense = max((h.dense_score for h in hits[:3]), default=0.0)
         has_mipt_anchor = any(anchor in q_norm for anchor in MIPT_DOMAIN_ANCHORS)
-        has_oos_marker = any(stem in q_norm for stem in OUT_OF_SCOPE_STEMS)
+        matched_oos_stems = [stem for stem in OUT_OF_SCOPE_STEMS if stem in q_norm]
+        has_oos_marker = bool(matched_oos_stems)
+
+        # Dynamic corpus anchors (auto-invalidated on registry / table_store changes)
+        dynamic_anchors, dynamic_doc_numbers = self._get_dynamic_corpus_anchor_sets()
 
         # Substantive tokens = tokens from raw query excluding generic question/admin words
         substantive_tokens = [t for t in raw_query_tokens if t not in GENERIC_QUERY_LEMMAS and len(t) >= 2]
@@ -1685,30 +2105,83 @@ class SearchService:
             if exp_tokens and exp_tokens.intersection(top_corpus_tokens):
                 lexical_overlap = max(lexical_overlap, 0.65)
 
-        # Rule 1: Explicit non-MIPT topic (e.g. mortgage in bank, pasta carbonara, borscht, bitcoin)
-        if has_oos_marker and not has_mipt_anchor:
+        # Match query against dynamic corpus anchors (track unique query words/lemmas + doc_numbers)
+        matched_dyn_doc_nums = [
+            dnum
+            for dnum in dynamic_doc_numbers
+            if re.search(rf"(?<![0-9a-zа-я]){re.escape(dnum)}(?![0-9a-zа-я])", q_norm)
+        ]
+        matched_dyn_roots: set[str] = set()
+        for q_tok in raw_query_tokens:
+            if (
+                len(q_tok) >= 3
+                and not q_tok.isdigit()
+                and q_tok not in _DYNAMIC_ANCHOR_STOPWORDS
+                and q_tok in dynamic_anchors
+            ):
+                matched_dyn_roots.add(q_tok)
+        for w in re.findall(r"[0-9a-zа-я]+(?:-[0-9a-zа-я]+)*", q_norm):
+            if len(w) < 3 or w.isdigit():
+                continue
+            lem = _lemmatize_ru_word(w)
+            if w in _DYNAMIC_ANCHOR_STOPWORDS or lem in _DYNAMIC_ANCHOR_STOPWORDS:
+                continue
+            if w in dynamic_anchors or lem in dynamic_anchors:
+                matched_dyn_roots.add(lem if len(lem) >= 3 else w)
+
+        has_dynamic_corpus_anchor = bool(matched_dyn_doc_nums) or bool(matched_dyn_roots)
+        has_strong_dynamic_anchor = bool(matched_dyn_doc_nums) or len(matched_dyn_roots) >= 2
+        has_domain_anchor = has_mipt_anchor or has_dynamic_corpus_anchor
+
+        def _stem_covered_by_corpus(stem: str) -> bool:
+            if " " in stem:
+                stem_toks = [t for t in tokenize_bm25(stem) if t not in _DYNAMIC_ANCHOR_STOPWORDS]
+                if not stem_toks:
+                    return False
+                if all(t in dynamic_anchors for t in stem_toks):
+                    return True
+                if lexical_overlap >= 0.5 and all(t in top_corpus_tokens for t in stem_toks):
+                    return True
+                return False
+            if any(a == stem or a.startswith(stem) for a in dynamic_anchors):
+                return True
+            if lexical_overlap >= 0.5 and any(t == stem or t.startswith(stem) for t in top_corpus_tokens):
+                return True
+            return False
+
+        unresolved_oos_stems = [s for s in matched_oos_stems if not _stem_covered_by_corpus(s)]
+
+        # Rule 1: Explicit non-MIPT topic (unless matched stem exists in dynamic_corpus_anchors or top_corpus_tokens with overlap >= 0.5)
+        if has_oos_marker and unresolved_oos_stems and not has_mipt_anchor:
             conf = round(min(0.22, top_dense * 0.35), 4)
             return True, conf, round(top_dense, 4), round(lexical_overlap, 4)
 
-        # Rule 2: Zero substantive lexical overlap and no MIPT domain anchor
-        if lexical_overlap < OUT_OF_SCOPE_MIN_LEXICAL_OVERLAP and not has_mipt_anchor and not glossary_triggered:
+        # Rule 2: Zero substantive lexical overlap and no domain anchor
+        if lexical_overlap < OUT_OF_SCOPE_MIN_LEXICAL_OVERLAP and not has_domain_anchor and not glossary_triggered:
             conf = round(min(0.28, top_dense * 0.45), 4)
             return True, conf, round(top_dense, 4), round(lexical_overlap, 4)
 
-        # Rule 3: Very low dense cosine score
-        if top_dense < OUT_OF_SCOPE_LOW_DENSE_THRESHOLD and not has_mipt_anchor:
+        # Rule 3: Very low dense cosine score (require lexical overlap >= threshold or exact doc_number / multi-token anchor for dynamic-only anchors)
+        rule3_domain_exempt = has_mipt_anchor or (
+            has_dynamic_corpus_anchor
+            and (
+                lexical_overlap >= OUT_OF_SCOPE_MIN_LEXICAL_OVERLAP
+                or has_strong_dynamic_anchor
+            )
+        )
+        if top_dense < OUT_OF_SCOPE_LOW_DENSE_THRESHOLD and not rule3_domain_exempt:
             conf = round(min(0.25, top_dense * 0.5), 4)
             return True, conf, round(top_dense, 4), round(lexical_overlap, 4)
 
         # Rule 4: Below dense threshold with weak lexical overlap
-        if top_dense < OUT_OF_SCOPE_DENSE_THRESHOLD and lexical_overlap < 0.25 and not has_mipt_anchor:
+        if top_dense < OUT_OF_SCOPE_DENSE_THRESHOLD and lexical_overlap < 0.25 and not has_domain_anchor:
             conf = round(min(0.32, top_dense * 0.6), 4)
             return True, conf, round(top_dense, 4), round(lexical_overlap, 4)
 
         # In-scope confidence score
         confidence = min(
             0.99,
-            0.55 * top_dense + 0.30 * max(lexical_overlap, 0.5 if has_mipt_anchor else 0.0) + 0.15,
+            0.55 * top_dense + 0.30 * max(lexical_overlap, 0.5 if has_domain_anchor else 0.0) + 0.15,
         )
         return False, round(confidence, 4), round(top_dense, 4), round(lexical_overlap, 4)
 
@@ -2033,36 +2506,52 @@ class SearchService:
         Find distinct documents in `pipeline.registry` that share strong substantive title/topic overlap
         with `doc_id` (e.g., an earlier standalone regulation vs a separate uploaded order on the same topic).
         """
-        if not self.pipeline.registry:
-            self.pipeline.registry = self.pipeline._load_registry()
-        base_meta = self.pipeline.registry.get(doc_id)
+        pipeline = getattr(self, "pipeline", None)
+        if pipeline is None or self._is_unconfigured_mock(pipeline):
+            return []
+        reg = getattr(pipeline, "registry", None)
+        if reg is None:
+            load_reg = getattr(pipeline, "_load_registry", None)
+            if callable(load_reg) and not self._is_mock_obj(load_reg):
+                try:
+                    reg = load_reg()
+                    pipeline.registry = reg
+                except Exception:
+                    return []
+        if not isinstance(reg, dict) or not reg:
+            return []
+        base_meta = reg.get(doc_id)
         if base_meta is None:
             return []
         base_vf = str(
             getattr(base_meta, "version_family", None)
-            or (base_meta.metadata or {}).get("version_family")
+            or (getattr(base_meta, "metadata", None) or {}).get("version_family")
             or ""
         ).strip()
-        base_lemmas = self._title_topic_lemmas(base_meta.title, base_meta.file_name)
+        base_title = str(getattr(base_meta, "title", "") or "")
+        base_fname = str(getattr(base_meta, "file_name", "") or "")
+        base_also = list(getattr(base_meta, "also_in_files", None) or [])
+        base_lemmas = self._title_topic_lemmas(base_title, base_fname)
         if not base_lemmas and not base_vf:
             return []
 
         siblings: list[DocumentMeta] = []
-        for cand_id, cand_meta in self.pipeline.registry.items():
-            if cand_id == doc_id or cand_meta.status == DocumentStatus.ERROR.value:
+        for cand_id, cand_meta in reg.items():
+            if cand_id == doc_id or getattr(cand_meta, "status", "") == DocumentStatus.ERROR.value:
                 continue
+            cand_fname = str(getattr(cand_meta, "file_name", "") or "")
             # Skip exact cross-file duplicates already linked via also_in_files
-            if cand_meta.file_name and cand_meta.file_name in base_meta.also_in_files:
+            if cand_fname and cand_fname in base_also:
                 continue
             cand_vf = str(
                 getattr(cand_meta, "version_family", None)
-                or (cand_meta.metadata or {}).get("version_family")
+                or (getattr(cand_meta, "metadata", None) or {}).get("version_family")
                 or ""
             ).strip()
             if base_vf and cand_vf and base_vf == cand_vf:
                 siblings.append(cand_meta)
                 continue
-            cand_lemmas = self._title_topic_lemmas(cand_meta.title, cand_meta.file_name)
+            cand_lemmas = self._title_topic_lemmas(str(getattr(cand_meta, "title", "") or ""), cand_fname)
             if not cand_lemmas or not base_lemmas:
                 continue
             inter = base_lemmas.intersection(cand_lemmas)
@@ -2074,90 +2563,505 @@ class SearchService:
                 siblings.append(cand_meta)
         return siblings
 
-    @staticmethod
-    def _format_doc_requisite_badge(h: SearchHit) -> str:
-        """Render crystal-clear document identity string with file_name, doc_number/date, ЭДО stamp, and status."""
-        parts = [f"«{h.title or h.file_name}» (файл: `{h.file_name}`"]
+    _ALERT_STATUS_RU_MAP: dict[str, str] = {
+        "active": "действует",
+        "superseded": "утратил силу",
+        "superseded_template_reference": "справочный шаблон",
+        "draft": "проект",
+        "error": "ошибка обработки",
+    }
+
+    @classmethod
+    def _status_to_human_ru(cls, status: str | None) -> str:
+        st = str(status or "").strip().lower()
+        return cls._ALERT_STATUS_RU_MAP.get(st, "действует" if not st else st)
+
+    @classmethod
+    def _format_doc_requisite_badge(cls, h: SearchHit) -> str:
+        """Render clear document identity string in natural Russian without technical jargon."""
+        label = (h.title or h.file_name or "Документ").strip()
+        meta_parts: list[str] = []
         if h.doc_number:
             num_str = f"№ {h.doc_number}" + (f" от {h.doc_date}" if h.doc_date else "")
             if (h.metadata or {}).get("is_edo_stamp"):
-                num_str += " [штамп ЭДО]"
-            parts.append(f", {num_str}")
+                num_str += " (регистрация ЭДО)"
+            meta_parts.append(num_str)
+        elif h.doc_date:
+            meta_parts.append(f"от {h.doc_date}")
         else:
-            parts.append(", без номера приказа")
+            meta_parts.append("без номера")
         if h.edo_number and h.edo_number != h.doc_number:
-            edo_str = f"Зарег. в ЭДО № {h.edo_number}" + (f" от {h.edo_date}" if h.edo_date else "")
-            parts.append(f", {edo_str}")
+            edo_str = f"ЭДО № {h.edo_number}" + (f" от {h.edo_date}" if h.edo_date else "")
+            meta_parts.append(edo_str)
         elif h.edo_number and h.edo_date and h.edo_date != h.doc_date:
-            parts.append(f", Зарег. в ЭДО {h.edo_date} № {h.edo_number}")
+            meta_parts.append(f"ЭДО {h.edo_date} № {h.edo_number}")
+        if h.file_name and h.file_name != label:
+            meta_parts.append(f"файл: {h.file_name}")
         origin = str((h.metadata or {}).get("source_origin") or "")
         if origin == "uploads":
-            parts.append(", источник: загруженный документ `uploads/`")
-        parts.append(f", статус: {h.status})")
-        return "".join(parts)
+            meta_parts.append("загруженный документ")
+        meta_parts.append(cls._status_to_human_ru(h.status))
+        return f"«{label}» ({', '.join(meta_parts)})"
 
-    def _collect_alerts(self, hits: list[SearchHit], amendment_chunks: list[SearchHit]) -> tuple[list[str], list[str]]:
-        """Collect deduplicated version_alerts, sibling-edition disambiguation alerts, and quality_alerts."""
+    @staticmethod
+    def _short_doc_label(h: SearchHit) -> str:
+        """Compact readable document label for numeric discrepancy notes."""
+        title = (h.title or h.file_name or "Документ").strip()
+        if h.doc_number and h.doc_number not in title:
+            return f"«{title}» (№ {h.doc_number})"
+        return f"«{title}»"
+
+    def _format_ref_label(self, ref: str, known_hits: dict[str, SearchHit] | None = None) -> str:
+        """Resolve an internal doc_id or order number reference into a clean Russian label."""
+        raw = str(ref or "").strip()
+        if not raw:
+            return ""
+        hit = (known_hits or {}).get(raw)
+        if hit is not None:
+            return self._short_doc_label(hit)
+        pipeline = getattr(self, "pipeline", None)
+        reg = getattr(pipeline, "registry", None) if pipeline is not None else None
+        if isinstance(reg, dict) and raw in reg:
+            d = reg[raw]
+            title = str(getattr(d, "title", None) or (d.get("title") if isinstance(d, dict) else "") or "").strip()
+            fname = str(getattr(d, "file_name", None) or (d.get("file_name") if isinstance(d, dict) else "") or "").strip()
+            dnum = str(getattr(d, "doc_number", None) or (d.get("doc_number") if isinstance(d, dict) else "") or "").strip()
+            lbl = title or fname or raw
+            if dnum and dnum not in lbl:
+                return f"«{lbl}» (№ {dnum})"
+            return f"«{lbl}»"
+        if re.match(r"^\d[\d/-]*[а-яa-z]?$", raw, re.IGNORECASE):
+            return f"№ {raw}"
+        return raw
+
+    def _sanitize_alert_text(
+        self,
+        text: str,
+        known_hits: dict[str, SearchHit] | None = None,
+    ) -> str:
+        """Strip internal technical jargon (`superseded_template_reference`, `uploads/`, `doc_id`, `OCR`, etc.)."""
+        s = str(text or "").strip()
+        if not s:
+            return ""
+
+        # Resolve known internal snake_case doc_ids from registry / hits first
+        pipeline = getattr(self, "pipeline", None)
+        reg = getattr(pipeline, "registry", None) if pipeline is not None else None
+        candidate_ids: set[str] = set()
+        if isinstance(reg, dict):
+            candidate_ids.update(str(k) for k in reg.keys() if k and "_" in str(k))
+        if known_hits:
+            candidate_ids.update(str(k) for k in known_hits.keys() if k and "_" in str(k))
+        for d_id in sorted(candidate_ids, key=len, reverse=True):
+            if re.search(rf"(?<![.\w/]){re.escape(d_id)}(?![.\w/])", s):
+                lbl = self._format_ref_label(d_id, known_hits=known_hits)
+                s = re.sub(
+                    rf"(документом)\s*(?:№\s*)?(?<![.\w/]){re.escape(d_id)}(?![.\w/])",
+                    rf"\1 {lbl}",
+                    s,
+                    flags=re.IGNORECASE,
+                )
+                s = re.sub(
+                    rf"(?:№\s*)?(?<![.\w/]){re.escape(d_id)}(?![.\w/])",
+                    lbl,
+                    s,
+                )
+
+        # Strip ALL-CAPS attention prefixes like "ВНИМАНИЕ (Смена редакции): "
+        s = re.sub(r"^\s*ВНИМАНИЕ\s*(?:\([^)]*\))?\s*:\s*", "", s)
+
+        # Replace status & relation jargon
+        s = re.sub(r"\s*\(\s*(?:superseded_template_reference|superseded|active|amends|supersedes)\s*\)", "", s)
+        s = re.sub(r"\bsuperseded_template_reference\b", "справочный шаблон", s)
+        s = re.sub(r"\bsuperseded\b", "утратил силу", s)
+        s = re.sub(r"\bactive\b", "действует", s)
+        s = re.sub(r"\bamends\b", "частично изменяет", s)
+        s = re.sub(r"\bsupersedes\b", "заменяет", s)
+
+        # Strip uploads/ paths and internal technical tokens
+        s = re.sub(
+            r",?\s*источник:\s*загруженный документ\s*`?/?uploads/?`?",
+            ", загруженный документ",
+            s,
+            flags=re.IGNORECASE,
+        )
+        s = re.sub(r"`?/?uploads/?`?", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s*\(\s*cached_value\s*=\s*None\s*\)", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s*\[\s*формула:\s*[^\]]*\]", "", s, flags=re.IGNORECASE)
+        s = re.sub(
+            r"\(\s*разделены\s+по\s+уникальным\s+синтетическим\s+chunk_id\s*\)",
+            "(фрагменты разделены автоматически)",
+            s,
+            flags=re.IGNORECASE,
+        )
+        s = re.sub(r"\bchunk_id\b", "идентификатор фрагмента", s, flags=re.IGNORECASE)
+        s = re.sub(r"\bdoc_id\s*[:=]\s*[^\s,;)]+", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\bdoc_id\b", "идентификатор документа", s, flags=re.IGNORECASE)
+
+        # Replace unresolved internal snake_case doc IDs (never touching filenames with extensions)
+        s = re.sub(
+            r"(?:документ(?:ом|а)?\s*(?:№\s*)?)?\b(?:doc_[0-9a-f]{6,}|(?:order|app|reg)_[a-z0-9_]+)\b(?!\.\w)",
+            "соответствующий документ",
+            s,
+        )
+
+        # Replace OCR jargon into natural Russian
+        s = re.sub(
+            r"\bOCR[-–]?(?:распознавани[еяю]|текст[ауе]?|сло[йяю]|страниц[аы]?)\b",
+            "скан-копия документа",
+            s,
+            flags=re.IGNORECASE,
+        )
+        s = re.sub(
+            r"(?i)\b(качество|после|из-за|результат|текст|распознавани[ея])\s+OCR\b",
+            r"\1 скан-копии документа",
+            s,
+        )
+        s = re.sub(r"\bOCR\b", "скан-копия документа", s, flags=re.IGNORECASE)
+
+        # Tidy whitespace & punctuation
+        s = re.sub(r"\(\s*\)", "", s)
+        s = re.sub(r"\s+([,.;:!?])", r"\1", s)
+        s = re.sub(r"\s{2,}", " ", s).strip()
+        return s
+
+    @staticmethod
+    def _is_active_hit(h: SearchHit) -> bool:
+        return (h.status or DocumentStatus.ACTIVE.value).strip().lower() == DocumentStatus.ACTIVE.value
+
+    @staticmethod
+    def _is_same_document_copy(h1: SearchHit, h2: SearchHit) -> bool:
+        if h2.file_name and h2.file_name in (h1.also_in_files or []):
+            return True
+        if h1.file_name and h1.file_name in (h2.also_in_files or []):
+            return True
+        c1 = _core_doc_number(h1.doc_number).lower()
+        c2 = _core_doc_number(h2.doc_number).lower()
+        if c1 and c2 and c1 == c2 and (h1.status or "active") == (h2.status or "active"):
+            return True
+        return False
+
+    @staticmethod
+    def _docs_have_explicit_relation(h1: SearchHit, h2: SearchHit) -> bool:
+        def _ref_keys(h: SearchHit) -> set[str]:
+            keys: set[str] = set()
+            for v in (h.doc_id, h.doc_number, _core_doc_number(h.doc_number), h.file_name):
+                sv = str(v or "").strip().lower()
+                if sv:
+                    keys.add(sv)
+            return keys
+
+        def _link_keys(h: SearchHit) -> set[str]:
+            keys: set[str] = set()
+            for v in (h.supersedes or []) + (h.superseded_by or []) + (h.amends or []) + (h.amended_by or []):
+                sv = str(v or "").strip().lower()
+                if sv:
+                    keys.add(sv)
+                    core = _core_doc_number(sv).lower()
+                    if core:
+                        keys.add(core)
+            return keys
+
+        return bool(_ref_keys(h1).intersection(_link_keys(h2)) or _ref_keys(h2).intersection(_link_keys(h1)))
+
+    def _get_hit_version_family(self, h: SearchHit) -> str:
+        vf = str((h.metadata or {}).get("version_family") or "").strip()
+        if vf:
+            return vf
+        pipeline = getattr(self, "pipeline", None)
+        reg = getattr(pipeline, "registry", None) if pipeline is not None else None
+        if isinstance(reg, dict) and h.doc_id in reg:
+            d = reg[h.doc_id]
+            return str(
+                getattr(d, "version_family", None)
+                or (getattr(d, "metadata", None) or {}).get("version_family")
+                or ""
+            ).strip()
+        return ""
+
+    @staticmethod
+    def _substantive_alert_tokens(hits: list[SearchHit]) -> set[str]:
+        tokens: set[str] = set()
+        for h in hits:
+            blob = f"{h.title} {' '.join(h.topics)} {' '.join(h.terms)} {h.clean_text}"
+            for t in tokenize_bm25(blob):
+                if len(t) >= 3 and not t.isdigit() and t not in _ALERT_SUBTOPIC_STOPWORDS:
+                    if not re.match(r"^\d+(?:[-./]\d+)+[а-яa-z]?$", t):
+                        tokens.add(t)
+        return tokens
+
+    @staticmethod
+    def _extract_numeric_facts(hits: list[SearchHit]) -> dict[str, dict[Any, str]]:
+        """Extract canonicalized deadlines, percentages, and ruble limits from hits for collision detection."""
+        facts: dict[str, dict[Any, str]] = {
+            "days": {},
+            "months": {},
+            "hours": {},
+            "percent": {},
+            "rub": {},
+        }
+        for h in hits:
+            txt = h.clean_text or ""
+            if not txt:
+                continue
+            for m in _DEADLINE_FACT_RE.finditer(txt):
+                num_str, qual_raw, unit_raw = m.group(1), (m.group(2) or "").lower(), m.group(3).lower()
+                try:
+                    num_val = round(float(num_str.replace(",", ".")), 3)
+                except ValueError:
+                    continue
+                if unit_raw.startswith(("дн", "сут")):
+                    cat = "days"
+                    qual_norm = "рабочих" if qual_raw.startswith("рабоч") else ("календарных" if qual_raw.startswith("календар") else "")
+                elif unit_raw.startswith("месяц"):
+                    cat = "months"
+                    qual_norm = ""
+                else:
+                    cat = "hours"
+                    qual_norm = ""
+                key = (num_val, qual_norm)
+                disp = re.sub(r"\s+", " ", m.group(0).strip())
+                facts[cat].setdefault(key, disp)
+
+            for m in _PERCENT_FACT_RE.finditer(txt):
+                try:
+                    pct_val = round(float(m.group(1).replace(",", ".")), 3)
+                except ValueError:
+                    continue
+                disp = re.sub(r"\s+", "", m.group(0).strip())
+                facts["percent"].setdefault(pct_val, disp)
+
+            for m in _RUBLE_FACT_RE.finditer(txt):
+                num_raw = re.sub(r"[\s\u00a0]+", "", m.group(1)).replace(",", ".")
+                scale_raw = (m.group(2) or "").lower()
+                try:
+                    rub_val = float(num_raw)
+                except ValueError:
+                    continue
+                if scale_raw.startswith("тыс"):
+                    rub_val *= 1_000.0
+                elif scale_raw.startswith("млн"):
+                    rub_val *= 1_000_000.0
+                rub_key = round(rub_val, 2)
+                disp = re.sub(r"\s+", " ", m.group(0).strip())
+                facts["rub"].setdefault(rub_key, disp)
+        return facts
+
+    def _collect_alerts(
+        self,
+        hits: list[SearchHit],
+        amendment_chunks: list[SearchHit],
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Collect clean Russian `version_alerts`, `discrepancy_alerts`, and `quality_alerts`."""
         version_alerts: list[str] = []
+        discrepancy_alerts: list[str] = []
         quality_alerts: list[str] = []
 
         all_hits = list(hits) + list(amendment_chunks)
+        known_hits_by_id: dict[str, SearchHit] = {}
         for h in all_hits:
-            if h.version_note and h.version_note not in version_alerts:
-                version_alerts.append(h.version_note)
+            if h.doc_id and h.doc_id not in known_hits_by_id:
+                known_hits_by_id[h.doc_id] = h
+
+        def _add_unique(bucket: list[str], raw_msg: str) -> None:
+            cleaned = self._sanitize_alert_text(raw_msg, known_hits=known_hits_by_id)
+            if cleaned and cleaned not in bucket:
+                bucket.append(cleaned)
+
+        for h in all_hits:
+            if h.version_note:
+                _add_unique(version_alerts, h.version_note)
             if h.amended_by:
                 num_badge = f" (№ {h.doc_number})" if h.doc_number else (f" (от {h.doc_date})" if h.doc_date else "")
-                alert = (
-                    f"Документ «{h.title}»{num_badge} действует с учетом изменений: "
-                    f"№ {', '.join(h.amended_by)}."
-                )
-                if alert not in version_alerts and not any(h.doc_number and h.doc_number in va for va in version_alerts):
-                    version_alerts.append(alert)
+                refs_str = ", ".join(self._format_ref_label(r, known_hits=known_hits_by_id) for r in h.amended_by)
+                alert = f"Документ «{h.title or h.file_name}»{num_badge} действует с учетом изменений: {refs_str}."
+                if not any(
+                    (h.doc_number and h.doc_number in va)
+                    or (h.title and h.title in va and "изменен" in va.lower())
+                    for va in version_alerts
+                ):
+                    _add_unique(version_alerts, alert)
             if h.superseded_by:
                 num_badge = f" (№ {h.doc_number})" if h.doc_number else (f" (от {h.doc_date})" if h.doc_date else "")
-                alert = (
-                    f"Документ «{h.title}»{num_badge} заменен / отменен актом: "
-                    f"{', '.join(h.superseded_by)} (текущий статус: {h.status})."
-                )
-                if alert not in version_alerts and not any(h.doc_number and h.doc_number in va for va in version_alerts):
-                    version_alerts.append(alert)
-            if h.quality_warning and h.quality_warning not in quality_alerts:
-                quality_alerts.append(h.quality_warning)
+                refs_str = ", ".join(self._format_ref_label(r, known_hits=known_hits_by_id) for r in h.superseded_by)
+                if (h.status or "").strip().lower() == DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value:
+                    alert = f"Документ «{h.title or h.file_name}»{num_badge} — справочный шаблон; заменен на {refs_str}."
+                else:
+                    alert = f"Документ «{h.title or h.file_name}»{num_badge} утратил силу; заменен актом: {refs_str}."
+                if not any(
+                    (h.doc_number and h.doc_number in va)
+                    or (h.title and h.title in va and any(k in va.lower() for k in ("утратил", "заменен", "справочн")))
+                    for va in version_alerts
+                ):
+                    _add_unique(version_alerts, alert)
+            if h.quality_warning:
+                _add_unique(quality_alerts, h.quality_warning)
 
-        # Generic sibling-document disambiguation alert when 2+ distinct documents share the same regulation topic
+        # Build representative hits per doc_id in hit order
         rep_by_doc: dict[str, SearchHit] = {}
         for h in hits:
-            if h.doc_id and h.doc_id not in rep_by_doc:
-                rep_by_doc[h.doc_id] = h
+            d_key = h.doc_id or h.file_name or h.title or h.chunk_id
+            if d_key and d_key not in rep_by_doc:
+                rep_by_doc[d_key] = h
 
         doc_ids_list = list(rep_by_doc.keys())
-        seen_pairs: set[tuple[str, str]] = set()
+        sib_cache: dict[str, set[str]] = {
+            d_id: {s.doc_id for s in self._find_sibling_topic_docs(d_id) if getattr(s, "doc_id", "")}
+            for d_id in doc_ids_list
+        }
+
+        def _are_sibling_pair(d1: str, d2: str, h1: SearchHit, h2: SearchHit) -> bool:
+            if d2 in sib_cache.get(d1, set()) or d1 in sib_cache.get(d2, set()):
+                return True
+            vf1 = self._get_hit_version_family(h1)
+            vf2 = self._get_hit_version_family(h2)
+            if vf1 and vf2 and vf1 == vf2:
+                return True
+            l1 = self._title_topic_lemmas(h1.title, h1.file_name)
+            l2 = self._title_topic_lemmas(h2.title, h2.file_name)
+            if l1 and l2:
+                inter = l1.intersection(l2)
+                if inter:
+                    jaccard = len(inter) / max(1, len(l1.union(l2)))
+                    min_contain = len(inter) / max(1, min(len(l1), len(l2)))
+                    if jaccard >= 0.45 or (len(inter) >= 2 and min_contain >= 0.65):
+                        return True
+            return False
+
+        # (a) Sibling / same-subject / same-family ambiguity among active documents without explicit links
+        seen_sibling_pairs: set[tuple[str, str]] = set()
         for i in range(len(doc_ids_list)):
             d1 = doc_ids_list[i]
-            sib_ids = {s.doc_id for s in self._find_sibling_topic_docs(d1)}
+            h1 = rep_by_doc[d1]
+            if not self._is_active_hit(h1):
+                continue
             for j in range(i + 1, len(doc_ids_list)):
                 d2 = doc_ids_list[j]
+                h2 = rep_by_doc[d2]
+                if not self._is_active_hit(h2):
+                    continue
                 pair_key = (min(d1, d2), max(d1, d2))
-                if d2 in sib_ids and pair_key not in seen_pairs:
-                    seen_pairs.add(pair_key)
-                    h1, h2 = rep_by_doc[d1], rep_by_doc[d2]
-                    # Skip if already linked by explicit supersedes/amends
-                    explicit_link = (
-                        bool(set(h1.supersedes + h1.superseded_by + h1.amends + h1.amended_by))
-                        and bool(set(h2.supersedes + h2.superseded_by + h2.amends + h2.amended_by))
+                if pair_key in seen_sibling_pairs:
+                    continue
+                if self._is_same_document_copy(h1, h2) or self._docs_have_explicit_relation(h1, h2):
+                    continue
+                if _are_sibling_pair(d1, d2, h1, h2):
+                    seen_sibling_pairs.add(pair_key)
+                    disamb_note = (
+                        "По данной теме найдены два отдельных действующих документа без прямой ссылки друг на друга: "
+                        f"1) {self._format_doc_requisite_badge(h1)}; "
+                        f"2) {self._format_doc_requisite_badge(h2)}. "
+                        "Уточните реквизиты, даты и область действия каждого документа."
                     )
-                    if not explicit_link:
-                        disamb_note = (
-                            "ВНИМАНИЕ (Разграничение одноименных/смежных документов в базе): "
-                            f"по данной теме найдены два отдельных документа — "
-                            f"1) {self._format_doc_requisite_badge(h1)}; "
-                            f"2) {self._format_doc_requisite_badge(h2)}. "
-                            "При ответе различайте их реквизиты, даты и область действия."
-                        )
-                        if disamb_note not in version_alerts:
-                            version_alerts.append(disamb_note)
+                    _add_unique(discrepancy_alerts, disamb_note)
 
-        return version_alerts, quality_alerts
+        # (b) Active vs reference / superseded collision in top hits
+        active_reps = [(d_id, h) for d_id, h in rep_by_doc.items() if self._is_active_hit(h)]
+        nonactive_reps = [
+            (d_id, h)
+            for d_id, h in rep_by_doc.items()
+            if (h.status or "").strip().lower()
+            in {
+                DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value,
+                DocumentStatus.SUPERSEDED.value,
+            }
+        ]
+        if active_reps and nonactive_reps:
+            tokens_cache: dict[str, set[str]] = {
+                d_id: self._substantive_alert_tokens([h])
+                for d_id, h in rep_by_doc.items()
+            }
+            for d_ref, h_ref in nonactive_reps:
+                matched_act: SearchHit | None = None
+                for d_act, h_act in active_reps:
+                    if self._docs_have_explicit_relation(h_act, h_ref):
+                        matched_act = h_act
+                        break
+                if matched_act is None:
+                    for d_act, h_act in active_reps:
+                        if _are_sibling_pair(d_act, d_ref, h_act, h_ref):
+                            matched_act = h_act
+                            break
+                if matched_act is None:
+                    ref_toks = tokens_cache.get(d_ref, set())
+                    for d_act, h_act in active_reps:
+                        if len(ref_toks.intersection(tokens_cache.get(d_act, set()))) >= 2:
+                            matched_act = h_act
+                            break
+                if matched_act is not None:
+                    if (h_ref.status or "").strip().lower() == DocumentStatus.SUPERSEDED_TEMPLATE_REFERENCE.value:
+                        col_note = (
+                            f"Наряду с действующим документом {self._format_doc_requisite_badge(matched_act)} "
+                            f"в выборке присутствует справочный шаблон {self._format_doc_requisite_badge(h_ref)}. "
+                            "Нормативную силу имеет действующий документ, а справочный шаблон служит только ориентиром по структуре, формулам и кодам."
+                        )
+                    else:
+                        col_note = (
+                            f"Наряду с действующим документом {self._format_doc_requisite_badge(matched_act)} "
+                            f"в выборке присутствует утратившая силу редакция {self._format_doc_requisite_badge(h_ref)}. "
+                            "Приоритет имеет действующий документ; утратившая силу редакция носит справочный характер."
+                        )
+                    _add_unique(discrepancy_alerts, col_note)
+
+        # (c) Numeric/rule collisions between distinct active documents in top hits[:6] on the same subtopic
+        top_active_chunks_by_doc: dict[str, list[SearchHit]] = {}
+        for h in hits[:6]:
+            if not self._is_active_hit(h):
+                continue
+            d_key = h.doc_id or h.file_name or h.title or h.chunk_id
+            if d_key:
+                top_active_chunks_by_doc.setdefault(d_key, []).append(h)
+
+        top_active_ids = list(top_active_chunks_by_doc.keys())
+        if len(top_active_ids) >= 2:
+            sub_toks_by_doc = {
+                d_id: self._substantive_alert_tokens(ch_list)
+                for d_id, ch_list in top_active_chunks_by_doc.items()
+            }
+            facts_by_doc = {
+                d_id: self._extract_numeric_facts(ch_list)
+                for d_id, ch_list in top_active_chunks_by_doc.items()
+            }
+            cat_labels_ru = {
+                "days": "сроки",
+                "months": "сроки в месяцах",
+                "hours": "сроки в часах",
+                "percent": "процентные ставки",
+                "rub": "денежные лимиты",
+            }
+            for i in range(len(top_active_ids)):
+                d1 = top_active_ids[i]
+                h1 = top_active_chunks_by_doc[d1][0]
+                for j in range(i + 1, len(top_active_ids)):
+                    d2 = top_active_ids[j]
+                    h2 = top_active_chunks_by_doc[d2][0]
+                    if self._is_same_document_copy(h1, h2) or self._docs_have_explicit_relation(h1, h2):
+                        continue
+                    same_subtopic = _are_sibling_pair(d1, d2, h1, h2) or (
+                        len(sub_toks_by_doc[d1].intersection(sub_toks_by_doc[d2])) >= 2
+                    )
+                    if not same_subtopic:
+                        continue
+                    f1, f2 = facts_by_doc[d1], facts_by_doc[d2]
+                    diff_parts: list[str] = []
+                    for cat in ("days", "months", "hours", "percent", "rub"):
+                        k1 = set(f1[cat].keys())
+                        k2 = set(f2[cat].keys())
+                        if k1 and k2 and (k1 - k2) and (k2 - k1):
+                            disp1 = [v for k, v in f1[cat].items() if k not in k2]
+                            disp2 = [v for k, v in f2[cat].items() if k not in k1]
+                            diff_parts.append(
+                                f"{cat_labels_ru[cat]}: {', '.join(disp1[:3])} против {', '.join(disp2[:3])}"
+                            )
+                    if diff_parts:
+                        num_note = (
+                            f"Обнаружено расхождение числовых норм в действующих документах "
+                            f"{self._short_doc_label(h1)} и {self._short_doc_label(h2)} "
+                            f"({'; '.join(diff_parts)}). Проверьте применимость условий каждого акта."
+                        )
+                        _add_unique(discrepancy_alerts, num_note)
+
+        return version_alerts, discrepancy_alerts, quality_alerts
 
     @staticmethod
     def _extract_sheet_name(hit: SearchHit) -> str:
@@ -3476,7 +4380,7 @@ class SearchService:
         parts = [
             f"{lead}{doc_part}",
             f"Зарег. в ЭДО: {edo_val}",
-            f"Статус: {status_ru} ({hit.status})",
+            f"Статус: {status_ru}",
             f"Раздел: {sec_label}",
             f"Пункт: {cl_label}",
             f"Стр.: {pages_label}",
@@ -3484,7 +4388,7 @@ class SearchService:
         if hit.also_in_files:
             parts.append(f"Также в файлах: {', '.join(hit.also_in_files)}")
         if (hit.metadata or {}).get("source_origin") == "uploads":
-            parts.append("Источник: uploads/")
+            parts.append("Источник: загруженный документ")
         exp_reason = str((hit.metadata or {}).get("expansion_reason") or "")
         if exp_reason:
             parts.append(f"Связь: {exp_reason}")
@@ -3502,6 +4406,7 @@ class SearchService:
         linked_tables: list[TablePassport],
         table_context: list[TableQueryResponse],
         unit_outlines: list[str] | None = None,
+        discrepancy_alerts: list[str] | None = None,
     ) -> str:
         """Render a self-contained, richly cited Russian RAG context string for stateless chatbot consumption."""
         blocks: list[str] = []
@@ -3515,10 +4420,12 @@ class SearchService:
         blocks.append("\n".join(q_lines))
 
         # 2. Alerts & Document Requisites Passport Summary
-        if version_alerts or quality_alerts:
-            al_lines = ["ПРЕДУПРЕЖДЕНИЯ ПО РЕДАКЦИЯМ, АКТУАЛЬНОСТИ И КАЧЕСТВУ ИСТОЧНИКОВ:"]
+        if version_alerts or discrepancy_alerts or quality_alerts:
+            al_lines = ["ПРЕДУПРЕЖДЕНИЯ О РЕДАКЦИЯХ, РАСХОЖДЕНИЯХ И КАЧЕСТВЕ ИСТОЧНИКОВ:"]
             for va in version_alerts:
                 al_lines.append(f"- [РЕДАКЦИЯ] {va}")
+            for da in (discrepancy_alerts or []):
+                al_lines.append(f"- [РАСХОЖДЕНИЕ] {da}")
             for qa in quality_alerts:
                 al_lines.append(f"- [КАЧЕСТВО] {qa}")
             blocks.append("\n".join(al_lines))
@@ -3652,6 +4559,9 @@ class SearchService:
                 query="",
                 expanded_query="",
                 sub_queries=[],
+                version_alerts=[],
+                discrepancy_alerts=[],
+                quality_alerts=[],
                 is_out_of_scope=True,
                 confidence_score=0.0,
                 latency_ms=round((time.perf_counter() - t0) * 1000, 2),
@@ -3727,6 +4637,7 @@ class SearchService:
                 linked_tables=[],
                 table_context=[],
                 version_alerts=[],
+                discrepancy_alerts=[],
                 quality_alerts=[],
                 is_out_of_scope=True,
                 confidence_score=confidence_score,
@@ -3849,7 +4760,7 @@ class SearchService:
             sub_queries=sub_queries,
             linked_tables=linked_tables,
         )
-        version_alerts, quality_alerts = self._collect_alerts(top_hits, amendment_chunks)
+        version_alerts, discrepancy_alerts, quality_alerts = self._collect_alerts(top_hits, amendment_chunks)
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
         return SearchResponse(
@@ -3861,6 +4772,7 @@ class SearchService:
             linked_tables=linked_tables,
             table_context=table_context,
             version_alerts=version_alerts,
+            discrepancy_alerts=discrepancy_alerts,
             quality_alerts=quality_alerts,
             is_out_of_scope=False,
             confidence_score=confidence_score,
@@ -4097,6 +5009,9 @@ class SearchService:
                 query="",
                 is_out_of_scope=True,
                 confidence_score=0.0,
+                version_alerts=[],
+                discrepancy_alerts=[],
+                quality_alerts=[],
                 formatted_context="Пустой запрос.",
                 latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
             )
@@ -4123,6 +5038,9 @@ class SearchService:
                         is_out_of_scope=False,
                         confidence_score=1.0,
                         hits=[],
+                        version_alerts=[],
+                        discrepancy_alerts=[],
+                        quality_alerts=[],
                         formatted_context=meta_msg,
                         retrieved_chunk_ids=[],
                         latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
@@ -4140,6 +5058,9 @@ class SearchService:
                         is_out_of_scope=True,
                         confidence_score=v_resp.confidence_score,
                         hits=[],
+                        version_alerts=[],
+                        discrepancy_alerts=[],
+                        quality_alerts=[],
                         formatted_context=oos_msg,
                         retrieved_chunk_ids=[],
                         latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
@@ -4153,6 +5074,7 @@ class SearchService:
                     if h.chunk_id and h.chunk_id not in retrieved_ids:
                         retrieved_ids.append(h.chunk_id)
 
+                v_discrepancy_alerts = list(getattr(v_resp, "discrepancy_alerts", None) or [])
                 formatted_context = self._render_formatted_chatbot_context(
                     query=raw_query,
                     sub_queries=v_resp.sub_queries,
@@ -4163,6 +5085,7 @@ class SearchService:
                     quality_alerts=v_resp.quality_alerts,
                     linked_tables=linked_tables,
                     table_context=table_context,
+                    discrepancy_alerts=v_discrepancy_alerts,
                 )
                 return ChatbotContextResponse(
                     query=raw_query,
@@ -4173,6 +5096,7 @@ class SearchService:
                     parent_sections=v_resp.parent_sections,
                     amendment_chunks=v_resp.amendment_chunks,
                     version_alerts=v_resp.version_alerts,
+                    discrepancy_alerts=v_discrepancy_alerts,
                     quality_alerts=v_resp.quality_alerts,
                     linked_tables=linked_tables,
                     table_context=table_context,
@@ -4204,6 +5128,9 @@ class SearchService:
                 is_out_of_scope=True,
                 confidence_score=base_resp.confidence_score,
                 hits=[],
+                version_alerts=[],
+                discrepancy_alerts=[],
+                quality_alerts=[],
                 formatted_context=oos_msg,
                 retrieved_chunk_ids=[],
                 latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
@@ -4236,7 +5163,12 @@ class SearchService:
             else []
         )
 
-        version_alerts, quality_alerts = self._collect_alerts(expanded_hits, base_resp.amendment_chunks)
+        version_alerts, discrepancy_alerts, quality_alerts = self._collect_alerts(
+            expanded_hits, base_resp.amendment_chunks
+        )
+        for da in getattr(base_resp, "discrepancy_alerts", None) or []:
+            if da not in discrepancy_alerts:
+                discrepancy_alerts.append(da)
 
         # Collect deduplicated ParentSectionRecords with Whole-Unit Sibling Section Hydration (<= 20,000 chars)
         # and complete Unit Structural Outlines (`unit_outline`) when a unit exceeds 20,000 chars!
@@ -4368,6 +5300,7 @@ class SearchService:
             linked_tables=linked_tables,
             table_context=table_context,
             unit_outlines=unit_outlines,
+            discrepancy_alerts=discrepancy_alerts,
         )
 
         return ChatbotContextResponse(
@@ -4379,6 +5312,7 @@ class SearchService:
             parent_sections=parent_sections,
             amendment_chunks=base_resp.amendment_chunks,
             version_alerts=version_alerts,
+            discrepancy_alerts=discrepancy_alerts,
             quality_alerts=quality_alerts,
             linked_tables=linked_tables,
             table_context=table_context,

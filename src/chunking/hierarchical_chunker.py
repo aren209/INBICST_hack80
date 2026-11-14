@@ -281,8 +281,9 @@ def is_valid_clause_number(
     """
     Validate candidate clause number against V3 Date vs Clause disambiguation rules:
     - Reject leading zeros in any segment ('01.09' is a date, never clause '1.9')
-    - Single-level 'N.': 1 <= parts[0] <= 65 (covers Регламент о командировании 1..63), must have trailing dot or 'п.'
-    - Multi-level 'X.Y' / 'X.Y.Z': 1 <= parts[0] <= 30, all(1 <= p <= 60), max 4 levels,
+    - Single-level 'N.': 1 <= parts[0] <= 300 (SINGLE_LEVEL_CLAUSE_MAX), must have trailing dot or 'п.'
+    - Multi-level 'X.Y' / 'X.Y.Z': 1 <= parts[0] <= 120 (MULTI_LEVEL_FIRST_MAX),
+      all(1 <= p <= 200) (MULTI_LEVEL_PART_MAX), max 4 levels,
       no 4-digit year in 3rd segment, and not followed by a year in rest_text.
     """
     if not num_str:
@@ -319,13 +320,17 @@ def is_valid_clause_number(
 
     # Multi-level (X.Y, X.Y.Z, X.Y.Z.W)
     if len(parts) >= 3:
-        # 3rd segment is a 4-digit year or > 60 -> Date DD.MM.YYYY!
+        # 3rd segment is a 4-digit year -> Date DD.MM.YYYY!
         if len(raw_parts[2]) == 4 or parts[2] >= 1900:
             return False
 
     if not (1 <= parts[0] <= MULTI_LEVEL_FIRST_MAX):
         return False
     if not all(1 <= p <= MULTI_LEVEL_PART_MAX for p in parts):
+        return False
+
+    # Reject if immediately followed by currency or percentage marker (e.g. "75.50 руб.", "15.5 %")
+    if re.match(r"^(?:руб|тыс\.?\s*руб|млн\.?\s*руб|%)", rest_clean, re.IGNORECASE):
         return False
 
     # Extra guard for X.Y where X <= 31 and Y <= 12: reject if rest starts with a year or date marker
@@ -418,7 +423,7 @@ def is_section_header(
         return False
 
     sec_num = int(num_str)
-    if sec_num > 25 or not body:
+    if sec_num > 60 or not body:
         return False
 
     norm_body = body.lower().replace("ё", "е").strip()

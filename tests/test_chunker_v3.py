@@ -128,11 +128,11 @@ class TestDateVsClauseProtection:
         assert body.startswith(expected_body_prefix)
 
     def test_single_level_bounds_and_invalid_numbers(self) -> None:
-        """Single-level clauses > 65 or invalid formats must be rejected."""
+        """Single-level clauses > 300 or invalid formats must be rejected."""
         assert is_valid_clause_number("63", has_trailing_dot=True)
         assert is_valid_clause_number("65", has_trailing_dot=True)
-        assert not is_valid_clause_number("66", has_trailing_dot=True)
-        assert not is_valid_clause_number("99", has_trailing_dot=True)
+        assert is_valid_clause_number("300", has_trailing_dot=True)
+        assert not is_valid_clause_number("301", has_trailing_dot=True)
         # Without trailing dot or explicit prefix, bare single digit is not a clause
         assert not is_valid_clause_number("1", has_trailing_dot=False, has_explicit_prefix=False)
 

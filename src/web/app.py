@@ -533,6 +533,33 @@ def _invoke_pipeline_index_file(
     return {"status": str(getattr(raw_res, "status", "success")), "file_name": file_path.name}
 
 
+_USER_ERROR_LEAK_RE = re.compile(
+    r"Traceback \(most recent call last\)|File\s+\"|"
+    r"\b[A-Za-z0-9_]+(?:Error|Exception)\b|"
+    r"\b(?:Errno\s*\d+|HTTPException|qdrant|polza|openai|httpx|litellm|sqlite3|sqlalchemy|pydantic)\b|"
+    r"(?<![A-Za-z0-9_./])/(?:home|tmp|var|usr|etc|opt|app|root|mnt|media|srv|Users)/[^\s]+|"
+    r"[A-Za-z]:\\[^\s]+|"
+    r"(?:^|\s)(?:data|uploads)/[^\s]+",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_user_index_error(raw_msg: Any) -> str:
+    """Return a clean user-safe Russian indexing error or fall back to TECH_ERROR_STUB_RU."""
+    msg = str(raw_msg or "").strip()
+    if not msg:
+        return TECH_ERROR_STUB_RU
+    if msg == TECH_ERROR_STUB_RU:
+        return TECH_ERROR_STUB_RU
+    if msg.startswith(("{", "[")) or len(msg) > 360:
+        return TECH_ERROR_STUB_RU
+    if _USER_ERROR_LEAK_RE.search(msg):
+        return TECH_ERROR_STUB_RU
+    if not re.search(r"[а-яА-ЯёЁ]{3,}", msg):
+        return TECH_ERROR_STUB_RU
+    return msg
+
+
 def _run_index_task(
     task: TaskState,
     pipeline: Any,
@@ -559,7 +586,10 @@ def _run_index_task(
                     1,
                     min(99 if ev.get("stage") != "done" or _idx < _tot else 100, overall_pct),
                 )
-                patched["message"] = f"[{_idx}/{_tot}] {ev.get('message', '')}"
+                raw_ev_msg = ev.get("message", "")
+                if ev.get("stage") == "error":
+                    raw_ev_msg = _sanitize_user_index_error(raw_ev_msg)
+                patched["message"] = f"[{_idx}/{_tot}] {raw_ev_msg}"
                 task.emit_event(patched)
 
             st_dict = _invoke_pipeline_index_file(
@@ -592,13 +622,49 @@ def _run_index_task(
                 st_dict["message"] = dup_msg
                 st_dict["detail"] = dup_msg
                 dup_entries.append(st_dict)
+            elif st_dict.get("status") in ("error", "failed"):
+                raw_err = (
+                    st_dict.get("error_message")
+                    or st_dict.get("message")
+                    or st_dict.get("error")
+                    or st_dict.get("detail")
+                )
+                clean_err = _sanitize_user_index_error(raw_err)
+                st_dict.setdefault("file_name", file_path.name)
+                st_dict["error_message"] = clean_err
+                st_dict["message"] = clean_err
 
             file_statuses.append(st_dict)
 
         task.completed_at = datetime.now(timezone.utc).isoformat()
         task.percent = 100
 
-        if dup_entries and len(dup_entries) == total_files:
+        error_entries = [st for st in file_statuses if st.get("status") in ("error", "failed")]
+
+        if total_files > 0 and len(error_entries) == total_files:
+            task.status = "failed"
+            task.error = error_entries[0]["error_message"]
+            task.message = task.error
+            task.result = {
+                "status": "failed",
+                "files": file_statuses,
+                "total_files": total_files,
+                "error": task.error,
+            }
+            task.emit_event(
+                {
+                    "stage": "done",
+                    "status": "failed",
+                    "stage_index": 6,
+                    "total_stages": 6,
+                    "stage_label": "Ошибка",
+                    "percent": 100,
+                    "message": task.error,
+                    "file_name": error_entries[0].get("file_name", ""),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        elif dup_entries and len(dup_entries) == total_files:
             first_dup = dup_entries[0]
             task.status = "duplicate"
             task.duplicate_of = first_dup["duplicate_of"]
@@ -638,11 +704,16 @@ def _run_index_task(
                 task.existing_title = first_dup["existing_title"]
                 task.existing_file_name = first_dup["existing_file_name"]
             task.result = {"files": file_statuses, "total_files": total_files}
-            done_msg = (
-                f"Обработано файлов: {total_files} (отклонено дубликатов: {len(dup_entries)})"
-                if dup_entries
-                else f"Успешно обработано файлов: {total_files}"
-            )
+            if error_entries:
+                ok_count = len([st for st in file_statuses if st.get("status") not in ("error", "failed", "duplicate")])
+                done_msg = (
+                    f"Обработано файлов: {total_files} "
+                    f"(проиндексировано: {ok_count}, дубликатов: {len(dup_entries)}, ошибок: {len(error_entries)})"
+                )
+            elif dup_entries:
+                done_msg = f"Обработано файлов: {total_files} (отклонено дубликатов: {len(dup_entries)})"
+            else:
+                done_msg = f"Успешно обработано файлов: {total_files}"
             task.emit_event(
                 {
                     "stage": "done",
@@ -659,6 +730,7 @@ def _run_index_task(
         logger.exception("Background upload indexing task failed: %s", exc)
         task.status = "failed"
         task.error = TECH_ERROR_STUB_RU
+        task.message = TECH_ERROR_STUB_RU
         task.completed_at = datetime.now(timezone.utc).isoformat()
         task.emit_event(
             {
@@ -2202,6 +2274,11 @@ def _build_document_view_sync(
     download_url = f"/api/documents/{encoded_doc_id}/file"
     quote_segments = _split_quote_segments(quote or "")
     cl_clean = clean_clause(clause or "")
+    requested_sheet = ""
+    if clause:
+        m_req_sheet = re.match(r"^\s*лист\s*:\s*(.+?)\s*$", str(clause), flags=re.IGNORECASE)
+        if m_req_sheet:
+            requested_sheet = m_req_sheet.group(1).strip()
 
     # 1. PDF Document Viewer (exact rendered PNG dimensions + normalized [0..1] quote highlight overlays)
     if fmt == "pdf":
@@ -2290,7 +2367,7 @@ def _build_document_view_sync(
     # 2. Excel Workbooks (.xlsx / .xls): one viewer page per worksheet
     if fmt in {"xlsx", "xls"}:
         pages_out = []
-        quote_matched_sheet: Optional[int] = None
+        matched_sheets: set[int] = set()
 
         # Fast path via StructuredTableStore when sheets are already indexed in SQLite
         passports = _list_structured_tables(pipeline, doc_id)
@@ -2316,23 +2393,25 @@ def _build_document_view_sync(
                     for rd in all_row_dicts
                 ]
                 sliced_rows, row_hit = _slice_rows_around_quote(matrix_rows, quote_segments)
-                if row_hit and quote_matched_sheet is None:
-                    quote_matched_sheet = s_idx
+                sheet_tbl_blk = DocumentViewerBlock(
+                    type="table",
+                    text=tp.table_title or tp.sheet_name,
+                    clause_no="",
+                    headers=headers,
+                    rows=sliced_rows,
+                )
+                blk_hit = False
+                if not row_hit and quote_segments:
+                    blk_hit, _ = _block_matches_quote_or_clause(sheet_tbl_blk, quote_segments, "")
+                if row_hit or blk_hit:
+                    matched_sheets.add(s_idx)
 
                 sheet_blocks: list[DocumentViewerBlock] = []
                 if tp.table_title and tp.table_title != tp.sheet_name:
                     sheet_blocks.append(
                         DocumentViewerBlock(type="heading", text=tp.table_title, clause_no="", headers=[], rows=[])
                     )
-                sheet_blocks.append(
-                    DocumentViewerBlock(
-                        type="table",
-                        text=tp.table_title or tp.sheet_name,
-                        clause_no="",
-                        headers=headers,
-                        rows=sliced_rows,
-                    )
-                )
+                sheet_blocks.append(sheet_tbl_blk)
                 pages_out.append(
                     DocumentViewerPage(
                         page_number=s_idx,
@@ -2365,23 +2444,25 @@ def _build_document_view_sync(
                     s_rows = list(meta.get("structured_rows") or b.table_rows or [])
                     if s_hdrs or s_rows:
                         capped_rows, row_hit = _slice_rows_around_quote(s_rows, quote_segments)
-                        if row_hit and quote_matched_sheet is None:
-                            quote_matched_sheet = s_idx
-                        s_blocks.append(
-                            DocumentViewerBlock(
-                                type="table",
-                                text=str(meta.get("table_title") or b.text[:240]),
-                                clause_no="",
-                                headers=s_hdrs,
-                                rows=capped_rows,
-                            )
+                        tbl_blk = DocumentViewerBlock(
+                            type="table",
+                            text=str(meta.get("table_title") or b.text[:240]),
+                            clause_no="",
+                            headers=s_hdrs,
+                            rows=capped_rows,
                         )
+                        blk_hit = False
+                        if not row_hit and quote_segments:
+                            blk_hit, _ = _block_matches_quote_or_clause(tbl_blk, quote_segments, "")
+                        if row_hit or blk_hit:
+                            matched_sheets.add(s_idx)
+                        s_blocks.append(tbl_blk)
                     elif b.text:
                         b_type = "heading" if b.block_type == "heading" else "paragraph"
                         vb = DocumentViewerBlock(type=b_type, text=b.text, clause_no="", headers=[], rows=[])
                         mq, _ = _block_matches_quote_or_clause(vb, quote_segments, cl_clean)
-                        if mq and quote_matched_sheet is None:
-                            quote_matched_sheet = s_idx
+                        if mq:
+                            matched_sheets.add(s_idx)
                         s_blocks.append(vb)
                 pages_out.append(
                     DocumentViewerPage(
@@ -2400,9 +2481,37 @@ def _build_document_view_sync(
                 DocumentViewerPage(page_number=1, label="Лист 1", image_url=None, highlights=[], blocks=[])
             )
 
+        explicit_sheet_idx: Optional[int] = None
+        if requested_sheet:
+            req_exact = requested_sheet.lower().replace("ё", "е").strip()
+            req_norm = re.sub(r"[\s_]+", " ", req_exact).strip()
+            for pg_item in pages_out:
+                lbl_exact = str(pg_item.label or "").lower().replace("ё", "е").strip()
+                if lbl_exact == req_exact:
+                    explicit_sheet_idx = pg_item.page_number
+                    break
+            if explicit_sheet_idx is None:
+                for pg_item in pages_out:
+                    lbl_norm = re.sub(r"[\s_]+", " ", str(pg_item.label or "").lower().replace("ё", "е")).strip()
+                    if lbl_norm == req_norm:
+                        explicit_sheet_idx = pg_item.page_number
+                        break
+            if explicit_sheet_idx is None and len(req_norm) >= 2:
+                for pg_item in pages_out:
+                    lbl_norm = re.sub(r"[\s_]+", " ", str(pg_item.label or "").lower().replace("ё", "е")).strip()
+                    if lbl_norm and (req_norm in lbl_norm or lbl_norm in req_norm):
+                        explicit_sheet_idx = pg_item.page_number
+                        break
+
         total_pages = len(pages_out)
-        if quote_matched_sheet is not None:
-            target_page = quote_matched_sheet
+        if explicit_sheet_idx is not None:
+            target_page = explicit_sheet_idx
+            matched_quote_on_page = explicit_sheet_idx in matched_sheets
+        elif matched_sheets:
+            if page is not None and int(page) in matched_sheets:
+                target_page = int(page)
+            else:
+                target_page = min(matched_sheets)
             matched_quote_on_page = True
         else:
             target_page = max(1, min(total_pages, int(page))) if page is not None else 1
